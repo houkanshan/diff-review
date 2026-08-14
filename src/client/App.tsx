@@ -233,6 +233,7 @@ function ReviewWorkspace({
       lineHoverHighlight: 'both',
       hunkSeparators: 'line-info-basic',
       stickyHeaders: true,
+      layout: { paddingTop: 0, paddingBottom: 0, gap: 0 },
       collapsedContextThreshold: 10,
       expansionLineCount: 20,
       lineDiffType: 'word-alt',
