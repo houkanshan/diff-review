@@ -17,9 +17,10 @@ import { Toggle } from '@base-ui/react/toggle'
 import { ToggleGroup } from '@base-ui/react/toggle-group'
 import type { GitStatusEntry } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 
 import type {
+  DiffSide,
   RepositoryInfo,
   ReviewSession,
   ReviewTarget,
@@ -28,13 +29,13 @@ import type {
 import {
   addAnnotation,
   createSession,
-  deleteAnnotation,
   getFileContents,
   getRepositoryInfo,
   getSession,
   getSessions,
   refreshSession,
   selectCommits,
+  setAnnotationArchived,
 } from './api'
 import { applyImportance } from './importance'
 import {
@@ -52,6 +53,15 @@ import {
 type DiffLayout = 'unified' | 'split'
 type ThemePreference = 'system' | 'light' | 'dark'
 type ResolvedTheme = 'light' | 'dark'
+type ReviewLineAnnotation =
+  | { kind: 'saved'; annotation: SessionAnnotation }
+  | { kind: 'composer'; selection: CodeViewLineSelection }
+
+interface FileChangeStats {
+  additions: number
+  deletions: number
+  modifications: number
+}
 
 export default function App() {
   const theme = useThemePreference()
@@ -139,15 +149,28 @@ function ReviewWorkspace({
   resolvedTheme: ResolvedTheme
   onThemeChange(theme: ThemePreference): void
 }) {
-  const viewerRef = useRef<CodeViewHandle<SessionAnnotation>>(null)
+  const viewerRef = useRef<CodeViewHandle<ReviewLineAnnotation>>(null)
   const [layout, setLayout] = useState<DiffLayout>('unified')
   const [selection, setSelection] = useState<CodeViewLineSelection | null>(null)
-  const [selectionError, setSelectionError] = useState<string | null>(null)
+  const [composerSelection, setComposerSelection] = useState<CodeViewLineSelection | null>(null)
+  const [selectionRevision, setSelectionRevision] = useState(0)
+  const [comment, setComment] = useState('')
+  const [commentBusy, setCommentBusy] = useState(false)
+  const [commentError, setCommentError] = useState<string | null>(null)
+  const [leftPanelWidth, setLeftPanelWidth] = useState(() =>
+    storedPanelWidth('left', 235, 160, 440),
+  )
+  const [rightPanelWidth, setRightPanelWidth] = useState(() =>
+    storedPanelWidth('right', 310, 240, 480),
+  )
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
 
   useEffect(() => {
     setSelection(null)
+    setComposerSelection(null)
+    setComment('')
+    setCommentError(null)
   }, [session.patch])
 
   const parsedFiles = useMemo(() => {
@@ -162,8 +185,12 @@ function ReviewWorkspace({
     }
   }, [session.id, session.patch, session.updatedAt])
 
-  const items = useMemo<CodeViewItem<SessionAnnotation>[]>(() => {
-    const version = Date.parse(session.updatedAt) + session.annotations.length
+  const items = useMemo<CodeViewItem<ReviewLineAnnotation>[]>(() => {
+    const annotationVersion = session.annotations.reduce(
+      (latest, annotation) => Math.max(latest, Date.parse(annotation.updatedAt)),
+      Date.parse(session.updatedAt),
+    )
+    const version = annotationVersion + session.annotations.length + selectionRevision
     return parsedFiles.map((fileDiff) => {
       fileDiff.cacheKey = `${session.id}:${session.updatedAt}:${fileDiff.name}`
       return {
@@ -171,12 +198,12 @@ function ReviewWorkspace({
         type: 'diff',
         fileDiff,
         version,
-        annotations: annotationsForFile(session.annotations, fileDiff),
+        annotations: annotationsForFile(session.annotations, fileDiff, composerSelection),
       }
     })
-  }, [parsedFiles, session.annotations, session.id, session.updatedAt])
+  }, [composerSelection, parsedFiles, selectionRevision, session.annotations, session.id, session.updatedAt])
 
-  const diffOptions = useMemo<CodeViewReactOptions<SessionAnnotation>>(
+  const diffOptions = useMemo<CodeViewReactOptions<ReviewLineAnnotation>>(
     () => ({
       theme: { dark: 'pierre-dark', light: 'pierre-light' },
       themeType: resolvedTheme,
@@ -190,6 +217,14 @@ function ReviewWorkspace({
       collapsedContextThreshold: 10,
       expansionLineCount: 20,
       lineDiffType: 'word-alt',
+      itemMetrics: { lineHeight: 13 },
+      onLineSelectionEnd(range, context) {
+        if (range == null) return
+        const next = { id: context.item.id, range }
+        setSelection(next)
+        setComposerSelection(next)
+        setSelectionRevision((revision) => revision + 1)
+      },
       async loadDiffFiles(fileDiff) {
         const oldPath = fileDiff.prevName ?? fileDiff.name
         const newPath = fileDiff.name
@@ -233,18 +268,43 @@ function ReviewWorkspace({
   )
 
   const handleSelection = useCallback((next: CodeViewLineSelection | null) => {
-    if (
-      next != null &&
-      next.range.endSide != null &&
-      next.range.side !== next.range.endSide
-    ) {
-      setSelection(null)
-      setSelectionError('Choose lines from one side of the diff')
-      return
+    if (composerSelection != null && !areCodeViewSelectionsEqual(composerSelection, next)) {
+      setComposerSelection(null)
+      setComment('')
+      setCommentError(null)
+      setSelectionRevision((revision) => revision + 1)
     }
-    setSelectionError(null)
     setSelection(next)
-  }, [])
+  }, [composerSelection])
+
+  const submitComment = useCallback(async () => {
+    if (selection == null || !comment.trim()) return
+    const range = annotationRangeFromSelection(selection)
+    setCommentBusy(true)
+    setCommentError(null)
+    try {
+      await addAnnotation(session.id, {
+        filePath: selection.id,
+        ...range,
+        comment: comment.trim(),
+        source: 'user',
+      })
+      setComment('')
+      setSelection(null)
+      setComposerSelection(null)
+      setSelectionRevision((revision) => revision + 1)
+      await onReload()
+    } catch (caught) {
+      setCommentError(caught instanceof Error ? caught.message : String(caught))
+    } finally {
+      setCommentBusy(false)
+    }
+  }, [comment, onReload, selection, session.id])
+
+  const setArchived = useCallback(async (annotationId: string, archived: boolean) => {
+    await setAnnotationArchived(session.id, annotationId, archived)
+    await onReload()
+  }, [onReload, session.id])
 
   const refresh = useCallback(async () => {
     setBusy(true)
@@ -271,6 +331,11 @@ function ReviewWorkspace({
   const selectFile = useCallback((id: string) => {
     viewerRef.current?.scrollTo({ type: 'item', id, align: 'start', offset: 8 })
   }, [])
+
+  const workspaceStyle = {
+    '--left-panel-width': `${leftPanelWidth}px`,
+    '--right-panel-width': `${rightPanelWidth}px`,
+  } as CSSProperties
 
   return (
     <main className="review-shell">
@@ -308,20 +373,29 @@ function ReviewWorkspace({
         </button>
       </header>
 
-      <div className="workspace">
+      <div className="workspace" style={workspaceStyle}>
         <FileRail
           files={parsedFiles}
-          annotations={session.annotations}
           resolvedTheme={resolvedTheme}
           onSelect={selectFile}
         />
+        <PanelResizeHandle
+          label="Resize file panel"
+          side="left"
+          size={leftPanelWidth}
+          min={160}
+          max={440}
+          onChange={(width) => {
+            setLeftPanelWidth(width)
+            storePanelWidth('left', width)
+          }}
+        />
         <section className="diff-stage">
           {error != null && <div className="error-banner">{error}</div>}
-          {selectionError != null && <div className="selection-warning">{selectionError}</div>}
           {items.length === 0 ? (
             <EmptyDiff onRefresh={refresh} />
           ) : (
-            <CodeView<SessionAnnotation>
+            <CodeView<ReviewLineAnnotation>
               ref={viewerRef}
               key={`${session.id}:${layout}:${resolvedTheme}`}
               className="diff-view"
@@ -329,17 +403,48 @@ function ReviewWorkspace({
               options={diffOptions}
               selectedLines={selection}
               onSelectedLinesChange={handleSelection}
-              renderAnnotation={(annotation) => (
-                <InlineAnnotation annotation={annotation.metadata} />
-              )}
+              renderAnnotation={(annotation) => {
+                const metadata = annotation.metadata
+                return metadata.kind === 'composer' ? (
+                  <InlineComposer
+                    selection={metadata.selection}
+                    comment={comment}
+                    error={commentError}
+                    busy={commentBusy}
+                    onCommentChange={setComment}
+                    onCancel={() => {
+                      setComment('')
+                      setCommentError(null)
+                      setSelection(null)
+                      setComposerSelection(null)
+                      setSelectionRevision((revision) => revision + 1)
+                    }}
+                    onSubmit={submitComment}
+                  />
+                ) : (
+                  <InlineAnnotation
+                    annotation={metadata.annotation}
+                    onArchive={() => setArchived(metadata.annotation.id, true)}
+                  />
+                )
+              }}
             />
           )}
         </section>
+        <PanelResizeHandle
+          label="Resize annotations panel"
+          side="right"
+          size={rightPanelWidth}
+          min={240}
+          max={480}
+          onChange={(width) => {
+            setRightPanelWidth(width)
+            storePanelWidth('right', width)
+          }}
+        />
         <Inspector
           session={session}
-          selection={selection}
-          onSelectionChange={setSelection}
-          onReload={onReload}
+          onSetArchived={setArchived}
           onNavigate={(annotation) => {
             viewerRef.current?.scrollTo({
               type: 'line',
@@ -353,6 +458,62 @@ function ReviewWorkspace({
         />
       </div>
     </main>
+  )
+}
+
+function PanelResizeHandle({
+  label,
+  side,
+  size,
+  min,
+  max,
+  onChange,
+}: {
+  label: string
+  side: 'left' | 'right'
+  size: number
+  min: number
+  max: number
+  onChange(size: number): void
+}) {
+  const dragStart = useRef<{ x: number; size: number } | null>(null)
+  const resize = (clientX: number) => {
+    if (dragStart.current == null) return
+    const delta = clientX - dragStart.current.x
+    const next = dragStart.current.size + (side === 'left' ? delta : -delta)
+    onChange(Math.min(max, Math.max(min, Math.round(next))))
+  }
+  const stop = () => {
+    dragStart.current = null
+    document.body.classList.remove('resizing-panels')
+  }
+
+  return (
+    <div
+      className="panel-resizer"
+      role="separator"
+      aria-label={label}
+      aria-orientation="vertical"
+      aria-valuemin={min}
+      aria-valuemax={max}
+      aria-valuenow={size}
+      tabIndex={0}
+      onPointerDown={(event) => {
+        dragStart.current = { x: event.clientX, size }
+        event.currentTarget.setPointerCapture(event.pointerId)
+        document.body.classList.add('resizing-panels')
+      }}
+      onPointerMove={(event) => resize(event.clientX)}
+      onPointerUp={stop}
+      onPointerCancel={stop}
+      onKeyDown={(event) => {
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+        event.preventDefault()
+        const delta = event.key === 'ArrowRight' ? 10 : -10
+        const next = size + (side === 'left' ? delta : -delta)
+        onChange(Math.min(max, Math.max(min, next)))
+      }}
+    />
   )
 }
 
@@ -626,23 +787,23 @@ function CommitPicker({
 
 function FileRail({
   files,
-  annotations,
   resolvedTheme,
   onSelect,
 }: {
   files: FileDiffMetadata[]
-  annotations: SessionAnnotation[]
   resolvedTheme: ResolvedTheme
   onSelect(id: string): void
 }) {
-  const noteCounts = new Map<string, number>()
-  for (const annotation of annotations) {
-    if (annotation.comment == null) continue
-    noteCounts.set(annotation.filePath, (noteCounts.get(annotation.filePath) ?? 0) + 1)
+  const stats = new Map<string, FileChangeStats>()
+  const treeKeyParts: string[] = []
+  for (const file of files) {
+    const fileStats = fileChangeStats(file)
+    stats.set(file.name, fileStats)
+    treeKeyParts.push(
+      `${file.name}:${file.type}:${fileStats.additions}:${fileStats.deletions}:${fileStats.modifications}`,
+    )
   }
-  const treeKey = files
-    .map((file) => `${file.name}:${file.type}:${noteCounts.get(file.name) ?? 0}`)
-    .join('|')
+  const treeKey = treeKeyParts.join('|')
 
   return (
     <nav className="file-rail" aria-label="Changed files">
@@ -654,7 +815,7 @@ function FileRail({
         <ChangedFileTree
           key={treeKey}
           files={files}
-          noteCounts={noteCounts}
+          stats={stats}
           resolvedTheme={resolvedTheme}
           onSelect={onSelect}
         />
@@ -665,12 +826,12 @@ function FileRail({
 
 function ChangedFileTree({
   files,
-  noteCounts,
+  stats,
   resolvedTheme,
   onSelect,
 }: {
   files: FileDiffMetadata[]
-  noteCounts: Map<string, number>
+  stats: Map<string, FileChangeStats>
   resolvedTheme: ResolvedTheme
   onSelect(id: string): void
 }) {
@@ -699,10 +860,18 @@ function ChangedFileTree({
     },
     renderRowDecoration({ item }) {
       if (item.kind !== 'file') return null
-      const count = noteCounts.get(item.path) ?? 0
-      return count > 0
-        ? { text: String(count), title: `${count} annotation${count === 1 ? '' : 's'}` }
-        : null
+      const fileStats = stats.get(item.path)
+      if (fileStats == null) return null
+      const text = `+${fileStats.additions} -${fileStats.deletions} ~${fileStats.modifications}`
+      return {
+        text,
+        title: `${fileStats.additions} added, ${fileStats.deletions} deleted, ${fileStats.modifications} modified`,
+        parts: [
+          { text: `+${fileStats.additions}`, color: 'var(--green)' },
+          { text: ` -${fileStats.deletions}`, color: 'var(--red)' },
+          { text: ` ~${fileStats.modifications}`, color: 'var(--blue)' },
+        ],
+      }
     },
   })
 
@@ -717,110 +886,72 @@ function ChangedFileTree({
 
 function Inspector({
   session,
-  selection,
-  onSelectionChange,
-  onReload,
+  onSetArchived,
   onNavigate,
 }: {
   session: ReviewSession
-  selection: CodeViewLineSelection | null
-  onSelectionChange(selection: CodeViewLineSelection | null): void
-  onReload(): Promise<void>
+  onSetArchived(annotationId: string, archived: boolean): Promise<void>
   onNavigate(annotation: SessionAnnotation): void
 }) {
-  const [comment, setComment] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const comments = session.annotations.filter((annotation) => annotation.comment != null)
-
-  const submit = async () => {
-    if (selection == null || !comment.trim()) return
-    const side = selection.range.side === 'deletions' ? 'old' : 'new'
-    const startLine = Math.min(selection.range.start, selection.range.end)
-    const endLine = Math.max(selection.range.start, selection.range.end)
-    setBusy(true)
-    setError(null)
-    try {
-      await addAnnotation(session.id, {
-        filePath: selection.id,
-        side,
-        startLine,
-        endLine,
-        comment: comment.trim(),
-        source: 'user',
-      })
-      setComment('')
-      onSelectionChange(null)
-      await onReload()
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught))
-    } finally {
-      setBusy(false)
-    }
-  }
+  const [view, setView] = useState<'active' | 'archived'>('active')
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const active = session.annotations.filter((annotation) => annotation.archivedAt == null)
+  const archived = session.annotations.filter((annotation) => annotation.archivedAt != null)
+  const visible = view === 'active' ? active : archived
 
   return (
     <aside className="inspector">
-      {selection != null ? (
-        <section className="composer">
-          <div className="composer-heading">
-            <div>
-              <span>Add comment</span>
-              <code>{selectionLabel(selection)}</code>
-            </div>
-            <button onClick={() => onSelectionChange(null)} aria-label="Cancel selection">
-              <CloseIcon />
-            </button>
-          </div>
-          <textarea
-            autoFocus
-            value={comment}
-            onChange={(event) => setComment(event.target.value)}
-            placeholder="What should the reviewer know?"
-            onKeyDown={(event) => {
-              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') void submit()
-            }}
-          />
-          {error != null && <div className="composer-error">{error}</div>}
-          <div className="composer-actions">
-            <small>⌘ Enter</small>
-            <button disabled={!comment.trim() || busy} onClick={() => void submit()}>
-              Add comment
-            </button>
-          </div>
-        </section>
-      ) : (
-        <section className="selection-hint">
-          <CommentIcon />
-          <span>Select changed lines to comment</span>
-        </section>
-      )}
-
       <section className="notes-panel">
         <div className="notes-heading">
-          <span>Notes</span>
-          <em>{comments.length}</em>
+          <span>Annotations</span>
+          <em>{active.length}</em>
         </div>
-        {comments.length === 0 ? (
-          <p className="notes-empty">Human and agent explanations will collect here.</p>
+        <ToggleGroup
+          className="annotation-filter"
+          aria-label="Annotation view"
+          value={[view]}
+          onValueChange={(value) => {
+            const next = value.at(0)
+            if (next === 'active' || next === 'archived') setView(next)
+          }}
+        >
+          <Toggle value="active">Active {active.length}</Toggle>
+          <Toggle value="archived">Archived {archived.length}</Toggle>
+        </ToggleGroup>
+        {visible.length === 0 ? (
+          <p className="notes-empty">
+            {view === 'active'
+              ? 'Comments and importance highlights will collect here.'
+              : 'Archived annotations will remain available here.'}
+          </p>
         ) : (
           <div className="notes-list">
-            {comments.map((annotation) => (
+            {visible.map((annotation) => (
               <article key={annotation.id} className="note-card">
                 <button className="note-target" onClick={() => onNavigate(annotation)}>
                   <code>{compactPath(annotation.filePath)}</code>
                   <span>{lineLabel(annotation)}</span>
                 </button>
-                <p>{annotation.comment}</p>
+                {annotation.comment != null && <p>{annotation.comment}</p>}
+                {annotation.importance != null && (
+                  <div className="importance-label">
+                    Importance <strong>{formatImportance(annotation.importance)}</strong>
+                  </div>
+                )}
                 <footer>
                   <span className={`source ${annotation.source}`}>{annotation.source}</span>
                   <button
+                    disabled={busyId === annotation.id}
                     onClick={async () => {
-                      await deleteAnnotation(session.id, annotation.id)
-                      await onReload()
+                      setBusyId(annotation.id)
+                      try {
+                        await onSetArchived(annotation.id, view === 'active')
+                      } finally {
+                        setBusyId(null)
+                      }
                     }}
                   >
-                    Remove
+                    {view === 'active' ? 'Archive' : 'Restore'}
                   </button>
                 </footer>
               </article>
@@ -832,12 +963,82 @@ function Inspector({
   )
 }
 
-function InlineAnnotation({ annotation }: { annotation: SessionAnnotation }) {
+function InlineComposer({
+  selection,
+  comment,
+  error,
+  busy,
+  onCommentChange,
+  onCancel,
+  onSubmit,
+}: {
+  selection: CodeViewLineSelection
+  comment: string
+  error: string | null
+  busy: boolean
+  onCommentChange(comment: string): void
+  onCancel(): void
+  onSubmit(): Promise<void>
+}) {
+  return (
+    <section className="inline-composer">
+      <div className="composer-heading">
+        <div>
+          <span><CommentIcon /> Add comment</span>
+          <code>{selectionLabel(selection)}</code>
+        </div>
+        <button onClick={onCancel} aria-label="Cancel selection">
+          <CloseIcon />
+        </button>
+      </div>
+      <textarea
+        autoFocus
+        value={comment}
+        onChange={(event) => onCommentChange(event.target.value)}
+        placeholder="What should the reviewer know?"
+        onKeyDown={(event) => {
+          if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') void onSubmit()
+        }}
+      />
+      {error != null && <div className="composer-error">{error}</div>}
+      <div className="composer-actions">
+        <small>⌘ Enter</small>
+        <button disabled={!comment.trim() || busy} onClick={() => void onSubmit()}>
+          Add comment
+        </button>
+      </div>
+    </section>
+  )
+}
+
+function InlineAnnotation({
+  annotation,
+  onArchive,
+}: {
+  annotation: SessionAnnotation
+  onArchive(): Promise<void>
+}) {
+  const [busy, setBusy] = useState(false)
   return (
     <div className={`inline-annotation ${annotation.source}`}>
       <div className="inline-source">
-        <span>{annotation.source === 'agent' ? 'Agent note' : 'Review comment'}</span>
-        <code>{lineLabel(annotation)}</code>
+        <div>
+          <span>{annotation.source === 'agent' ? 'Agent note' : 'Review comment'}</span>
+          <code>{lineLabel(annotation)}</code>
+        </div>
+        <button
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true)
+            try {
+              await onArchive()
+            } finally {
+              setBusy(false)
+            }
+          }}
+        >
+          Archive
+        </button>
       </div>
       <p>{annotation.comment}</p>
     </div>
@@ -889,7 +1090,7 @@ function Welcome({
       />
       <section className="welcome-copy">
         <span className="welcome-mark">Δ</span>
-        <p className="eyebrow">LOCAL CODE REVIEW</p>
+        <p className="eyebrow">Local code review</p>
         <h1>Read the change,<br />not the noise.</h1>
         <p>
           A focused review desk for working trees, branch ranges, and GitHub pull requests—with agent rationale kept beside the code.
@@ -964,18 +1165,36 @@ function EmptyDiff({ onRefresh }: { onRefresh(): void }) {
 function annotationsForFile(
   annotations: SessionAnnotation[],
   fileDiff: FileDiffMetadata,
-): DiffLineAnnotation<SessionAnnotation>[] {
-  return annotations
+  selection: CodeViewLineSelection | null,
+): DiffLineAnnotation<ReviewLineAnnotation>[] {
+  const result: DiffLineAnnotation<ReviewLineAnnotation>[] = annotations
     .filter(
       (annotation) =>
         annotation.comment != null &&
+        annotation.archivedAt == null &&
         (annotation.filePath === fileDiff.name || annotation.filePath === fileDiff.prevName),
     )
     .map((annotation) => ({
-      side: annotation.side === 'new' ? 'additions' : 'deletions',
+      side: (annotation.endSide ?? annotation.side) === 'new' ? 'additions' : 'deletions',
       lineNumber: annotation.endLine,
-      metadata: annotation,
+      metadata: { kind: 'saved', annotation },
     }))
+
+  if (
+    selection != null &&
+    (selection.id === fileDiff.name || selection.id === fileDiff.prevName)
+  ) {
+    const side = selection.range.endSide ?? selection.range.side ?? 'additions'
+    const lineNumber = selection.range.endSide == null
+      ? Math.max(selection.range.start, selection.range.end)
+      : selection.range.end
+    result.push({
+      side,
+      lineNumber,
+      metadata: { kind: 'composer', selection },
+    })
+  }
+  return result
 }
 
 function sessionIdFromPath(): string | null {
@@ -989,15 +1208,94 @@ function openHome(setter?: (id: string | null) => void): void {
 }
 
 function selectionLabel(selection: CodeViewLineSelection): string {
-  const side = selection.range.side === 'deletions' ? 'old' : 'new'
+  const startSide = selectionSideToDiffSide(selection.range.side)
+  const endSide = selectionSideToDiffSide(selection.range.endSide ?? selection.range.side)
+  if (startSide !== endSide) {
+    return `${compactPath(selection.id)} · ${startSide} ${selection.range.start} → ${endSide} ${selection.range.end}`
+  }
   const start = Math.min(selection.range.start, selection.range.end)
   const end = Math.max(selection.range.start, selection.range.end)
-  return `${compactPath(selection.id)} · ${side} ${start}${start === end ? '' : `–${end}`}`
+  return `${compactPath(selection.id)} · ${startSide} ${start}${start === end ? '' : `–${end}`}`
 }
 
 function lineLabel(annotation: SessionAnnotation): string {
   const prefix = annotation.side === 'new' ? '+' : '−'
+  if (annotation.endSide != null && annotation.endSide !== annotation.side) {
+    const endPrefix = annotation.endSide === 'new' ? '+' : '−'
+    return `${prefix}${annotation.startLine} → ${endPrefix}${annotation.endLine}`
+  }
   return `${prefix}${annotation.startLine}${annotation.startLine === annotation.endLine ? '' : `–${annotation.endLine}`}`
+}
+
+function annotationRangeFromSelection(selection: CodeViewLineSelection): {
+  side: DiffSide
+  startLine: number
+  endSide?: DiffSide
+  endLine: number
+} {
+  const side = selectionSideToDiffSide(selection.range.side)
+  const endSide = selectionSideToDiffSide(selection.range.endSide ?? selection.range.side)
+  if (side !== endSide) {
+    return {
+      side,
+      startLine: selection.range.start,
+      endSide,
+      endLine: selection.range.end,
+    }
+  }
+  return {
+    side,
+    startLine: Math.min(selection.range.start, selection.range.end),
+    endLine: Math.max(selection.range.start, selection.range.end),
+  }
+}
+
+function selectionSideToDiffSide(side: 'deletions' | 'additions' | undefined): DiffSide {
+  return side === 'deletions' ? 'old' : 'new'
+}
+
+function areCodeViewSelectionsEqual(
+  left: CodeViewLineSelection,
+  right: CodeViewLineSelection | null,
+): boolean {
+  return right != null &&
+    left.id === right.id &&
+    left.range.start === right.range.start &&
+    left.range.end === right.range.end &&
+    left.range.side === right.range.side &&
+    left.range.endSide === right.range.endSide
+}
+
+function fileChangeStats(file: FileDiffMetadata): FileChangeStats {
+  const stats: FileChangeStats = { additions: 0, deletions: 0, modifications: 0 }
+  for (const hunk of file.hunks) {
+    for (const content of hunk.hunkContent) {
+      if (content.type !== 'change') continue
+      const modifications = Math.min(content.additions, content.deletions)
+      stats.modifications += modifications
+      stats.additions += content.additions - modifications
+      stats.deletions += content.deletions - modifications
+    }
+  }
+  return stats
+}
+
+function formatImportance(importance: number): string {
+  return importance.toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1')
+}
+
+function storedPanelWidth(
+  side: 'left' | 'right',
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const value = Number(window.localStorage.getItem(`diff-review-${side}-panel-width`))
+  return Number.isFinite(value) && value > 0 ? Math.min(max, Math.max(min, value)) : fallback
+}
+
+function storePanelWidth(side: 'left' | 'right', width: number): void {
+  window.localStorage.setItem(`diff-review-${side}-panel-width`, String(width))
 }
 
 function compactPath(filePath: string): string {

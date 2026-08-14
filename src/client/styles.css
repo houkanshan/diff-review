@@ -224,8 +224,7 @@ svg {
   color: var(--faint);
   font-size: 8px;
   font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  letter-spacing: 0.02em;
 }
 
 .commit-trigger-copy > span {
@@ -277,8 +276,7 @@ svg {
   color: var(--faint);
   font-size: 9px;
   font-weight: 750;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  letter-spacing: 0.02em;
 }
 
 .menu-kicker {
@@ -355,7 +353,7 @@ svg {
 
 .compact-form input:focus,
 .start-card input:focus,
-.composer textarea:focus {
+.inline-composer textarea:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 16%, transparent);
 }
@@ -571,8 +569,7 @@ svg {
   background: transparent;
   font-size: 9px;
   font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  letter-spacing: 0.01em;
 }
 
 .layout-switch button[data-pressed] {
@@ -629,7 +626,10 @@ svg {
   min-height: 0;
   flex: 1;
   display: grid;
-  grid-template-columns: 235px minmax(360px, 1fr) 310px;
+  grid-template-columns:
+    var(--left-panel-width, 235px) 5px
+    minmax(360px, 1fr) 5px
+    var(--right-panel-width, 310px);
 }
 
 .file-rail,
@@ -641,8 +641,41 @@ svg {
 .file-rail {
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--border);
   overflow: hidden;
+}
+
+.panel-resizer {
+  position: relative;
+  z-index: 5;
+  min-width: 5px;
+  cursor: col-resize;
+  touch-action: none;
+  background: var(--rail-bg);
+  outline: none;
+}
+
+.panel-resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 1px;
+  background: var(--border);
+  transition: width 100ms, left 100ms, background 100ms;
+}
+
+.panel-resizer:hover::after,
+.panel-resizer:focus-visible::after {
+  left: 1px;
+  width: 3px;
+  background: var(--accent);
+}
+
+body.resizing-panels,
+body.resizing-panels * {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 
 .rail-heading,
@@ -657,8 +690,7 @@ svg {
   border-bottom: 1px solid var(--border-soft);
   font-size: 9px;
   font-weight: 750;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  letter-spacing: 0.02em;
 }
 
 .rail-heading em,
@@ -713,7 +745,7 @@ svg {
   --diffs-font-family: var(--font-mono);
   --diffs-header-font-family: var(--font-sans);
   --diffs-font-size: 11px;
-  --diffs-line-height: 19px;
+  --diffs-line-height: 13px;
   --diffs-light-bg: #ffffff;
   --diffs-light: #242520;
   --diffs-dark-bg: #1a1b17;
@@ -732,8 +764,7 @@ svg {
   border-bottom: 1px solid var(--border-soft);
 }
 
-.error-banner,
-.selection-warning {
+.error-banner {
   position: absolute;
   top: 10px;
   left: 50%;
@@ -752,38 +783,22 @@ svg {
   background: var(--red-soft);
 }
 
-.selection-warning {
-  color: var(--warning-text);
-  border: 1px solid var(--accent-border);
-  background: var(--warning-soft);
-}
-
 .inspector {
   display: flex;
   flex-direction: column;
-  border-left: 1px solid var(--border);
   overflow: hidden;
 }
 
-.selection-hint {
-  min-height: 77px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 0 15px;
-  color: var(--faint);
-  border-bottom: 1px solid var(--border-soft);
-  font-size: 10px;
-}
-
-.selection-hint svg {
-  width: 14px;
-}
-
-.composer {
-  padding: 13px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface-subtle);
+.inline-composer {
+  width: min(680px, calc(100% - 20px));
+  margin: 6px 10px 8px;
+  padding: 12px;
+  color: var(--text);
+  border: 1px solid var(--accent-border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  box-shadow: 0 5px 18px var(--shadow-soft);
   animation: composer-in 140ms ease-out;
 }
 
@@ -803,8 +818,17 @@ svg {
 }
 
 .composer-heading span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 14px;
   font-weight: 680;
+}
+
+.composer-heading span svg {
+  width: 13px;
+  height: 13px;
+  color: var(--accent);
 }
 
 .composer-heading code {
@@ -827,9 +851,9 @@ svg {
 
 .composer-heading button:hover { color: var(--text); }
 
-.composer textarea {
+.inline-composer textarea {
   width: 100%;
-  min-height: 92px;
+  min-height: 76px;
   resize: vertical;
   padding: 9px;
   outline: none;
@@ -874,6 +898,31 @@ svg {
   flex: 1;
   display: flex;
   flex-direction: column;
+}
+
+.annotation-filter {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  margin: 8px;
+  padding: 3px;
+  border-radius: 7px;
+  background: var(--surface-inset);
+}
+
+.annotation-filter button {
+  height: 27px;
+  color: var(--faint);
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  font-size: 9px;
+}
+
+.annotation-filter button[data-pressed] {
+  color: var(--text);
+  background: var(--surface-raised);
+  box-shadow: 0 1px 3px var(--shadow-soft);
 }
 
 .notes-empty {
@@ -924,6 +973,24 @@ svg {
   white-space: pre-wrap;
 }
 
+.importance-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 9px;
+  padding: 6px 7px;
+  color: var(--muted);
+  border-radius: 5px;
+  background: var(--surface-inset);
+  font-size: 8px;
+}
+
+.importance-label strong {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
 .note-card footer {
   display: flex;
   align-items: center;
@@ -936,8 +1003,7 @@ svg {
   border-radius: 3px;
   font-size: 7px;
   font-weight: 750;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  letter-spacing: 0.01em;
 }
 
 .source.agent {
@@ -957,7 +1023,7 @@ svg {
   font-size: 8px;
 }
 
-.note-card footer button:hover { color: var(--red); }
+.note-card footer button:hover { color: var(--accent); }
 
 .inline-annotation {
   width: min(610px, calc(100% - 20px));
@@ -977,12 +1043,30 @@ svg {
 
 .inline-source {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   color: var(--muted);
   font-size: 8px;
   font-weight: 750;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+  letter-spacing: 0.01em;
+}
+
+.inline-source > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inline-source button {
+  padding: 0;
+  color: var(--faint);
+  border: 0;
+  background: transparent;
+  font-size: 8px;
+}
+
+.inline-source button:hover {
+  color: var(--accent);
 }
 
 .empty-diff {
@@ -1134,8 +1218,7 @@ svg {
   color: var(--muted);
   font-size: 9px;
   font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+  letter-spacing: 0.01em;
 }
 
 .start-card label em {
@@ -1143,7 +1226,6 @@ svg {
   font-size: 8px;
   font-style: normal;
   font-weight: 450;
-  text-transform: lowercase;
 }
 
 .start-card input {
@@ -1163,8 +1245,7 @@ svg {
   margin-top: 20px;
   border-radius: 7px;
   font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  letter-spacing: 0.01em;
 }
 
 .cli-hint {
@@ -1188,8 +1269,7 @@ svg {
   color: var(--faint);
   font-size: 9px;
   font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  letter-spacing: 0.01em;
 }
 
 .recent-sessions button {
@@ -1251,8 +1331,7 @@ svg {
   color: var(--faint);
   font-size: 9px;
   font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  letter-spacing: 0.01em;
 }
 
 .error-screen h1 {
@@ -1268,7 +1347,6 @@ svg {
 }
 
 @media (max-width: 1220px) {
-  .workspace { grid-template-columns: 195px minmax(340px, 1fr) 275px; }
   .brand > span:last-child { display: none; }
   .commit-trigger { width: 210px; }
   .target-trigger { max-width: 285px; }
@@ -1277,7 +1355,8 @@ svg {
 @media (max-width: 940px) {
   .workspace { grid-template-columns: 1fr; }
   .file-rail,
-  .inspector { display: none; }
+  .inspector,
+  .panel-resizer { display: none; }
   .target-label,
   .target-divider { display: none; }
   .target-trigger { max-width: 180px; }

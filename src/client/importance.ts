@@ -24,7 +24,11 @@ export function applyImportance(
 
   const scores = new Map<string, number>()
   for (const annotation of annotations) {
-    if (annotation.filePath !== context.item.id || annotation.importance == null) continue
+    if (
+      annotation.filePath !== context.item.id ||
+      annotation.importance == null ||
+      annotation.archivedAt != null
+    ) continue
     const side = annotation.side === 'new' ? 'change-addition' : 'change-deletion'
     for (let line = annotation.startLine; line <= annotation.endLine; line += 1) {
       const key = `${side}:${line}`

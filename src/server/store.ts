@@ -36,10 +36,12 @@ interface AnnotationRow {
   file_path: string
   side: 'old' | 'new'
   start_line: number
+  end_side: 'old' | 'new' | null
   end_line: number
   comment: string | null
   importance: number | null
   source: 'user' | 'agent'
+  archived_at: string | null
   created_at: string
   updated_at: string
 }
@@ -74,10 +76,12 @@ export class ReviewStore {
         file_path TEXT NOT NULL,
         side TEXT NOT NULL CHECK(side IN ('old', 'new')),
         start_line INTEGER NOT NULL,
+        end_side TEXT CHECK(end_side IN ('old', 'new')),
         end_line INTEGER NOT NULL,
         comment TEXT,
         importance REAL,
         source TEXT NOT NULL CHECK(source IN ('user', 'agent')),
+        archived_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -86,6 +90,7 @@ export class ReviewStore {
       CREATE INDEX IF NOT EXISTS sessions_repository_root ON sessions(repository_root);
     `)
     this.migrateSessionsTable()
+    this.migrateAnnotationsTable()
   }
 
   createSession(
@@ -191,9 +196,9 @@ export class ReviewStore {
     this.database
       .prepare(`
         INSERT INTO annotations (
-          id, session_id, file_path, side, start_line, end_line, comment,
-          importance, source, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, session_id, file_path, side, start_line, end_side, end_line,
+          comment, importance, source, archived_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         id,
@@ -201,14 +206,35 @@ export class ReviewStore {
         input.filePath,
         input.side,
         input.startLine,
+        input.endSide ?? null,
         input.endLine,
         input.comment ?? null,
         input.importance ?? null,
         input.source,
+        null,
         now,
         now,
       )
     return this.getAnnotation(id)
+  }
+
+  setAnnotationArchived(
+    sessionId: string,
+    annotationId: string,
+    archived: boolean,
+  ): SessionAnnotation {
+    const now = new Date().toISOString()
+    const result = this.database
+      .prepare(`
+        UPDATE annotations
+        SET archived_at = ?, updated_at = ?
+        WHERE id = ? AND session_id = ?
+      `)
+      .run(archived ? now : null, now, annotationId, sessionId)
+    if (result.changes === 0) {
+      throw new AppError('ANNOTATION_NOT_FOUND', `Annotation not found: ${annotationId}`, 404)
+    }
+    return this.getAnnotation(annotationId)
   }
 
   deleteAnnotation(sessionId: string, annotationId: string): void {
@@ -256,6 +282,20 @@ export class ReviewStore {
     }
   }
 
+  private migrateAnnotationsTable(): void {
+    const columns = this.database
+      .prepare('PRAGMA table_info(annotations)')
+      .all() as unknown as { name: string }[]
+    if (!columns.some((column) => column.name === 'end_side')) {
+      this.database.exec(
+        "ALTER TABLE annotations ADD COLUMN end_side TEXT CHECK(end_side IN ('old', 'new'))",
+      )
+    }
+    if (!columns.some((column) => column.name === 'archived_at')) {
+      this.database.exec('ALTER TABLE annotations ADD COLUMN archived_at TEXT')
+    }
+  }
+
   private sessionFromRow(row: SessionRow): ReviewSession {
     const resolved = JSON.parse(row.resolved_json) as Omit<ResolvedReview, 'patch'>
     return {
@@ -283,10 +323,12 @@ function annotationFromRow(row: AnnotationRow): SessionAnnotation {
     filePath: row.file_path,
     side: row.side,
     startLine: row.start_line,
+    endSide: row.end_side,
     endLine: row.end_line,
     comment: row.comment,
     importance: row.importance,
     source: row.source,
+    archivedAt: row.archived_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }

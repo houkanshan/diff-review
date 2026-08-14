@@ -150,7 +150,27 @@ describe('local review storage', () => {
       source: 'agent',
     })
     expect(annotation.importance).toBeNull()
+    expect(annotation.endSide).toBeNull()
+    expect(annotation.archivedAt).toBeNull()
     expect(store.getSession(session.id).annotations).toEqual([annotation])
+
+    const archived = store.setAnnotationArchived(session.id, annotation.id, true)
+    expect(archived.archivedAt).not.toBeNull()
+    expect(store.getSession(session.id).annotations[0]?.archivedAt).toBe(archived.archivedAt)
+
+    const restored = store.setAnnotationArchived(session.id, annotation.id, false)
+    expect(restored.archivedAt).toBeNull()
+
+    const crossSide = store.addAnnotation(session.id, {
+      filePath: 'tracked.txt',
+      side: 'old',
+      startLine: 4,
+      endSide: 'new',
+      endLine: 5,
+      comment: 'The replacement as a whole',
+      source: 'user',
+    })
+    expect(crossSide.endSide).toBe('new')
   })
 
   test('migrates sessions created before commit timelines were stored separately', () => {
@@ -168,6 +188,20 @@ describe('local review storage', () => {
         resolved_json TEXT NOT NULL,
         selected_commit_start TEXT,
         selected_commit_end TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE annotations (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        file_path TEXT NOT NULL,
+        side TEXT NOT NULL CHECK(side IN ('old', 'new')),
+        start_line INTEGER NOT NULL,
+        end_line INTEGER NOT NULL,
+        comment TEXT,
+        importance REAL,
+        source TEXT NOT NULL CHECK(source IN ('user', 'agent')),
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -203,11 +237,29 @@ describe('local review storage', () => {
         '2026-01-01T00:00:00Z',
         '2026-01-01T00:00:00Z',
       )
+    database
+      .prepare('INSERT INTO annotations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(
+        'ann_legacy',
+        'drs_legacy',
+        'tracked.txt',
+        'new',
+        5,
+        5,
+        'Legacy note',
+        null,
+        'agent',
+        '2026-01-01T00:00:00Z',
+        '2026-01-01T00:00:00Z',
+      )
     database.close()
 
     const store = new ReviewStore(databasePath)
 
     expect(store.getSession('drs_legacy').commits).toEqual([commit])
+    expect(store.getSession('drs_legacy').annotations).toMatchObject([
+      { id: 'ann_legacy', endSide: null, archivedAt: null },
+    ])
   })
 })
 

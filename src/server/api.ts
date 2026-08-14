@@ -64,6 +64,8 @@ export class ApiHandler {
     const annotationMatch = /^\/api\/sessions\/([^/]+)\/annotations\/([^/]+)$/.exec(
       url.pathname,
     )
+    const annotationArchiveMatch =
+      /^\/api\/sessions\/([^/]+)\/annotations\/([^/]+)\/archive$/.exec(url.pathname)
     const fileMatch = /^\/api\/sessions\/([^/]+)\/file$/.exec(url.pathname)
 
     if (method === 'GET' && url.pathname === '/api/health') {
@@ -147,11 +149,33 @@ export class ApiHandler {
         input.filePath,
         input.side,
         input.startLine,
-        input.endLine,
+        input.endSide == null ? input.endLine : input.startLine,
       )
+      if (input.endSide != null) {
+        validateAnnotationTarget(
+          session.patch,
+          input.filePath,
+          input.endSide,
+          input.endLine,
+          input.endLine,
+        )
+      }
       const annotation = this.store.addAnnotation(id, input)
       this.emitSessionUpdate(id)
       sendJson(response, 201, annotation)
+      return
+    }
+
+    if (method === 'POST' && annotationArchiveMatch != null) {
+      const sessionId = annotationArchiveMatch[1] ?? ''
+      const { archived } = parseArchiveInput(await readJson(request))
+      const annotation = this.store.setAnnotationArchived(
+        sessionId,
+        annotationArchiveMatch[2] ?? '',
+        archived,
+      )
+      this.emitSessionUpdate(sessionId)
+      sendJson(response, 200, annotation)
       return
     }
 
@@ -304,10 +328,26 @@ function parseAnnotationInput(value: unknown): AddAnnotationInput {
   if (side !== 'old' && side !== 'new') {
     throw new AppError('INVALID_INPUT', 'side must be old or new')
   }
+  const parsedEndSide = object.endSide == null
+    ? undefined
+    : expectString(object.endSide, 'endSide')
+  if (parsedEndSide != null && parsedEndSide !== 'old' && parsedEndSide !== 'new') {
+    throw new AppError('INVALID_INPUT', 'endSide must be old or new')
+  }
+  const endSide = parsedEndSide === side ? undefined : parsedEndSide
   const startLine = Number(object.startLine)
   const endLine = Number(object.endLine)
-  if (!Number.isInteger(startLine) || !Number.isInteger(endLine) || startLine <= 0 || endLine < startLine) {
-    throw new AppError('INVALID_INPUT', 'Line range must contain positive integers in ascending order')
+  if (
+    !Number.isInteger(startLine) ||
+    !Number.isInteger(endLine) ||
+    startLine <= 0 ||
+    endLine <= 0 ||
+    (endSide == null && endLine < startLine)
+  ) {
+    throw new AppError(
+      'INVALID_INPUT',
+      'Line range must contain positive integers and same-side ranges must be ascending',
+    )
   }
   const comment = object.comment == null ? undefined : expectString(object.comment, 'comment').trim()
   const importance = object.importance == null ? undefined : Number(object.importance)
@@ -322,11 +362,20 @@ function parseAnnotationInput(value: unknown): AddAnnotationInput {
     filePath: expectString(object.filePath, 'filePath'),
     side,
     startLine,
+    endSide,
     endLine,
     comment,
     importance,
     source,
   }
+}
+
+function parseArchiveInput(value: unknown): { archived: boolean } {
+  const object = expectObject(value)
+  if (typeof object.archived !== 'boolean') {
+    throw new AppError('INVALID_INPUT', 'archived must be a boolean')
+  }
+  return { archived: object.archived }
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {

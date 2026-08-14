@@ -66,6 +66,20 @@ export async function deleteAnnotation(id: string, annotationId: string): Promis
   })
 }
 
+export function setAnnotationArchived(
+  id: string,
+  annotationId: string,
+  archived: boolean,
+): Promise<SessionAnnotation> {
+  return request(
+    `/api/sessions/${encodeURIComponent(id)}/annotations/${annotationId}/archive`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ archived }),
+    },
+  )
+}
+
 export async function getFileContents(
   sessionId: string,
   filePath: string,

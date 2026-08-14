@@ -21,10 +21,12 @@ export interface SessionAnnotation {
   filePath: string
   side: DiffSide
   startLine: number
+  endSide: DiffSide | null
   endLine: number
   comment: string | null
   importance: number | null
   source: 'user' | 'agent'
+  archivedAt: string | null
   createdAt: string
   updatedAt: string
 }
@@ -70,6 +72,7 @@ export interface AddAnnotationInput {
   filePath: string
   side: DiffSide
   startLine: number
+  endSide?: DiffSide
   endLine: number
   comment?: string
   importance?: number
