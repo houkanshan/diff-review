@@ -1150,8 +1150,12 @@ function Inspector({
   const [view, setView] = useState<'active' | 'archived'>('active')
   const [busyId, setBusyId] = useState<string | null>(null)
   const [bulkBusy, setBulkBusy] = useState(false)
+  const [commentsCopied, setCommentsCopied] = useState(false)
   const active = session.annotations.filter((annotation) => annotation.archivedAt == null)
   const archived = session.annotations.filter((annotation) => annotation.archivedAt != null)
+  const myComments = active.filter(
+    (annotation) => annotation.source === 'user' && Boolean(annotation.comment?.trim()),
+  )
   const visible = view === 'active' ? active : archived
 
   return (
@@ -1160,6 +1164,17 @@ function Inspector({
         <div className="notes-heading">
           <span>Annotations</span>
           <div>
+            {myComments.length > 0 && (
+              <button
+                onClick={async () => {
+                  await navigator.clipboard.writeText(formatCommentsForAgent(myComments))
+                  setCommentsCopied(true)
+                  window.setTimeout(() => setCommentsCopied(false), 1600)
+                }}
+              >
+                {commentsCopied ? 'Copied' : 'Copy my comments'}
+              </button>
+            )}
             {view === 'active' && active.length > 0 && (
               <button
                 disabled={bulkBusy}
@@ -1488,6 +1503,23 @@ function lineLabel(annotation: SessionAnnotation): string {
     return `${prefix}${annotation.startLine} → ${endPrefix}${annotation.endLine}`
   }
   return `${prefix}${annotation.startLine}${annotation.startLine === annotation.endLine ? '' : `–${annotation.endLine}`}`
+}
+
+function formatCommentsForAgent(annotations: SessionAnnotation[]): string {
+  const comments = annotations.flatMap((annotation) => {
+    const comment = annotation.comment?.trim()
+    if (!comment) return []
+    return [`- \`${annotation.filePath}:${agentLineLabel(annotation)}\` — ${comment.replaceAll('\n', '\n  ')}`]
+  })
+  return ['Review comments:', ...comments].join('\n')
+}
+
+function agentLineLabel(annotation: SessionAnnotation): string {
+  const start = `${annotation.side}:${annotation.startLine}`
+  if (annotation.endSide != null && annotation.endSide !== annotation.side) {
+    return `${start}->${annotation.endSide}:${annotation.endLine}`
+  }
+  return annotation.startLine === annotation.endLine ? start : `${start}-${annotation.endLine}`
 }
 
 function annotationRangeFromSelection(selection: CodeViewLineSelection): {
