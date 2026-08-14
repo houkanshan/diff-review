@@ -26,7 +26,7 @@ diff-review HEAD
 diff-review --pr 42
 ```
 
-The command starts the loopback-only daemon when needed and opens the review in a browser. In a multi-commit review, click a commit to view it alone or Shift-click another commit to select a continuous range.
+The command starts the loopback-only daemon when needed and opens the review in a browser. In a multi-commit review, use the header's **Commits** dropdown: click a commit to view it alone or Shift-click another commit to select a continuous range.
 
 ## Agent annotations
 

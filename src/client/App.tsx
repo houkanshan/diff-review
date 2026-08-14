@@ -10,6 +10,13 @@ import {
   type FileDiffMetadata,
   parsePatchFiles,
 } from '@pierre/diffs'
+import { Checkbox } from '@base-ui/react/checkbox'
+import { Menu } from '@base-ui/react/menu'
+import { Popover } from '@base-ui/react/popover'
+import { Toggle } from '@base-ui/react/toggle'
+import { ToggleGroup } from '@base-ui/react/toggle-group'
+import type { GitStatusEntry } from '@pierre/trees'
+import { FileTree, useFileTree } from '@pierre/trees/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type {
@@ -32,17 +39,22 @@ import {
 import { applyImportance } from './importance'
 import {
   BranchIcon,
+  CheckIcon,
   ChevronIcon,
   CloseIcon,
   CommentIcon,
+  CommitIcon,
   CopyIcon,
-  FileIcon,
   RefreshIcon,
+  ThemeIcon,
 } from './icons'
 
 type DiffLayout = 'unified' | 'split'
+type ThemePreference = 'system' | 'light' | 'dark'
+type ResolvedTheme = 'light' | 'dark'
 
 export default function App() {
+  const theme = useThemePreference()
   const [sessionId, setSessionId] = useState<string | null>(() => sessionIdFromPath())
   const [session, setSession] = useState<ReviewSession | null>(null)
   const [loading, setLoading] = useState(sessionId != null)
@@ -79,7 +91,15 @@ export default function App() {
     setSessionId(id)
   }, [])
 
-  if (sessionId == null) return <Welcome onOpenSession={openSession} />
+  if (sessionId == null) {
+    return (
+      <Welcome
+        onOpenSession={openSession}
+        themePreference={theme.preference}
+        onThemeChange={theme.setPreference}
+      />
+    )
+  }
   if (loading && session == null) return <LoadingScreen />
   if (error != null && session == null) {
     return <ErrorScreen message={error} onBack={() => openHome(setSessionId)} />
@@ -93,6 +113,9 @@ export default function App() {
       onSessionChange={setSession}
       onOpenSession={openSession}
       onReload={() => loadSession(session.id, true)}
+      themePreference={theme.preference}
+      resolvedTheme={theme.resolved}
+      onThemeChange={theme.setPreference}
     />
   )
 }
@@ -103,12 +126,18 @@ function ReviewWorkspace({
   onSessionChange,
   onOpenSession,
   onReload,
+  themePreference,
+  resolvedTheme,
+  onThemeChange,
 }: {
   session: ReviewSession
   error: string | null
   onSessionChange(session: ReviewSession): void
   onOpenSession(id: string): void
   onReload(): Promise<void>
+  themePreference: ThemePreference
+  resolvedTheme: ResolvedTheme
+  onThemeChange(theme: ThemePreference): void
 }) {
   const viewerRef = useRef<CodeViewHandle<SessionAnnotation>>(null)
   const [layout, setLayout] = useState<DiffLayout>('unified')
@@ -149,8 +178,8 @@ function ReviewWorkspace({
 
   const diffOptions = useMemo<CodeViewReactOptions<SessionAnnotation>>(
     () => ({
-      theme: 'pierre-dark',
-      themeType: 'dark',
+      theme: { dark: 'pierre-dark', light: 'pierre-light' },
+      themeType: resolvedTheme,
       diffStyle: layout,
       diffIndicators: 'bars',
       overflow: 'scroll',
@@ -200,7 +229,7 @@ function ReviewWorkspace({
         applyImportance(node, phase, context, session.annotations)
       },
     }),
-    [layout, session.annotations, session.id, session.updatedAt],
+    [layout, resolvedTheme, session.annotations, session.id, session.updatedAt],
   )
 
   const handleSelection = useCallback((next: CodeViewLineSelection | null) => {
@@ -251,15 +280,25 @@ function ReviewWorkspace({
           <span>Diff Review</span>
         </div>
         <TargetPicker session={session} onOpenSession={onOpenSession} />
+        <CommitPicker session={session} onSessionChange={onSessionChange} />
         <div className="topbar-spacer" />
-        <div className="layout-switch" aria-label="Diff layout">
-          <button className={layout === 'unified' ? 'active' : ''} onClick={() => setLayout('unified')}>
+        <ToggleGroup
+          className="layout-switch"
+          aria-label="Diff layout"
+          value={[layout]}
+          onValueChange={(value) => {
+            const next = value.at(0)
+            if (next === 'unified' || next === 'split') setLayout(next)
+          }}
+        >
+          <Toggle value="unified">
             Stack
-          </button>
-          <button className={layout === 'split' ? 'active' : ''} onClick={() => setLayout('split')}>
+          </Toggle>
+          <Toggle value="split">
             Split
-          </button>
-        </div>
+          </Toggle>
+        </ToggleGroup>
+        <ThemePicker value={themePreference} onChange={onThemeChange} />
         <button className="icon-button" onClick={refresh} aria-label="Refresh diff" disabled={busy}>
           <RefreshIcon className={busy ? 'spinning' : ''} />
         </button>
@@ -269,10 +308,13 @@ function ReviewWorkspace({
         </button>
       </header>
 
-      <CommitTimeline session={session} onSessionChange={onSessionChange} />
-
       <div className="workspace">
-        <FileRail files={parsedFiles} annotations={session.annotations} onSelect={selectFile} />
+        <FileRail
+          files={parsedFiles}
+          annotations={session.annotations}
+          resolvedTheme={resolvedTheme}
+          onSelect={selectFile}
+        />
         <section className="diff-stage">
           {error != null && <div className="error-banner">{error}</div>}
           {selectionError != null && <div className="selection-warning">{selectionError}</div>}
@@ -281,7 +323,7 @@ function ReviewWorkspace({
           ) : (
             <CodeView<SessionAnnotation>
               ref={viewerRef}
-              key={`${session.id}:${layout}`}
+              key={`${session.id}:${layout}:${resolvedTheme}`}
               className="diff-view"
               items={items}
               options={diffOptions}
@@ -311,6 +353,53 @@ function ReviewWorkspace({
         />
       </div>
     </main>
+  )
+}
+
+function ThemePicker({
+  value,
+  onChange,
+  className = '',
+}: {
+  value: ThemePreference
+  onChange(theme: ThemePreference): void
+  className?: string
+}) {
+  return (
+    <Menu.Root>
+      <Menu.Trigger
+        className={`icon-button theme-trigger ${className}`.trim()}
+        aria-label="Choose color theme"
+        title={`Theme: ${value}`}
+      >
+        <ThemeIcon />
+      </Menu.Trigger>
+      <Menu.Portal>
+        <Menu.Positioner className="popup-positioner" sideOffset={8} align="end">
+          <Menu.Popup className="theme-menu">
+            <Menu.Group>
+              <Menu.GroupLabel className="menu-kicker">Color theme</Menu.GroupLabel>
+              <Menu.RadioGroup value={value} onValueChange={onChange}>
+                {(['system', 'light', 'dark'] as const).map((theme) => (
+                  <Menu.RadioItem
+                    key={theme}
+                    value={theme}
+                    closeOnClick
+                    className="theme-option"
+                  >
+                    <Menu.RadioItemIndicator className="theme-check">
+                      <CheckIcon />
+                    </Menu.RadioItemIndicator>
+                    <span>{theme === 'system' ? 'System' : capitalize(theme)}</span>
+                    <small>{theme === 'system' ? 'Follow device' : `${capitalize(theme)} colors`}</small>
+                  </Menu.RadioItem>
+                ))}
+              </Menu.RadioGroup>
+            </Menu.Group>
+          </Menu.Popup>
+        </Menu.Positioner>
+      </Menu.Portal>
+    </Menu.Root>
   )
 }
 
@@ -350,64 +439,66 @@ function TargetPicker({
   }
 
   return (
-    <div className="target-picker">
-      <button className="target-trigger" onClick={() => setOpen((value) => !value)}>
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger className="target-trigger">
         <BranchIcon />
         <span className="target-repo">{session.repositoryName}</span>
         <span className="target-divider">/</span>
         <span className="target-label">{session.targetLabel}</span>
         <ChevronIcon />
-      </button>
-      {open && (
-        <div className="target-menu">
-          <div className="menu-kicker">Review target</div>
-          <TargetOption label="Working tree" detail="git diff HEAD" onClick={() => void choose({ kind: 'worktree' })} />
-          <TargetOption label="Unstaged changes" detail="git diff" onClick={() => void choose({ kind: 'unstaged' })} />
-          <TargetOption label="Staged changes" detail="git diff --cached" onClick={() => void choose({ kind: 'staged' })} />
-          {repository?.branchRange != null && (
-            <TargetOption
-              featured
-              label="Current branch changes"
-              detail={repository.branchRange}
-              onClick={() => void choose({ kind: 'range', expression: repository.branchRange! })}
-            />
-          )}
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Positioner className="popup-positioner" sideOffset={8} align="start">
+          <Popover.Popup className="target-menu">
+            <Popover.Title className="menu-kicker">Review target</Popover.Title>
+            <TargetOption label="Working tree" detail="git diff HEAD" onClick={() => void choose({ kind: 'worktree' })} />
+            <TargetOption label="Unstaged changes" detail="git diff" onClick={() => void choose({ kind: 'unstaged' })} />
+            <TargetOption label="Staged changes" detail="git diff --cached" onClick={() => void choose({ kind: 'staged' })} />
+            {repository?.branchRange != null && (
+              <TargetOption
+                featured
+                label="Current branch changes"
+                detail={repository.branchRange}
+                onClick={() => void choose({ kind: 'range', expression: repository.branchRange! })}
+              />
+            )}
 
-          <div className="menu-section-label">GitHub pull request</div>
-          {repository?.pullRequests.slice(0, 4).map((pullRequest) => (
-            <TargetOption
-              key={pullRequest.number}
-              label={`#${pullRequest.number} ${pullRequest.title}`}
-              detail={`${pullRequest.baseRefName} ← ${pullRequest.headRefName}`}
-              onClick={() => void choose({ kind: 'pr', number: pullRequest.number })}
-            />
-          ))}
-          <form
-            className="compact-form"
-            onSubmit={(event) => {
-              event.preventDefault()
-              void choose({ kind: 'pr', number: Number(prNumber) })
-            }}
-          >
-            <input value={prNumber} onChange={(event) => setPrNumber(event.target.value)} placeholder="PR number" inputMode="numeric" />
-            <button disabled={!prNumber || busy}>Open</button>
-          </form>
+            <div className="menu-section-label">GitHub pull request</div>
+            {repository?.pullRequests.slice(0, 4).map((pullRequest) => (
+              <TargetOption
+                key={pullRequest.number}
+                label={`#${pullRequest.number} ${pullRequest.title}`}
+                detail={`${pullRequest.baseRefName} ← ${pullRequest.headRefName}`}
+                onClick={() => void choose({ kind: 'pr', number: pullRequest.number })}
+              />
+            ))}
+            <form
+              className="compact-form"
+              onSubmit={(event) => {
+                event.preventDefault()
+                void choose({ kind: 'pr', number: Number(prNumber) })
+              }}
+            >
+              <input value={prNumber} onChange={(event) => setPrNumber(event.target.value)} placeholder="PR number" inputMode="numeric" />
+              <button disabled={!prNumber || busy}>Open</button>
+            </form>
 
-          <div className="menu-section-label">Revision range</div>
-          <form
-            className="compact-form"
-            onSubmit={(event) => {
-              event.preventDefault()
-              void choose({ kind: 'range', expression: customRange })
-            }}
-          >
-            <input value={customRange} onChange={(event) => setCustomRange(event.target.value)} placeholder="origin/master...HEAD" />
-            <button disabled={!customRange || busy}>Open</button>
-          </form>
-          {error != null && <div className="menu-error">{error}</div>}
-        </div>
-      )}
-    </div>
+            <div className="menu-section-label">Revision range</div>
+            <form
+              className="compact-form"
+              onSubmit={(event) => {
+                event.preventDefault()
+                void choose({ kind: 'range', expression: customRange })
+              }}
+            >
+              <input value={customRange} onChange={(event) => setCustomRange(event.target.value)} placeholder="origin/master...HEAD" />
+              <button disabled={!customRange || busy}>Open</button>
+            </form>
+            {error != null && <div className="menu-error">{error}</div>}
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
   )
 }
 
@@ -430,7 +521,7 @@ function TargetOption({
   )
 }
 
-function CommitTimeline({
+function CommitPicker({
   session,
   onSessionChange,
 }: {
@@ -441,12 +532,16 @@ function CommitTimeline({
   const [busy, setBusy] = useState(false)
   if (session.commits.length === 0) return null
 
-  const selectedStart = session.commits.findIndex(
-    (commit) => commit.oid === session.selectedCommitStart,
-  )
-  const selectedEnd = session.commits.findIndex(
-    (commit) => commit.oid === session.selectedCommitEnd,
-  )
+  const rawStart = session.commits.findIndex((commit) => commit.oid === session.selectedCommitStart)
+  const rawEnd = session.commits.findIndex((commit) => commit.oid === session.selectedCommitEnd)
+  const selectedStart = rawStart < 0 ? 0 : Math.min(rawStart, rawEnd)
+  const selectedEnd = rawEnd < 0 ? session.commits.length - 1 : Math.max(rawStart, rawEnd)
+  const selectedCount = selectedEnd - selectedStart + 1
+  const firstSelected = session.commits[selectedStart]
+  const lastSelected = session.commits[selectedEnd]
+  const selectionLabel = selectedCount === 1
+    ? `${firstSelected?.shortOid} ${firstSelected?.subject}`
+    : `${firstSelected?.shortOid}…${lastSelected?.shortOid} · ${selectedCount} commits`
 
   const choose = async (startIndex: number, endIndex: number) => {
     const start = session.commits[Math.min(startIndex, endIndex)]
@@ -461,80 +556,162 @@ function CommitTimeline({
   }
 
   return (
-    <div className={`commit-strip ${busy ? 'busy' : ''}`}>
-      <div className="commit-strip-label">
-        <span>Commits</span>
-        <small>click one · shift-click a range</small>
-      </div>
-      <div className="commit-track">
-        <span className="track-line" />
-        {session.commits.map((commit, index) => {
-          const selected = index >= selectedStart && index <= selectedEnd
-          return (
-            <button
-              key={commit.oid}
-              className={`commit-node ${selected ? 'selected' : ''}`}
-              title={`${commit.shortOid} ${commit.subject}`}
-              onClick={(event) => {
-                if (event.shiftKey && anchorIndex != null) void choose(anchorIndex, index)
-                else {
-                  setAnchorIndex(index)
-                  void choose(index, index)
-                }
-              }}
-            >
-              <span className="commit-dot" />
-              <span className="commit-copy">
-                <code>{commit.shortOid}</code>
-                <span>{commit.subject}</span>
-              </span>
-            </button>
-          )
-        })}
-      </div>
-      <button
-        className="all-commits"
-        onClick={() => {
-          setAnchorIndex(0)
-          void choose(0, session.commits.length - 1)
-        }}
-      >
-        All
-      </button>
-    </div>
+    <Popover.Root>
+      <Popover.Trigger className="commit-trigger" disabled={busy} title={selectionLabel}>
+        <CommitIcon />
+        <span className="commit-trigger-copy">
+          <small>Commits</small>
+          <span>{selectionLabel}</span>
+        </span>
+        <ChevronIcon />
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Positioner className="popup-positioner" sideOffset={8} align="start">
+          <Popover.Popup className={`commit-menu ${busy ? 'busy' : ''}`} aria-busy={busy}>
+            <div className="commit-menu-header">
+              <div>
+                <Popover.Title>Select commits</Popover.Title>
+                <Popover.Description>Choose one, or Shift-click for a continuous range.</Popover.Description>
+              </div>
+              <button
+                onClick={() => {
+                  setAnchorIndex(0)
+                  void choose(0, session.commits.length - 1)
+                }}
+              >
+                All commits
+              </button>
+            </div>
+            <div className="commit-options">
+              {session.commits.map((commit, index) => {
+                const selected = index >= selectedStart && index <= selectedEnd
+                return (
+                  <label key={commit.oid} className={`commit-option ${selected ? 'selected' : ''}`}>
+                    <Checkbox.Root
+                      checked={selected}
+                      onCheckedChange={(_checked, details) => {
+                        const shiftKey = details.event instanceof MouseEvent && details.event.shiftKey
+                        if (shiftKey && anchorIndex != null) void choose(anchorIndex, index)
+                        else {
+                          setAnchorIndex(index)
+                          void choose(index, index)
+                        }
+                      }}
+                      className="commit-checkbox"
+                    >
+                      <Checkbox.Indicator className="commit-checkbox-indicator">
+                        <CheckIcon />
+                      </Checkbox.Indicator>
+                    </Checkbox.Root>
+                    <span className="commit-option-copy">
+                      <span>{commit.subject}</span>
+                      <small>
+                        <code>{commit.shortOid}</code>
+                        <span>{commit.author}</span>
+                      </small>
+                    </span>
+                  </label>
+                )
+              })}
+            </div>
+            <div className="commit-menu-footer">
+              Reviewing {selectedCount} of {session.commits.length} commits
+            </div>
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
   )
 }
 
 function FileRail({
   files,
   annotations,
+  resolvedTheme,
   onSelect,
 }: {
   files: FileDiffMetadata[]
   annotations: SessionAnnotation[]
+  resolvedTheme: ResolvedTheme
   onSelect(id: string): void
 }) {
+  const noteCounts = new Map<string, number>()
+  for (const annotation of annotations) {
+    if (annotation.comment == null) continue
+    noteCounts.set(annotation.filePath, (noteCounts.get(annotation.filePath) ?? 0) + 1)
+  }
+  const treeKey = files
+    .map((file) => `${file.name}:${file.type}:${noteCounts.get(file.name) ?? 0}`)
+    .join('|')
+
   return (
     <nav className="file-rail" aria-label="Changed files">
       <div className="rail-heading">
         <span>Files</span>
         <em>{files.length}</em>
       </div>
-      <div className="file-list">
-        {files.map((file) => {
-          const noteCount = annotations.filter(
-            (annotation) => annotation.filePath === file.name && annotation.comment,
-          ).length
-          return (
-            <button key={file.name} className="file-row" onClick={() => onSelect(file.name)}>
-              <FileIcon />
-              <span>{file.name}</span>
-              {noteCount > 0 && <em>{noteCount}</em>}
-            </button>
-          )
-        })}
-      </div>
+      {files.length > 0 && (
+        <ChangedFileTree
+          key={treeKey}
+          files={files}
+          noteCounts={noteCounts}
+          resolvedTheme={resolvedTheme}
+          onSelect={onSelect}
+        />
+      )}
     </nav>
+  )
+}
+
+function ChangedFileTree({
+  files,
+  noteCounts,
+  resolvedTheme,
+  onSelect,
+}: {
+  files: FileDiffMetadata[]
+  noteCounts: Map<string, number>
+  resolvedTheme: ResolvedTheme
+  onSelect(id: string): void
+}) {
+  const filePaths = new Set(files.map((file) => file.name))
+  const gitStatus: GitStatusEntry[] = files.map((file) => ({
+    path: file.name,
+    status:
+      file.type === 'new'
+        ? 'added'
+        : file.type === 'deleted'
+          ? 'deleted'
+          : file.type.startsWith('rename')
+            ? 'renamed'
+            : 'modified',
+  }))
+  const { model } = useFileTree({
+    paths: files.map((file) => file.name),
+    flattenEmptyDirectories: true,
+    initialExpansion: 'open',
+    density: 'compact',
+    icons: { set: 'standard', colored: false },
+    gitStatus,
+    onSelectionChange(selectedPaths) {
+      const selectedFile = selectedPaths.find((path) => filePaths.has(path))
+      if (selectedFile != null) onSelect(selectedFile)
+    },
+    renderRowDecoration({ item }) {
+      if (item.kind !== 'file') return null
+      const count = noteCounts.get(item.path) ?? 0
+      return count > 0
+        ? { text: String(count), title: `${count} annotation${count === 1 ? '' : 's'}` }
+        : null
+    },
+  })
+
+  return (
+    <FileTree
+      model={model}
+      className="changed-file-tree"
+      style={{ colorScheme: resolvedTheme }}
+    />
   )
 }
 
@@ -667,7 +844,15 @@ function InlineAnnotation({ annotation }: { annotation: SessionAnnotation }) {
   )
 }
 
-function Welcome({ onOpenSession }: { onOpenSession(id: string): void }) {
+function Welcome({
+  onOpenSession,
+  themePreference,
+  onThemeChange,
+}: {
+  onOpenSession(id: string): void
+  themePreference: ThemePreference
+  onThemeChange(theme: ThemePreference): void
+}) {
   const [repositoryPath, setRepositoryPath] = useState('')
   const [range, setRange] = useState('')
   const [sessions, setSessions] = useState<ReviewSession[]>([])
@@ -697,6 +882,11 @@ function Welcome({ onOpenSession }: { onOpenSession(id: string): void }) {
   return (
     <main className="welcome">
       <div className="welcome-grid" />
+      <ThemePicker
+        value={themePreference}
+        onChange={onThemeChange}
+        className="welcome-theme-trigger"
+      />
       <section className="welcome-copy">
         <span className="welcome-mark">Δ</span>
         <p className="eyebrow">LOCAL CODE REVIEW</p>
@@ -821,4 +1011,40 @@ function relativeTime(value: string): string {
   if (minutes < 60) return `${minutes}m`
   const hours = Math.round(minutes / 60)
   return hours < 24 ? `${hours}h` : `${Math.round(hours / 24)}d`
+}
+
+function capitalize(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1)
+}
+
+function useThemePreference(): {
+  preference: ThemePreference
+  resolved: ResolvedTheme
+  setPreference(theme: ThemePreference): void
+} {
+  const [preference, setPreference] = useState<ThemePreference>(() => {
+    const stored = window.localStorage.getItem('diff-review-theme')
+    return stored === 'light' || stored === 'dark' ? stored : 'system'
+  })
+  const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(() =>
+    window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
+  )
+  const resolved = preference === 'system' ? systemTheme : preference
+
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    const update = () => setSystemTheme(media.matches ? 'dark' : 'light')
+    update()
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [])
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = resolved
+    document.documentElement.style.colorScheme = resolved
+    if (preference === 'system') window.localStorage.removeItem('diff-review-theme')
+    else window.localStorage.setItem('diff-review-theme', preference)
+  }, [preference, resolved])
+
+  return { preference, resolved, setPreference }
 }

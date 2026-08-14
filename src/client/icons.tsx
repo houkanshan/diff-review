@@ -29,6 +29,23 @@ export function ChevronIcon(props: IconProps) {
   )
 }
 
+export function CheckIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="m3.5 8 3 3 6-6" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </Icon>
+  )
+}
+
+export function CommitIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M1.5 8h4m5 0h4" fill="none" stroke="currentColor" strokeWidth="1.3" />
+      <circle cx="8" cy="8" r="2.6" fill="none" stroke="currentColor" strokeWidth="1.3" />
+    </Icon>
+  )
+}
+
 export function CopyIcon(props: IconProps) {
   return (
     <Icon {...props}>
@@ -42,6 +59,15 @@ export function RefreshIcon(props: IconProps) {
   return (
     <Icon {...props}>
       <path d="M13 5V2.5l-1.2 1.2A5.5 5.5 0 1 0 13.2 9" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </Icon>
+  )
+}
+
+export function ThemeIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M8 1.8v1.4M8 12.8v1.4M1.8 8h1.4M12.8 8h1.4M3.6 3.6l1 1M11.4 11.4l1 1M12.4 3.6l-1 1M4.6 11.4l-1 1" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      <circle cx="8" cy="8" r="3" fill="none" stroke="currentColor" strokeWidth="1.2" />
     </Icon>
   )
 }
