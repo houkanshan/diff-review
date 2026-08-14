@@ -62,6 +62,7 @@ export class ApiHandler {
     const refreshMatch = /^\/api\/sessions\/([^/]+)\/refresh$/.exec(url.pathname)
     const selectionMatch = /^\/api\/sessions\/([^/]+)\/selection$/.exec(url.pathname)
     const whitespaceMatch = /^\/api\/sessions\/([^/]+)\/whitespace$/.exec(url.pathname)
+    const globalCommentMatch = /^\/api\/sessions\/([^/]+)\/global-comment$/.exec(url.pathname)
     const annotationsMatch = /^\/api\/sessions\/([^/]+)\/annotations$/.exec(url.pathname)
     const annotationMatch = /^\/api\/sessions\/([^/]+)\/annotations\/([^/]+)$/.exec(
       url.pathname,
@@ -184,6 +185,15 @@ export class ApiHandler {
       )
       this.emitSessionUpdate(id)
       sendJson(response, 200, updated)
+      return
+    }
+
+    if (method === 'PATCH' && globalCommentMatch != null) {
+      const id = globalCommentMatch[1] ?? ''
+      const { comment } = parseCommentInput(await readJson(request))
+      const session = this.store.setGlobalComment(id, comment)
+      this.emitSessionUpdate(id)
+      sendJson(response, 200, session)
       return
     }
 

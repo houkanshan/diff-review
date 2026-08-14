@@ -104,6 +104,13 @@ export function updateAnnotationComment(
   })
 }
 
+export function updateGlobalComment(id: string, comment: string): Promise<ReviewSession> {
+  return request(`/api/sessions/${encodeURIComponent(id)}/global-comment`, {
+    method: 'PATCH',
+    body: JSON.stringify({ comment }),
+  })
+}
+
 export function archiveAllAnnotations(id: string): Promise<ReviewSession> {
   return request(`/api/sessions/${encodeURIComponent(id)}/annotations/archive`, {
     method: 'POST',

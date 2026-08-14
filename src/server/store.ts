@@ -26,6 +26,7 @@ interface SessionRow {
   available_commits_json: string
   selected_commit_start: string | null
   selected_commit_end: string | null
+  global_comment: string | null
   viewed_files_json: string
   ignore_whitespace: number
   created_at: string
@@ -68,6 +69,7 @@ export class ReviewStore {
         available_commits_json TEXT NOT NULL,
         selected_commit_start TEXT,
         selected_commit_end TEXT,
+        global_comment TEXT,
         viewed_files_json TEXT NOT NULL DEFAULT '[]',
         ignore_whitespace INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
@@ -290,6 +292,16 @@ export class ReviewStore {
     return this.getSession(sessionId)
   }
 
+  setGlobalComment(sessionId: string, comment: string): ReviewSession {
+    const result = this.database
+      .prepare('UPDATE sessions SET global_comment = ?, updated_at = ? WHERE id = ?')
+      .run(comment, new Date().toISOString(), sessionId)
+    if (result.changes === 0) {
+      throw new AppError('SESSION_NOT_FOUND', `Review session not found: ${sessionId}`, 404)
+    }
+    return this.getSession(sessionId)
+  }
+
   deleteAnnotation(sessionId: string, annotationId: string): void {
     const result = this.database
       .prepare('DELETE FROM annotations WHERE id = ? AND session_id = ?')
@@ -343,6 +355,9 @@ export class ReviewStore {
         'ALTER TABLE sessions ADD COLUMN ignore_whitespace INTEGER NOT NULL DEFAULT 0',
       )
     }
+    if (!columns.some((column) => column.name === 'global_comment')) {
+      this.database.exec('ALTER TABLE sessions ADD COLUMN global_comment TEXT')
+    }
   }
 
   private migrateAnnotationsTable(): void {
@@ -373,6 +388,7 @@ export class ReviewStore {
       selectedCommitStart: row.selected_commit_start,
       selectedCommitEnd: row.selected_commit_end,
       annotations: this.annotationsForSession(row.id),
+      globalComment: row.global_comment,
       viewedFiles: JSON.parse(row.viewed_files_json) as string[],
       ignoreWhitespace: row.ignore_whitespace === 1,
       createdAt: row.created_at,

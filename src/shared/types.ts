@@ -43,6 +43,7 @@ export interface ReviewSession {
   selectedCommitStart: string | null
   selectedCommitEnd: string | null
   annotations: SessionAnnotation[]
+  globalComment: string | null
   viewedFiles: string[]
   ignoreWhitespace: boolean
   createdAt: string

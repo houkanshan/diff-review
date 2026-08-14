@@ -15,9 +15,19 @@ import { Menu } from '@base-ui/react/menu'
 import { Popover } from '@base-ui/react/popover'
 import { Toggle } from '@base-ui/react/toggle'
 import { ToggleGroup } from '@base-ui/react/toggle-group'
+import { Tooltip } from '@base-ui/react/tooltip'
 import type { GitStatusEntry } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ButtonHTMLAttributes,
+  type CSSProperties,
+  type ReactNode,
+} from 'react'
 
 import type {
   DiffSide,
@@ -40,9 +50,12 @@ import {
   setFileViewed,
   setIgnoreWhitespace,
   updateAnnotationComment,
+  updateGlobalComment,
 } from './api'
 import { applyImportance } from './importance'
 import {
+  AddCommentIcon,
+  ArchiveIcon,
   BranchIcon,
   CheckIcon,
   ChevronIcon,
@@ -52,6 +65,7 @@ import {
   CopyIcon,
   EditIcon,
   RefreshIcon,
+  RestoreIcon,
   ThemeIcon,
   WrapIcon,
 } from './icons'
@@ -178,6 +192,7 @@ function ReviewWorkspace({
 
   const setFileCollapsed = useCallback((filePath: string, collapsed: boolean) => {
     setCollapsedFiles((current) => {
+      if (current.has(filePath) === collapsed) return current
       const next = new Set(current)
       if (collapsed) next.add(filePath)
       else next.delete(filePath)
@@ -338,6 +353,10 @@ function ReviewWorkspace({
     await onReload()
   }, [onReload, session.id])
 
+  const editGlobalComment = useCallback(async (nextComment: string) => {
+    onSessionChange(await updateGlobalComment(session.id, nextComment))
+  }, [onSessionChange, session.id])
+
   const archiveAll = useCallback(async () => {
     onSessionChange(await archiveAllAnnotations(session.id))
   }, [onSessionChange, session.id])
@@ -380,8 +399,11 @@ function ReviewWorkspace({
   }, [session])
 
   const selectFile = useCallback((id: string) => {
-    viewerRef.current?.scrollTo({ type: 'item', id, align: 'start', offset: 8 })
-  }, [])
+    setFileCollapsed(id, false)
+    window.requestAnimationFrame(() => {
+      viewerRef.current?.scrollTo({ type: 'item', id, align: 'start', offset: 8 })
+    })
+  }, [setFileCollapsed])
 
   const workspaceStyle = {
     '--left-panel-width': `${leftPanelWidth}px`,
@@ -513,6 +535,7 @@ function ReviewWorkspace({
                   <InlineAnnotation
                     annotation={metadata.annotation}
                     onArchive={() => setArchived(metadata.annotation.id, true)}
+                    onUpdateComment={(comment) => editAnnotation(metadata.annotation.id, comment)}
                   />
                 )
               }}
@@ -535,6 +558,7 @@ function ReviewWorkspace({
           files={parsedFiles}
           onSetArchived={setArchived}
           onUpdateComment={editAnnotation}
+          onUpdateGlobalComment={editGlobalComment}
           onArchiveAll={archiveAll}
           onNavigate={(annotation) => {
             viewerRef.current?.scrollTo({
@@ -542,7 +566,7 @@ function ReviewWorkspace({
               id: annotation.filePath,
               lineNumber: annotation.endLine,
               side: annotation.side === 'new' ? 'additions' : 'deletions',
-              align: 'center',
+              align: 'start',
               behavior: 'smooth-auto',
             })
           }}
@@ -1157,26 +1181,26 @@ function FileViewedToggle({
 }) {
   const [busy, setBusy] = useState(false)
   return (
-    <label className="file-viewed-toggle">
-      <Checkbox.Root
-        className="file-viewed-checkbox"
-        checked={viewed}
-        disabled={busy}
-        onCheckedChange={async (checked) => {
-          setBusy(true)
-          try {
-            await onChange(checked === true)
-          } finally {
-            setBusy(false)
-          }
-        }}
-      >
+    <Checkbox.Root
+      className="file-viewed-toggle"
+      checked={viewed}
+      disabled={busy}
+      onCheckedChange={async (checked) => {
+        setBusy(true)
+        try {
+          await onChange(checked === true)
+        } finally {
+          setBusy(false)
+        }
+      }}
+    >
+      <span className="file-viewed-checkbox">
         <Checkbox.Indicator>
           <CheckIcon />
         </Checkbox.Indicator>
-      </Checkbox.Root>
+      </span>
       <span>Viewed</span>
-    </label>
+    </Checkbox.Root>
   )
 }
 
@@ -1185,6 +1209,7 @@ function Inspector({
   files,
   onSetArchived,
   onUpdateComment,
+  onUpdateGlobalComment,
   onArchiveAll,
   onNavigate,
 }: {
@@ -1192,6 +1217,7 @@ function Inspector({
   files: FileDiffMetadata[]
   onSetArchived(annotationId: string, archived: boolean): Promise<void>
   onUpdateComment(annotationId: string, comment: string): Promise<void>
+  onUpdateGlobalComment(comment: string): Promise<void>
   onArchiveAll(): Promise<void>
   onNavigate(annotation: SessionAnnotation): void
 }) {
@@ -1200,14 +1226,14 @@ function Inspector({
   const [bulkBusy, setBulkBusy] = useState(false)
   const [commentsCopied, setCommentsCopied] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [editComment, setEditComment] = useState('')
-  const [editBusy, setEditBusy] = useState(false)
+  const [globalEditing, setGlobalEditing] = useState(false)
   const active = session.annotations.filter((annotation) => annotation.archivedAt == null)
   const archived = session.annotations.filter((annotation) => annotation.archivedAt != null)
   const myComments = active.filter(
     (annotation) => annotation.source === 'user' && Boolean(annotation.comment?.trim()),
   )
   const visible = view === 'active' ? active : archived
+  const showGlobalComment = view === 'active' && (session.globalComment != null || globalEditing)
 
   return (
     <aside className="inspector">
@@ -1215,21 +1241,36 @@ function Inspector({
         <div className="notes-heading">
           <span>Annotations</span>
           <div>
-            {myComments.length > 0 && (
-              <button
+            {view === 'active' && session.globalComment == null && !globalEditing && (
+              <AnnotationIconButton
+                label="Add global comment"
+                onClick={() => setGlobalEditing(true)}
+              >
+                <AddCommentIcon />
+              </AnnotationIconButton>
+            )}
+            {(session.globalComment != null || myComments.length > 0) && (
+              <AnnotationIconButton
+                label={commentsCopied ? 'Copied' : 'Copy my comments'}
                 onClick={async () => {
                   await navigator.clipboard.writeText(
-                    await formatCommentsForAgent(session.id, myComments, files),
+                    await formatCommentsForAgent(
+                      session.id,
+                      session.globalComment,
+                      myComments,
+                      files,
+                    ),
                   )
                   setCommentsCopied(true)
                   window.setTimeout(() => setCommentsCopied(false), 1600)
                 }}
               >
-                {commentsCopied ? 'Copied' : 'Copy my comments'}
-              </button>
+                {commentsCopied ? <CheckIcon /> : <CopyIcon />}
+              </AnnotationIconButton>
             )}
             {view === 'active' && active.length > 0 && (
-              <button
+              <AnnotationIconButton
+                label="Archive all"
                 disabled={bulkBusy}
                 onClick={async () => {
                   setBulkBusy(true)
@@ -1240,8 +1281,8 @@ function Inspector({
                   }
                 }}
               >
-                Archive all
-              </button>
+                <ArchiveIcon />
+              </AnnotationIconButton>
             )}
             <em>{active.length}</em>
           </div>
@@ -1258,7 +1299,7 @@ function Inspector({
           <Toggle value="active">Active {active.length}</Toggle>
           <Toggle value="archived">Archived {archived.length}</Toggle>
         </ToggleGroup>
-        {visible.length === 0 ? (
+        {visible.length === 0 && !showGlobalComment ? (
           <p className="notes-empty">
             {view === 'active'
               ? 'Comments and importance highlights will collect here.'
@@ -1266,6 +1307,33 @@ function Inspector({
           </p>
         ) : (
           <div className="notes-list">
+            {showGlobalComment && (
+              <article className="note-card global-comment-card">
+                <div className="global-comment-heading">
+                  <strong>Global comment</strong>
+                  {session.globalComment != null && !globalEditing && (
+                    <AnnotationIconButton
+                      label="Edit global comment"
+                      onClick={() => setGlobalEditing(true)}
+                    >
+                      <EditIcon />
+                    </AnnotationIconButton>
+                  )}
+                </div>
+                {globalEditing ? (
+                  <CommentEditor
+                    comment={session.globalComment ?? ''}
+                    onCancel={() => setGlobalEditing(false)}
+                    onSave={async (comment) => {
+                      await onUpdateGlobalComment(comment)
+                      setGlobalEditing(false)
+                    }}
+                  />
+                ) : (
+                  <p>{session.globalComment}</p>
+                )}
+              </article>
+            )}
             {visible.map((annotation) => {
               const viewed = session.viewedFiles.includes(annotation.filePath)
               const editing = editingId === annotation.id
@@ -1285,39 +1353,14 @@ function Inspector({
                     </span>
                   </button>
                   {editing ? (
-                    <div className="note-editor">
-                      <textarea
-                        autoFocus
-                        value={editComment}
-                        onChange={(event) => setEditComment(event.target.value)}
-                      />
-                      <div>
-                        <button
-                          disabled={editBusy}
-                          onClick={() => {
-                            setEditingId(null)
-                            setEditComment('')
-                          }}
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          disabled={editBusy || !editComment.trim()}
-                          onClick={async () => {
-                            setEditBusy(true)
-                            try {
-                              await onUpdateComment(annotation.id, editComment.trim())
-                              setEditingId(null)
-                              setEditComment('')
-                            } finally {
-                              setEditBusy(false)
-                            }
-                          }}
-                        >
-                          Save
-                        </button>
-                      </div>
-                    </div>
+                    <CommentEditor
+                      comment={annotation.comment ?? ''}
+                      onCancel={() => setEditingId(null)}
+                      onSave={async (comment) => {
+                        await onUpdateComment(annotation.id, comment)
+                        setEditingId(null)
+                      }}
+                    />
                   ) : annotation.comment != null ? (
                     <p>{annotation.comment}</p>
                   ) : null}
@@ -1332,19 +1375,17 @@ function Inspector({
                     </div>
                     <div className="note-actions">
                       {annotation.source === 'user' && annotation.comment != null && !editing && (
-                        <button
-                          className="note-edit-button"
-                          aria-label="Edit comment"
-                          title="Edit comment"
+                        <AnnotationIconButton
+                          label="Edit comment"
                           onClick={() => {
                             setEditingId(annotation.id)
-                            setEditComment(annotation.comment ?? '')
                           }}
                         >
                           <EditIcon />
-                        </button>
+                        </AnnotationIconButton>
                       )}
-                      <button
+                      <AnnotationIconButton
+                        label={view === 'active' ? 'Archive' : 'Restore'}
                         disabled={busyId === annotation.id}
                         onClick={async () => {
                           setBusyId(annotation.id)
@@ -1355,8 +1396,8 @@ function Inspector({
                           }
                         }}
                       >
-                        {view === 'active' ? 'Archive' : 'Restore'}
-                      </button>
+                        {view === 'active' ? <ArchiveIcon /> : <RestoreIcon />}
+                      </AnnotationIconButton>
                     </div>
                   </footer>
                 </article>
@@ -1366,6 +1407,72 @@ function Inspector({
         )}
       </section>
     </aside>
+  )
+}
+
+function CommentEditor({
+  comment,
+  onCancel,
+  onSave,
+}: {
+  comment: string
+  onCancel(): void
+  onSave(comment: string): Promise<void>
+}) {
+  const [value, setValue] = useState(comment)
+  const [busy, setBusy] = useState(false)
+  return (
+    <div className="note-editor">
+      <textarea autoFocus value={value} onChange={(event) => setValue(event.target.value)} />
+      <div>
+        <button disabled={busy} onClick={onCancel}>
+          Cancel
+        </button>
+        <button
+          disabled={busy || !value.trim()}
+          onClick={async () => {
+            setBusy(true)
+            try {
+              await onSave(value.trim())
+            } finally {
+              setBusy(false)
+            }
+          }}
+        >
+          Save
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function AnnotationIconButton({
+  label,
+  className,
+  children,
+  ...props
+}: Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'aria-label' | 'title'> & {
+  label: string
+  children: ReactNode
+}) {
+  const trigger = (
+    <button
+      {...props}
+      className={`annotation-action-button${className == null ? '' : ` ${className}`}`}
+      aria-label={label}
+    >
+      {children}
+    </button>
+  )
+  return (
+    <Tooltip.Root>
+      <Tooltip.Trigger render={trigger} />
+      <Tooltip.Portal>
+        <Tooltip.Positioner className="tooltip-positioner" sideOffset={6}>
+          <Tooltip.Popup className="tooltip-popup">{label}</Tooltip.Popup>
+        </Tooltip.Positioner>
+      </Tooltip.Portal>
+    </Tooltip.Root>
   )
 }
 
@@ -1415,11 +1522,14 @@ function InlineComposer({
 function InlineAnnotation({
   annotation,
   onArchive,
+  onUpdateComment,
 }: {
   annotation: SessionAnnotation
   onArchive(): Promise<void>
+  onUpdateComment(comment: string): Promise<void>
 }) {
   const [busy, setBusy] = useState(false)
+  const [editing, setEditing] = useState(false)
   return (
     <div className={`inline-annotation ${annotation.source}`}>
       <div className="inline-source">
@@ -1427,21 +1537,43 @@ function InlineAnnotation({
           <span>{annotation.source === 'agent' ? 'Agent note' : 'Review comment'}</span>
           <code>{lineLabel(annotation)}</code>
         </div>
-        <button
-          disabled={busy}
-          onClick={async () => {
-            setBusy(true)
-            try {
-              await onArchive()
-            } finally {
-              setBusy(false)
-            }
-          }}
-        >
-          Archive
-        </button>
+        <div>
+          {annotation.source === 'user' && annotation.comment != null && !editing && (
+            <AnnotationIconButton
+              label="Edit comment"
+              onClick={() => setEditing(true)}
+            >
+              <EditIcon />
+            </AnnotationIconButton>
+          )}
+          <AnnotationIconButton
+            label="Archive"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true)
+              try {
+                await onArchive()
+              } finally {
+                setBusy(false)
+              }
+            }}
+          >
+            <ArchiveIcon />
+          </AnnotationIconButton>
+        </div>
       </div>
-      <p>{annotation.comment}</p>
+      {editing ? (
+        <CommentEditor
+          comment={annotation.comment ?? ''}
+          onCancel={() => setEditing(false)}
+          onSave={async (comment) => {
+            await onUpdateComment(comment)
+            setEditing(false)
+          }}
+        />
+      ) : (
+        <p>{annotation.comment}</p>
+      )}
     </div>
   )
 }
@@ -1619,6 +1751,7 @@ function lineLabel(annotation: SessionAnnotation): string {
 
 async function formatCommentsForAgent(
   sessionId: string,
+  globalComment: string | null,
   annotations: SessionAnnotation[],
   files: FileDiffMetadata[],
 ): Promise<string> {
@@ -1641,7 +1774,7 @@ async function formatCommentsForAgent(
     const code = truncateCodeLine(fileContents?.split('\n')[annotation.startLine - 1] ?? '')
     return `${annotation.filePath}:${annotationPosition(annotation)}: ${code}\n\n${annotation.comment!.trim()}`
   }))
-  return comments.join('\n\n')
+  return [globalComment?.trim(), ...comments].filter(Boolean).join('\n\n')
 }
 
 function annotationPosition(annotation: SessionAnnotation): string {

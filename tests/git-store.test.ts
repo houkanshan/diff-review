@@ -159,6 +159,11 @@ describe('local review storage', () => {
     expect(updated.selectedCommitStart).toBe(selectedCommit.oid)
     expect(updated.patch).toContain('feature two')
     expect(updated.ignoreWhitespace).toBe(false)
+    expect(updated.globalComment).toBeNull()
+
+    expect(store.setGlobalComment(session.id, 'Review the routing behavior first').globalComment)
+      .toBe('Review the routing behavior first')
+    expect(store.getSession(session.id).globalComment).toBe('Review the routing behavior first')
 
     expect(
       store.updateResolvedReview(
@@ -313,6 +318,7 @@ describe('local review storage', () => {
     expect(store.getSession('drs_legacy').commits).toEqual([commit])
     expect(store.getSession('drs_legacy').viewedFiles).toEqual([])
     expect(store.getSession('drs_legacy').ignoreWhitespace).toBe(false)
+    expect(store.getSession('drs_legacy').globalComment).toBeNull()
     expect(store.getSession('drs_legacy').annotations).toMatchObject([
       { id: 'ann_legacy', endSide: null, archivedAt: null },
     ])

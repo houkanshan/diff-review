@@ -21,6 +21,23 @@ export function BranchIcon(props: IconProps) {
   )
 }
 
+export function AddCommentIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M2.5 3.5h11v8h-6l-3.5 2v-2H2.5z" fill="none" stroke="currentColor" />
+      <path d="M8 5.5v4M6 7.5h4" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+    </Icon>
+  )
+}
+
+export function ArchiveIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M2.5 5h11v8.5h-11zM1.5 2.5h13V5h-13zM6 8h4" fill="none" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" />
+    </Icon>
+  )
+}
+
 export function ChevronIcon(props: IconProps) {
   return (
     <Icon {...props}>
@@ -68,6 +85,14 @@ export function RefreshIcon(props: IconProps) {
   return (
     <Icon {...props}>
       <path d="M13 5V2.5l-1.2 1.2A5.5 5.5 0 1 0 13.2 9" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </Icon>
+  )
+}
+
+export function RestoreIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M4.5 5H2V2.5M2.4 5a5.7 5.7 0 1 1-.1 5" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
     </Icon>
   )
 }
