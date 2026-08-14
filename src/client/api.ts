@@ -80,6 +80,23 @@ export function setAnnotationArchived(
   )
 }
 
+export function archiveAllAnnotations(id: string): Promise<ReviewSession> {
+  return request(`/api/sessions/${encodeURIComponent(id)}/annotations/archive`, {
+    method: 'POST',
+  })
+}
+
+export function setFileViewed(
+  id: string,
+  filePath: string,
+  viewed: boolean,
+): Promise<ReviewSession> {
+  return request(`/api/sessions/${encodeURIComponent(id)}/files/viewed`, {
+    method: 'POST',
+    body: JSON.stringify({ filePath, viewed }),
+  })
+}
+
 export async function getFileContents(
   sessionId: string,
   filePath: string,

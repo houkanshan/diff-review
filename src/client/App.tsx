@@ -28,6 +28,7 @@ import type {
 } from '../shared/types'
 import {
   addAnnotation,
+  archiveAllAnnotations,
   createSession,
   getFileContents,
   getRepositoryInfo,
@@ -36,6 +37,7 @@ import {
   refreshSession,
   selectCommits,
   setAnnotationArchived,
+  setFileViewed,
 } from './api'
 import { applyImportance } from './importance'
 import {
@@ -165,6 +167,7 @@ function ReviewWorkspace({
   )
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
+  const viewedFiles = useMemo(() => new Set(session.viewedFiles), [session.viewedFiles])
 
   useEffect(() => {
     setSelection(null)
@@ -306,6 +309,14 @@ function ReviewWorkspace({
     await onReload()
   }, [onReload, session.id])
 
+  const archiveAll = useCallback(async () => {
+    onSessionChange(await archiveAllAnnotations(session.id))
+  }, [onSessionChange, session.id])
+
+  const setViewed = useCallback(async (filePath: string, viewed: boolean) => {
+    onSessionChange(await setFileViewed(session.id, filePath, viewed))
+  }, [onSessionChange, session.id])
+
   const refresh = useCallback(async () => {
     setBusy(true)
     try {
@@ -403,11 +414,16 @@ function ReviewWorkspace({
               options={diffOptions}
               selectedLines={selection}
               onSelectedLinesChange={handleSelection}
+              renderHeaderMetadata={(item) => (
+                <FileViewedToggle
+                  viewed={viewedFiles.has(item.id)}
+                  onChange={(viewed) => setViewed(item.id, viewed)}
+                />
+              )}
               renderAnnotation={(annotation) => {
                 const metadata = annotation.metadata
                 return metadata.kind === 'composer' ? (
                   <InlineComposer
-                    selection={metadata.selection}
                     comment={comment}
                     error={commentError}
                     busy={commentBusy}
@@ -445,6 +461,7 @@ function ReviewWorkspace({
         <Inspector
           session={session}
           onSetArchived={setArchived}
+          onArchiveAll={archiveAll}
           onNavigate={(annotation) => {
             viewerRef.current?.scrollTo({
               type: 'line',
@@ -853,6 +870,19 @@ function ChangedFileTree({
     initialExpansion: 'open',
     density: 'compact',
     icons: { set: 'standard', colored: false },
+    unsafeCSS: `
+      [data-item-section="content"] { flex: 1 1 auto; }
+      [data-item-section="decoration"] {
+        flex: 0 0 auto;
+        min-width: max-content;
+        overflow: visible;
+      }
+      [data-item-section="decoration"] > span {
+        min-width: max-content;
+        max-width: none;
+        overflow: visible;
+      }
+    `,
     gitStatus,
     onSelectionChange(selectedPaths) {
       const selectedFile = selectedPaths.find((path) => filePaths.has(path))
@@ -884,17 +914,52 @@ function ChangedFileTree({
   )
 }
 
+function FileViewedToggle({
+  viewed,
+  onChange,
+}: {
+  viewed: boolean
+  onChange(viewed: boolean): Promise<void>
+}) {
+  const [busy, setBusy] = useState(false)
+  return (
+    <label className="file-viewed-toggle">
+      <Checkbox.Root
+        className="file-viewed-checkbox"
+        checked={viewed}
+        disabled={busy}
+        onCheckedChange={async (checked) => {
+          setBusy(true)
+          try {
+            await onChange(checked === true)
+          } finally {
+            setBusy(false)
+          }
+        }}
+      >
+        <Checkbox.Indicator>
+          <CheckIcon />
+        </Checkbox.Indicator>
+      </Checkbox.Root>
+      <span>Viewed</span>
+    </label>
+  )
+}
+
 function Inspector({
   session,
   onSetArchived,
+  onArchiveAll,
   onNavigate,
 }: {
   session: ReviewSession
   onSetArchived(annotationId: string, archived: boolean): Promise<void>
+  onArchiveAll(): Promise<void>
   onNavigate(annotation: SessionAnnotation): void
 }) {
   const [view, setView] = useState<'active' | 'archived'>('active')
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [bulkBusy, setBulkBusy] = useState(false)
   const active = session.annotations.filter((annotation) => annotation.archivedAt == null)
   const archived = session.annotations.filter((annotation) => annotation.archivedAt != null)
   const visible = view === 'active' ? active : archived
@@ -904,7 +969,24 @@ function Inspector({
       <section className="notes-panel">
         <div className="notes-heading">
           <span>Annotations</span>
-          <em>{active.length}</em>
+          <div>
+            {view === 'active' && active.length > 0 && (
+              <button
+                disabled={bulkBusy}
+                onClick={async () => {
+                  setBulkBusy(true)
+                  try {
+                    await onArchiveAll()
+                  } finally {
+                    setBulkBusy(false)
+                  }
+                }}
+              >
+                Archive all
+              </button>
+            )}
+            <em>{active.length}</em>
+          </div>
         </div>
         <ToggleGroup
           className="annotation-filter"
@@ -964,7 +1046,6 @@ function Inspector({
 }
 
 function InlineComposer({
-  selection,
   comment,
   error,
   busy,
@@ -972,7 +1053,6 @@ function InlineComposer({
   onCancel,
   onSubmit,
 }: {
-  selection: CodeViewLineSelection
   comment: string
   error: string | null
   busy: boolean
@@ -983,10 +1063,7 @@ function InlineComposer({
   return (
     <section className="inline-composer">
       <div className="composer-heading">
-        <div>
-          <span><CommentIcon /> Add comment</span>
-          <code>{selectionLabel(selection)}</code>
-        </div>
+        <span><CommentIcon /> Add comment</span>
         <button onClick={onCancel} aria-label="Cancel selection">
           <CloseIcon />
         </button>
@@ -1205,17 +1282,6 @@ function openHome(setter?: (id: string | null) => void): void {
   window.history.pushState(null, '', '/')
   setter?.(null)
   if (setter == null) window.location.assign('/')
-}
-
-function selectionLabel(selection: CodeViewLineSelection): string {
-  const startSide = selectionSideToDiffSide(selection.range.side)
-  const endSide = selectionSideToDiffSide(selection.range.endSide ?? selection.range.side)
-  if (startSide !== endSide) {
-    return `${compactPath(selection.id)} · ${startSide} ${selection.range.start} → ${endSide} ${selection.range.end}`
-  }
-  const start = Math.min(selection.range.start, selection.range.end)
-  const end = Math.max(selection.range.start, selection.range.end)
-  return `${compactPath(selection.id)} · ${startSide} ${start}${start === end ? '' : `–${end}`}`
 }
 
 function lineLabel(annotation: SessionAnnotation): string {

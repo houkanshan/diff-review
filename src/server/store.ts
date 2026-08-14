@@ -26,6 +26,7 @@ interface SessionRow {
   available_commits_json: string
   selected_commit_start: string | null
   selected_commit_end: string | null
+  viewed_files_json: string
   created_at: string
   updated_at: string
 }
@@ -66,6 +67,7 @@ export class ReviewStore {
         available_commits_json TEXT NOT NULL,
         selected_commit_start TEXT,
         selected_commit_end TEXT,
+        viewed_files_json TEXT NOT NULL DEFAULT '[]',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -237,6 +239,30 @@ export class ReviewStore {
     return this.getAnnotation(annotationId)
   }
 
+  archiveAllAnnotations(sessionId: string): ReviewSession {
+    this.getSession(sessionId)
+    const now = new Date().toISOString()
+    this.database
+      .prepare(`
+        UPDATE annotations
+        SET archived_at = ?, updated_at = ?
+        WHERE session_id = ? AND archived_at IS NULL
+      `)
+      .run(now, now, sessionId)
+    return this.getSession(sessionId)
+  }
+
+  setFileViewed(sessionId: string, filePath: string, viewed: boolean): ReviewSession {
+    const session = this.getSession(sessionId)
+    const viewedFiles = new Set(session.viewedFiles)
+    if (viewed) viewedFiles.add(filePath)
+    else viewedFiles.delete(filePath)
+    this.database
+      .prepare('UPDATE sessions SET viewed_files_json = ? WHERE id = ?')
+      .run(JSON.stringify([...viewedFiles]), sessionId)
+    return this.getSession(sessionId)
+  }
+
   deleteAnnotation(sessionId: string, annotationId: string): void {
     const result = this.database
       .prepare('DELETE FROM annotations WHERE id = ? AND session_id = ?')
@@ -265,20 +291,25 @@ export class ReviewStore {
     const columns = this.database
       .prepare('PRAGMA table_info(sessions)')
       .all() as unknown as { name: string }[]
-    if (columns.some((column) => column.name === 'available_commits_json')) return
-
-    this.database.exec(
-      "ALTER TABLE sessions ADD COLUMN available_commits_json TEXT NOT NULL DEFAULT '[]'",
-    )
-    const rows = this.database
-      .prepare('SELECT id, resolved_json FROM sessions')
-      .all() as unknown as { id: string; resolved_json: string }[]
-    const update = this.database.prepare(
-      'UPDATE sessions SET available_commits_json = ? WHERE id = ?',
-    )
-    for (const row of rows) {
-      const resolved = JSON.parse(row.resolved_json) as Partial<ResolvedReview>
-      update.run(JSON.stringify(resolved.commits ?? []), row.id)
+    if (!columns.some((column) => column.name === 'available_commits_json')) {
+      this.database.exec(
+        "ALTER TABLE sessions ADD COLUMN available_commits_json TEXT NOT NULL DEFAULT '[]'",
+      )
+      const rows = this.database
+        .prepare('SELECT id, resolved_json FROM sessions')
+        .all() as unknown as { id: string; resolved_json: string }[]
+      const update = this.database.prepare(
+        'UPDATE sessions SET available_commits_json = ? WHERE id = ?',
+      )
+      for (const row of rows) {
+        const resolved = JSON.parse(row.resolved_json) as Partial<ResolvedReview>
+        update.run(JSON.stringify(resolved.commits ?? []), row.id)
+      }
+    }
+    if (!columns.some((column) => column.name === 'viewed_files_json')) {
+      this.database.exec(
+        "ALTER TABLE sessions ADD COLUMN viewed_files_json TEXT NOT NULL DEFAULT '[]'",
+      )
     }
   }
 
@@ -310,6 +341,7 @@ export class ReviewStore {
       selectedCommitStart: row.selected_commit_start,
       selectedCommitEnd: row.selected_commit_end,
       annotations: this.annotationsForSession(row.id),
+      viewedFiles: JSON.parse(row.viewed_files_json) as string[],
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }

@@ -17,6 +17,7 @@ import {
   resolveRepository,
   resolveTarget,
   validateAnnotationTarget,
+  validateReviewFilePath,
 } from './git.js'
 import { ReviewStore } from './store.js'
 
@@ -66,6 +67,9 @@ export class ApiHandler {
     )
     const annotationArchiveMatch =
       /^\/api\/sessions\/([^/]+)\/annotations\/([^/]+)\/archive$/.exec(url.pathname)
+    const annotationsArchiveMatch =
+      /^\/api\/sessions\/([^/]+)\/annotations\/archive$/.exec(url.pathname)
+    const fileViewedMatch = /^\/api\/sessions\/([^/]+)\/files\/viewed$/.exec(url.pathname)
     const fileMatch = /^\/api\/sessions\/([^/]+)\/file$/.exec(url.pathname)
 
     if (method === 'GET' && url.pathname === '/api/health') {
@@ -169,6 +173,14 @@ export class ApiHandler {
       return
     }
 
+    if (method === 'POST' && annotationsArchiveMatch != null) {
+      const sessionId = annotationsArchiveMatch[1] ?? ''
+      const session = this.store.archiveAllAnnotations(sessionId)
+      this.emitSessionUpdate(sessionId)
+      sendJson(response, 200, session)
+      return
+    }
+
     if (method === 'POST' && annotationArchiveMatch != null) {
       const sessionId = annotationArchiveMatch[1] ?? ''
       const { archived } = parseArchiveInput(await readJson(request))
@@ -179,6 +191,17 @@ export class ApiHandler {
       )
       this.emitSessionUpdate(sessionId)
       sendJson(response, 200, annotation)
+      return
+    }
+
+    if (method === 'POST' && fileViewedMatch != null) {
+      const sessionId = fileViewedMatch[1] ?? ''
+      const input = parseViewedFileInput(await readJson(request))
+      const session = this.store.getSession(sessionId)
+      const filePath = validateReviewFilePath(session.patch, input.filePath)
+      const updated = this.store.setFileViewed(sessionId, filePath, input.viewed)
+      this.emitSessionUpdate(sessionId)
+      sendJson(response, 200, updated)
       return
     }
 
@@ -379,6 +402,14 @@ function parseArchiveInput(value: unknown): { archived: boolean } {
     throw new AppError('INVALID_INPUT', 'archived must be a boolean')
   }
   return { archived: object.archived }
+}
+
+function parseViewedFileInput(value: unknown): { filePath: string; viewed: boolean } {
+  const object = expectObject(value)
+  if (typeof object.viewed !== 'boolean') {
+    throw new AppError('INVALID_INPUT', 'viewed must be a boolean')
+  }
+  return { filePath: expectString(object.filePath, 'filePath'), viewed: object.viewed }
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {

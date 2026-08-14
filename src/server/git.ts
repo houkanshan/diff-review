@@ -146,16 +146,8 @@ export async function validateAnnotationTarget(
   startLine: number,
   endLine: number,
 ): Promise<void> {
-  const reviewFiles = filePathsFromPatch(review.patch)
-  const normalizedPath = filePath.replace(/^\.\//, '')
-  const file = reviewFiles.get(normalizedPath)
-
-  if (file == null) {
-    throw new AppError(
-      'ANNOTATION_FILE_NOT_FOUND',
-      `File is not part of this session's diff: ${filePath}`,
-    )
-  }
+  const normalizedPath = validateReviewFilePath(review.patch, filePath)
+  const file = filePathsFromPatch(review.patch).get(normalizedPath)!
 
   const snapshotPath = file[side]
   const contents = snapshotPath == null
@@ -180,6 +172,17 @@ export async function validateAnnotationTarget(
       `${filePath}:${startLine}${endLine === startLine ? '' : `-${endLine}`} does not exist on the ${side} side of this diff`,
     )
   }
+}
+
+export function validateReviewFilePath(patch: string, filePath: string): string {
+  const normalizedPath = filePath.replace(/^\.\//, '')
+  if (!filePathsFromPatch(patch).has(normalizedPath)) {
+    throw new AppError(
+      'ANNOTATION_FILE_NOT_FOUND',
+      `File is not part of this session's diff: ${filePath}`,
+    )
+  }
+  return normalizedPath
 }
 
 async function resolveWorktree(root: string): Promise<ResolvedReview> {

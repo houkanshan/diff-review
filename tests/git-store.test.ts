@@ -177,6 +177,24 @@ describe('local review storage', () => {
       source: 'user',
     })
     expect(crossSide.endSide).toBe('new')
+
+    expect(store.setFileViewed(session.id, 'tracked.txt', true).viewedFiles).toEqual([
+      'tracked.txt',
+    ])
+    expect(store.setFileViewed(session.id, 'tracked.txt', true).viewedFiles).toEqual([
+      'tracked.txt',
+    ])
+    expect(store.setFileViewed(session.id, 'tracked.txt', false).viewedFiles).toEqual([])
+
+    const individuallyArchived = store.setAnnotationArchived(session.id, annotation.id, true)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    const archiveAll = store.archiveAllAnnotations(session.id)
+    expect(archiveAll.annotations).toHaveLength(2)
+    expect(archiveAll.annotations.every((item) => item.archivedAt !== null)).toBe(true)
+    expect(
+      archiveAll.annotations.find((item) => item.id === annotation.id)?.updatedAt,
+    ).toBe(individuallyArchived.updatedAt)
+    expect(store.archiveAllAnnotations(session.id).annotations).toEqual(archiveAll.annotations)
   })
 
   test('migrates sessions created before commit timelines were stored separately', () => {
@@ -263,6 +281,7 @@ describe('local review storage', () => {
     const store = new ReviewStore(databasePath)
 
     expect(store.getSession('drs_legacy').commits).toEqual([commit])
+    expect(store.getSession('drs_legacy').viewedFiles).toEqual([])
     expect(store.getSession('drs_legacy').annotations).toMatchObject([
       { id: 'ann_legacy', endSide: null, archivedAt: null },
     ])
