@@ -239,6 +239,7 @@ function ReviewWorkspace({
       lineHoverHighlight: 'both',
       hunkSeparators: 'line-info-basic',
       stickyHeaders: true,
+      unsafeCSS: '[data-diffs-header="default"] { cursor: pointer; }',
       layout: { paddingTop: 0, paddingBottom: 0, gap: 0 },
       collapsedContextThreshold: 10,
       expansionLineCount: 20,
@@ -447,7 +448,15 @@ function ReviewWorkspace({
             storePanelWidth('left', width)
           }}
         />
-        <section className="diff-stage">
+        <section
+          className="diff-stage"
+          onClick={(event) => {
+            const fileId = fileHeaderIdFromEvent(event.nativeEvent)
+            if (fileId != null) {
+              setFileCollapsed(fileId, !collapsedFiles.has(fileId))
+            }
+          }}
+        >
           {error != null && <div className="error-banner">{error}</div>}
           {items.length === 0 ? (
             <EmptyDiff onRefresh={refresh} />
@@ -461,7 +470,11 @@ function ReviewWorkspace({
               selectedLines={selection}
               onSelectedLinesChange={handleSelection}
               renderHeaderMetadata={(item) => (
-                <div className="file-header-controls">
+                <div
+                  className="file-header-controls"
+                  data-file-id={item.id}
+                  onClick={(event) => event.stopPropagation()}
+                >
                   <button
                     className="file-collapse-button"
                     aria-label={`${collapsedFiles.has(item.id) ? 'Expand' : 'Collapse'} ${item.id}`}
@@ -1657,6 +1670,19 @@ function areCodeViewSelectionsEqual(
     left.range.end === right.range.end &&
     left.range.side === right.range.side &&
     left.range.endSide === right.range.endSide
+}
+
+function fileHeaderIdFromEvent(event: MouseEvent): string | null {
+  const path = event.composedPath()
+  const clickedHeader = path.some(
+    (target) => target instanceof HTMLElement && target.hasAttribute('data-diffs-header'),
+  )
+  if (!clickedHeader) return null
+  const container = path.find(
+    (target) => target instanceof HTMLElement && target.tagName === 'DIFFS-CONTAINER',
+  )
+  if (!(container instanceof HTMLElement)) return null
+  return container.querySelector<HTMLElement>('[data-file-id]')?.dataset.fileId ?? null
 }
 
 function fileChangeStats(file: FileDiffMetadata): FileChangeStats {
