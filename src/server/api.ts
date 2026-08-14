@@ -237,6 +237,19 @@ export class ApiHandler {
       return
     }
 
+    if (method === 'PATCH' && annotationMatch != null) {
+      const sessionId = annotationMatch[1] ?? ''
+      const { comment } = parseCommentInput(await readJson(request))
+      const annotation = this.store.updateAnnotationComment(
+        sessionId,
+        annotationMatch[2] ?? '',
+        comment,
+      )
+      this.emitSessionUpdate(sessionId)
+      sendJson(response, 200, annotation)
+      return
+    }
+
     if (method === 'POST' && fileViewedMatch != null) {
       const sessionId = fileViewedMatch[1] ?? ''
       const input = parseViewedFileInput(await readJson(request))
@@ -455,6 +468,13 @@ function parseArchiveInput(value: unknown): { archived: boolean } {
   return { archived: object.archived }
 }
 
+function parseCommentInput(value: unknown): { comment: string } {
+  const object = expectObject(value)
+  const comment = expectString(object.comment, 'comment').trim()
+  if (!comment) throw new AppError('INVALID_INPUT', 'comment must not be empty')
+  return { comment }
+}
+
 function parseViewedFileInput(value: unknown): { filePath: string; viewed: boolean } {
   const object = expectObject(value)
   if (typeof object.viewed !== 'boolean') {
@@ -502,7 +522,7 @@ function requiredQuery(url: URL, name: string): string {
 function setCommonHeaders(response: ServerResponse): void {
   response.setHeader('Access-Control-Allow-Origin', 'http://localhost:5173')
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type')
-  response.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
+  response.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS')
   response.setHeader('X-Content-Type-Options', 'nosniff')
 }
 

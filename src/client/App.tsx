@@ -39,6 +39,7 @@ import {
   setAnnotationArchived,
   setFileViewed,
   setIgnoreWhitespace,
+  updateAnnotationComment,
 } from './api'
 import { applyImportance } from './importance'
 import {
@@ -49,8 +50,7 @@ import {
   CommentIcon,
   CommitIcon,
   CopyIcon,
-  EyeIcon,
-  EyeOffIcon,
+  EditIcon,
   RefreshIcon,
   ThemeIcon,
   WrapIcon,
@@ -332,6 +332,11 @@ function ReviewWorkspace({
     await onReload()
   }, [onReload, session.id])
 
+  const editAnnotation = useCallback(async (annotationId: string, nextComment: string) => {
+    await updateAnnotationComment(session.id, annotationId, nextComment)
+    await onReload()
+  }, [onReload, session.id])
+
   const archiveAll = useCallback(async () => {
     onSessionChange(await archiveAllAnnotations(session.id))
   }, [onSessionChange, session.id])
@@ -516,6 +521,7 @@ function ReviewWorkspace({
           session={session}
           files={parsedFiles}
           onSetArchived={setArchived}
+          onUpdateComment={editAnnotation}
           onArchiveAll={archiveAll}
           onNavigate={(annotation) => {
             viewerRef.current?.scrollTo({
@@ -1141,12 +1147,14 @@ function Inspector({
   session,
   files,
   onSetArchived,
+  onUpdateComment,
   onArchiveAll,
   onNavigate,
 }: {
   session: ReviewSession
   files: FileDiffMetadata[]
   onSetArchived(annotationId: string, archived: boolean): Promise<void>
+  onUpdateComment(annotationId: string, comment: string): Promise<void>
   onArchiveAll(): Promise<void>
   onNavigate(annotation: SessionAnnotation): void
 }) {
@@ -1154,6 +1162,9 @@ function Inspector({
   const [busyId, setBusyId] = useState<string | null>(null)
   const [bulkBusy, setBulkBusy] = useState(false)
   const [commentsCopied, setCommentsCopied] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editComment, setEditComment] = useState('')
+  const [editBusy, setEditBusy] = useState(false)
   const active = session.annotations.filter((annotation) => annotation.archivedAt == null)
   const archived = session.annotations.filter((annotation) => annotation.archivedAt != null)
   const myComments = active.filter(
@@ -1218,43 +1229,102 @@ function Inspector({
           </p>
         ) : (
           <div className="notes-list">
-            {visible.map((annotation) => (
-              <article key={annotation.id} className="note-card">
-                <button className="note-target" onClick={() => onNavigate(annotation)}>
-                  <span
-                    className={`note-viewed-status ${session.viewedFiles.includes(annotation.filePath) ? 'viewed' : ''}`}
-                    aria-label={session.viewedFiles.includes(annotation.filePath) ? 'Viewed' : 'Not viewed'}
-                    title={session.viewedFiles.includes(annotation.filePath) ? 'Viewed' : 'Not viewed'}
-                  >
-                    {session.viewedFiles.includes(annotation.filePath) ? <EyeIcon /> : <EyeOffIcon />}
-                  </span>
-                  <code>{compactPath(annotation.filePath)}</code>
-                  <span className={`note-line-label ${annotation.side}`}>{lineLabel(annotation)}</span>
-                </button>
-                {annotation.comment != null && <p>{annotation.comment}</p>}
-                {annotation.importance != null && (
-                  <div className="importance-label">
-                    Importance <strong>{formatImportance(annotation.importance)}</strong>
-                  </div>
-                )}
-                <footer>
-                  <span className={`source ${annotation.source}`}>{annotation.source}</span>
-                  <button
-                    disabled={busyId === annotation.id}
-                    onClick={async () => {
-                      setBusyId(annotation.id)
-                      try {
-                        await onSetArchived(annotation.id, view === 'active')
-                      } finally {
-                        setBusyId(null)
-                      }
-                    }}
-                  >
-                    {view === 'active' ? 'Archive' : 'Restore'}
+            {visible.map((annotation) => {
+              const viewed = session.viewedFiles.includes(annotation.filePath)
+              const editing = editingId === annotation.id
+              return (
+                <article key={annotation.id} className="note-card">
+                  <button className="note-target" onClick={() => onNavigate(annotation)}>
+                    <span
+                      className={`note-viewed-status ${viewed ? 'viewed' : ''}`}
+                      aria-label={viewed ? 'Viewed' : 'Not viewed'}
+                      title={viewed ? 'Viewed' : 'Not viewed'}
+                    >
+                      {viewed && <CheckIcon />}
+                    </span>
+                    <code>{compactPath(annotation.filePath)}</code>
+                    <span className={`note-position ${annotation.side}`}>
+                      {annotationPosition(annotation)}
+                    </span>
                   </button>
-                </footer>
-              </article>
-            ))}
+                  {editing ? (
+                    <div className="note-editor">
+                      <textarea
+                        autoFocus
+                        value={editComment}
+                        onChange={(event) => setEditComment(event.target.value)}
+                      />
+                      <div>
+                        <button
+                          disabled={editBusy}
+                          onClick={() => {
+                            setEditingId(null)
+                            setEditComment('')
+                          }}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          disabled={editBusy || !editComment.trim()}
+                          onClick={async () => {
+                            setEditBusy(true)
+                            try {
+                              await onUpdateComment(annotation.id, editComment.trim())
+                              setEditingId(null)
+                              setEditComment('')
+                            } finally {
+                              setEditBusy(false)
+                            }
+                          }}
+                        >
+                          Save
+                        </button>
+                      </div>
+                    </div>
+                  ) : annotation.comment != null ? (
+                    <p>{annotation.comment}</p>
+                  ) : null}
+                  <footer>
+                    <div className="note-source">
+                      <span className={`source ${annotation.source}`}>{annotation.source}</span>
+                      {annotation.importance != null && (
+                        <span className="importance-inline">
+                          importance {formatImportance(annotation.importance)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="note-actions">
+                      {annotation.source === 'user' && annotation.comment != null && !editing && (
+                        <button
+                          className="note-edit-button"
+                          aria-label="Edit comment"
+                          title="Edit comment"
+                          onClick={() => {
+                            setEditingId(annotation.id)
+                            setEditComment(annotation.comment ?? '')
+                          }}
+                        >
+                          <EditIcon />
+                        </button>
+                      )}
+                      <button
+                        disabled={busyId === annotation.id}
+                        onClick={async () => {
+                          setBusyId(annotation.id)
+                          try {
+                            await onSetArchived(annotation.id, view === 'active')
+                          } finally {
+                            setBusyId(null)
+                          }
+                        }}
+                      >
+                        {view === 'active' ? 'Archive' : 'Restore'}
+                      </button>
+                    </div>
+                  </footer>
+                </article>
+              )
+            })}
           </div>
         )}
       </section>
@@ -1532,12 +1602,12 @@ async function formatCommentsForAgent(
     }
     const fileContents = await contentsRequest
     const code = truncateCodeLine(fileContents?.split('\n')[annotation.startLine - 1] ?? '')
-    return `${annotation.filePath}:${agentLineLabel(annotation)}: ${code}\n\n${annotation.comment!.trim()}`
+    return `${annotation.filePath}:${annotationPosition(annotation)}: ${code}\n\n${annotation.comment!.trim()}`
   }))
   return comments.join('\n\n')
 }
 
-function agentLineLabel(annotation: SessionAnnotation): string {
+function annotationPosition(annotation: SessionAnnotation): string {
   const start = `${annotation.side}:${annotation.startLine}`
   if (annotation.endSide != null && annotation.endSide !== annotation.side) {
     return `${start}->${annotation.endSide}:${annotation.endLine}`

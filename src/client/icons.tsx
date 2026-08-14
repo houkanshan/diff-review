@@ -55,6 +55,15 @@ export function CopyIcon(props: IconProps) {
   )
 }
 
+export function EditIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="m3 11.5-.5 2 2-.5 7.8-7.8-1.5-1.5Z" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="m9.8 4.7 1.5 1.5" fill="none" stroke="currentColor" strokeWidth="1.2" />
+    </Icon>
+  )
+}
+
 export function RefreshIcon(props: IconProps) {
   return (
     <Icon {...props}>
@@ -93,23 +102,6 @@ export function CommentIcon(props: IconProps) {
   return (
     <Icon {...props}>
       <path d="M2.5 3.5h11v8h-6l-3.5 2v-2H2.5z" fill="none" stroke="currentColor" />
-    </Icon>
-  )
-}
-
-export function EyeIcon(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M1.5 8s2.4-4 6.5-4 6.5 4 6.5 4-2.4 4-6.5 4-6.5-4-6.5-4Z" fill="none" stroke="currentColor" strokeWidth="1.2" />
-      <circle cx="8" cy="8" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.2" />
-    </Icon>
-  )
-}
-
-export function EyeOffIcon(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M2.2 5.5C1.7 6.1 1.5 6.7 1.5 8c0 0 2.4 4 6.5 4 1 0 1.9-.2 2.6-.6M5.2 4.6C6 4.2 6.9 4 8 4c4.1 0 6.5 4 6.5 4-.4.7-.9 1.4-1.5 1.9M6.6 6.6a2 2 0 0 0 2.8 2.8M2 2l12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
     </Icon>
   )
 }

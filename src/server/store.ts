@@ -244,6 +244,28 @@ export class ReviewStore {
     return this.getAnnotation(annotationId)
   }
 
+  updateAnnotationComment(
+    sessionId: string,
+    annotationId: string,
+    comment: string,
+  ): SessionAnnotation {
+    const result = this.database
+      .prepare(`
+        UPDATE annotations
+        SET comment = ?, updated_at = ?
+        WHERE id = ? AND session_id = ? AND source = 'user'
+      `)
+      .run(comment, new Date().toISOString(), annotationId, sessionId)
+    if (result.changes === 0) {
+      throw new AppError(
+        'ANNOTATION_NOT_EDITABLE',
+        `User annotation not found: ${annotationId}`,
+        404,
+      )
+    }
+    return this.getAnnotation(annotationId)
+  }
+
   archiveAllAnnotations(sessionId: string): ReviewSession {
     this.getSession(sessionId)
     const now = new Date().toISOString()

@@ -201,6 +201,12 @@ describe('local review storage', () => {
       source: 'user',
     })
     expect(crossSide.endSide).toBe('new')
+    expect(
+      store.updateAnnotationComment(session.id, crossSide.id, 'Updated review comment').comment,
+    ).toBe('Updated review comment')
+    expect(() =>
+      store.updateAnnotationComment(session.id, annotation.id, 'Cannot edit an agent note'),
+    ).toThrow('User annotation not found')
 
     expect(store.setFileViewed(session.id, 'tracked.txt', true).viewedFiles).toEqual([
       'tracked.txt',

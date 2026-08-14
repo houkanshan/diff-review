@@ -93,6 +93,17 @@ export function setAnnotationArchived(
   )
 }
 
+export function updateAnnotationComment(
+  id: string,
+  annotationId: string,
+  comment: string,
+): Promise<SessionAnnotation> {
+  return request(`/api/sessions/${encodeURIComponent(id)}/annotations/${annotationId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ comment }),
+  })
+}
+
 export function archiveAllAnnotations(id: string): Promise<ReviewSession> {
   return request(`/api/sessions/${encodeURIComponent(id)}/annotations/archive`, {
     method: 'POST',
