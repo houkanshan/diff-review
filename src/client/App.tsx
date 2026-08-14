@@ -49,6 +49,8 @@ import {
   CommentIcon,
   CommitIcon,
   CopyIcon,
+  EyeIcon,
+  EyeOffIcon,
   RefreshIcon,
   ThemeIcon,
 } from './icons'
@@ -1143,8 +1145,15 @@ function Inspector({
             {visible.map((annotation) => (
               <article key={annotation.id} className="note-card">
                 <button className="note-target" onClick={() => onNavigate(annotation)}>
+                  <span
+                    className={`note-viewed-status ${session.viewedFiles.includes(annotation.filePath) ? 'viewed' : ''}`}
+                    aria-label={session.viewedFiles.includes(annotation.filePath) ? 'Viewed' : 'Not viewed'}
+                    title={session.viewedFiles.includes(annotation.filePath) ? 'Viewed' : 'Not viewed'}
+                  >
+                    {session.viewedFiles.includes(annotation.filePath) ? <EyeIcon /> : <EyeOffIcon />}
+                  </span>
                   <code>{compactPath(annotation.filePath)}</code>
-                  <span>{lineLabel(annotation)}</span>
+                  <span className={`note-line-label ${annotation.side}`}>{lineLabel(annotation)}</span>
                 </button>
                 {annotation.comment != null && <p>{annotation.comment}</p>}
                 {annotation.importance != null && (

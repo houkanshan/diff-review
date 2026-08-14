@@ -1041,8 +1041,9 @@ body.resizing-panels * {
 .note-target {
   width: 100%;
   display: flex;
-  justify-content: space-between;
-  gap: 8px;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
   padding: 0;
   color: var(--blue);
   border: 0;
@@ -1051,9 +1052,44 @@ body.resizing-panels * {
 }
 
 .note-target code {
+  min-width: 0;
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-align: left;
+}
+
+.note-viewed-status {
+  width: 12px;
+  height: 12px;
+  display: grid;
+  flex: 0 0 12px;
+  place-items: center;
+  color: var(--faint);
+}
+
+.note-viewed-status.viewed {
+  color: var(--green);
+}
+
+.note-viewed-status svg {
+  width: 12px;
+  height: 12px;
+}
+
+.note-line-label {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.note-line-label.new {
+  color: var(--green);
+}
+
+.note-line-label.old {
+  color: var(--red);
 }
 
 .note-card p,
