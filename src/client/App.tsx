@@ -211,12 +211,13 @@ function ReviewWorkspace({
     const version = annotationVersion + session.annotations.length + selectionRevision
     return parsedFiles.map((fileDiff) => {
       fileDiff.cacheKey = `${session.id}:${session.updatedAt}:${fileDiff.name}`
+      const collapsed = collapsedFiles.has(fileDiff.name)
       return {
         id: fileDiff.name,
         type: 'diff',
         fileDiff,
-        version,
-        collapsed: collapsedFiles.has(fileDiff.name),
+        version: version * 2 + Number(collapsed),
+        collapsed,
         annotations: annotationsForFile(session.annotations, fileDiff, composerSelection),
       }
     })
