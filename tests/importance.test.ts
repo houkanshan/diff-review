@@ -6,8 +6,8 @@ import { applyImportance } from '../src/client/importance.js'
 describe('importance rendering', () => {
   test.each([
     [0, '100%', '100%', '0'],
-    [0.5, '88%', '80%', '0.2'],
-    [1, '76%', '60%', '0.4'],
+    [0.5, '88%', '80%', '0.1'],
+    [1, '76%', '60%', '0.2'],
   ])(
     'maps importance %s from no background through normal to strongest',
     (importance, expectedLight, expectedDark, expectedAlpha) => {

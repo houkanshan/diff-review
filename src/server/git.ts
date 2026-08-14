@@ -138,16 +138,17 @@ export async function readSnapshotFile(
   return result.exitCode === 0 ? result.stdout : null
 }
 
-export function validateAnnotationTarget(
-  patch: string,
+export async function validateAnnotationTarget(
+  repositoryPath: string,
+  review: ResolvedReview,
   filePath: string,
   side: 'old' | 'new',
   startLine: number,
   endLine: number,
-): void {
-  const changedLines = changedLinesFromPatch(patch)
+): Promise<void> {
+  const reviewFiles = filePathsFromPatch(review.patch)
   const normalizedPath = filePath.replace(/^\.\//, '')
-  const file = changedLines.get(normalizedPath)
+  const file = reviewFiles.get(normalizedPath)
 
   if (file == null) {
     throw new AppError(
@@ -156,14 +157,28 @@ export function validateAnnotationTarget(
     )
   }
 
-  const lines = side === 'old' ? file.old : file.new
-  for (let line = startLine; line <= endLine; line += 1) {
-    if (!lines.has(line)) {
-      throw new AppError(
-        'ANNOTATION_LINE_NOT_CHANGED',
-        `${filePath}:${line} is not a changed line on the ${side} side of this diff`,
+  const snapshotPath = file[side]
+  const contents = snapshotPath == null
+    ? null
+    : await readSnapshotFile(
+        repositoryPath,
+        side === 'old' ? review.oldSnapshot : review.newSnapshot,
+        snapshotPath,
       )
-    }
+  const lineCount = contents == null || contents === ''
+    ? 0
+    : contents.split('\n').length - (contents.endsWith('\n') ? 1 : 0)
+  if (
+    !Number.isInteger(startLine) ||
+    !Number.isInteger(endLine) ||
+    startLine <= 0 ||
+    endLine < startLine ||
+    endLine > lineCount
+  ) {
+    throw new AppError(
+      'ANNOTATION_LINE_NOT_FOUND',
+      `${filePath}:${startLine}${endLine === startLine ? '' : `-${endLine}`} does not exist on the ${side} side of this diff`,
+    )
   }
 }
 
@@ -450,21 +465,15 @@ async function indexTreeId(root: string): Promise<string> {
   return result.exitCode === 0 ? result.stdout.trim() : contentId('index')
 }
 
-function changedLinesFromPatch(
+function filePathsFromPatch(
   patch: string,
-): Map<string, { old: Set<number>; new: Set<number> }> {
-  const files = new Map<string, { old: Set<number>; new: Set<number> }>()
+): Map<string, { old: string | null; new: string | null }> {
+  const files = new Map<string, { old: string | null; new: string | null }>()
   let oldPath: string | null = null
-  let newPath: string | null = null
-  let oldLine = 0
-  let newLine = 0
-  let inHunk = false
 
   for (const line of patch.split('\n')) {
     if (line.startsWith('diff --git ')) {
       oldPath = null
-      newPath = null
-      inHunk = false
       continue
     }
     if (line.startsWith('--- ')) {
@@ -476,37 +485,10 @@ function changedLinesFromPatch(
     if (line.startsWith('+++ ')) {
       const rawPath = line.slice(4).split('\t')[0] ?? ''
       const parsedPath = stripPatchPrefix(rawPath)
-      newPath = parsedPath === '/dev/null' ? null : parsedPath
-      continue
-    }
-    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line)
-    if (hunk != null) {
-      oldLine = Number(hunk[1])
-      newLine = Number(hunk[2])
-      inHunk = true
-      const paths = [oldPath, newPath].filter((filePath): filePath is string => filePath != null)
-      const changed =
-        paths.map((filePath) => files.get(filePath)).find((file) => file != null) ?? {
-          old: new Set<number>(),
-          new: new Set<number>(),
-        }
-      for (const filePath of paths) {
-        files.set(filePath, changed)
-      }
-      continue
-    }
-    if (!inHunk) continue
-    const file = files.get(newPath ?? oldPath ?? '')
-    if (file == null) continue
-    if (line.startsWith('+')) {
-      file.new.add(newLine)
-      newLine += 1
-    } else if (line.startsWith('-')) {
-      file.old.add(oldLine)
-      oldLine += 1
-    } else if (line.startsWith(' ')) {
-      oldLine += 1
-      newLine += 1
+      const newPath = parsedPath === '/dev/null' ? null : parsedPath
+      const file = { old: oldPath, new: newPath }
+      if (oldPath != null) files.set(oldPath, file)
+      if (newPath != null) files.set(newPath, file)
     }
   }
   return files

@@ -97,15 +97,21 @@ describe('Git review targets', () => {
     expect(worktree.patch).toContain('untracked content')
   })
 
-  test('validates changed ranges on new, old, deleted, and untracked files', async () => {
+  test('validates ranges in new, old, deleted, and untracked file snapshots', async () => {
     const review = await resolveTarget(fixture.repository, { kind: 'worktree' })
 
-    expect(() => validateAnnotationTarget(review.patch, 'tracked.txt', 'new', 2, 2)).not.toThrow()
-    expect(() => validateAnnotationTarget(review.patch, 'deleted.txt', 'old', 1, 2)).not.toThrow()
-    expect(() => validateAnnotationTarget(review.patch, 'untracked.txt', 'new', 1, 1)).not.toThrow()
-    expect(() => validateAnnotationTarget(review.patch, 'tracked.txt', 'new', 1, 1)).toThrow(
-      /not a changed line/,
-    )
+    await expect(
+      validateAnnotationTarget(fixture.repository, review, 'tracked.txt', 'new', 1, 1),
+    ).resolves.toBeUndefined()
+    await expect(
+      validateAnnotationTarget(fixture.repository, review, 'deleted.txt', 'old', 1, 2),
+    ).resolves.toBeUndefined()
+    await expect(
+      validateAnnotationTarget(fixture.repository, review, 'untracked.txt', 'new', 1, 1),
+    ).resolves.toBeUndefined()
+    await expect(
+      validateAnnotationTarget(fixture.repository, review, 'tracked.txt', 'new', 99, 99),
+    ).rejects.toThrow(/does not exist/)
   })
 })
 

@@ -144,16 +144,19 @@ export class ApiHandler {
       const id = annotationsMatch[1] ?? ''
       const input = parseAnnotationInput(await readJson(request))
       const session = this.store.getSession(id)
-      validateAnnotationTarget(
-        session.patch,
+      const resolved = this.store.getResolvedReview(id)
+      await validateAnnotationTarget(
+        session.repositoryRoot,
+        resolved,
         input.filePath,
         input.side,
         input.startLine,
         input.endSide == null ? input.endLine : input.startLine,
       )
       if (input.endSide != null) {
-        validateAnnotationTarget(
-          session.patch,
+        await validateAnnotationTarget(
+          session.repositoryRoot,
+          resolved,
           input.filePath,
           input.endSide,
           input.endLine,

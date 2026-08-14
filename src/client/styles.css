@@ -755,6 +755,11 @@ body.resizing-panels * {
   --diffs-bg-separator-override: var(--diff-separator);
   --diffs-addition-color-override: var(--green);
   --diffs-deletion-color-override: var(--red);
+  /* Keep the default, unscored diff equivalent to importance 0.5. */
+  --diffs-bg-addition-override: color-mix(in lab, var(--diff-bg) 50%, var(--green));
+  --diffs-bg-deletion-override: color-mix(in lab, var(--diff-bg) 50%, var(--red));
+  --diffs-bg-addition-emphasis-override: rgb(from var(--green) r g b / 0.1);
+  --diffs-bg-deletion-emphasis-override: rgb(from var(--red) r g b / 0.1);
   --diffs-modified-color-override: var(--accent);
   --diffs-bg-selection-override: var(--accent);
   --diffs-gap-block: 6px;

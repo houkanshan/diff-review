@@ -36,7 +36,7 @@ An already-running agent can create a session without opening the browser:
 diff-review session create --repo . origin/master...HEAD
 ```
 
-Alternatively, copy the session ID from the browser. The agent can keep inspecting changes with ordinary `git diff`, then annotate changed lines with one command:
+Alternatively, copy the session ID from the browser. The agent can keep inspecting changes with ordinary `git diff`, then annotate lines in changed files with one command:
 
 ```bash
 diff-review annotate drs_abc123 \

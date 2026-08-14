@@ -48,7 +48,7 @@ export function applyImportance(
       element.setAttribute('data-review-importance', String(score))
       element.style.setProperty('--mix-light', `${100 - score * 24}%`)
       element.style.setProperty('--mix-dark', `${100 - score * 40}%`)
-      const alpha = Math.round(score * 40) / 100
+      const alpha = Math.round(score * 20) / 100
       element.style.setProperty(
         '--diffs-bg-addition-emphasis',
         `rgb(from var(--diffs-addition-base) r g b / ${alpha})`,
