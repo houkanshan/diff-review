@@ -1008,9 +1008,15 @@ function FileRail({
   resolvedTheme: ResolvedTheme
   onSelect(id: string): void
 }) {
+  const [query, setQuery] = useState('')
+  const normalizedQuery = query.trim().toLowerCase()
+  const filteredFiles =
+    normalizedQuery === ''
+      ? files
+      : files.filter((file) => file.name.toLowerCase().includes(normalizedQuery))
   const stats = new Map<string, FileChangeStats>()
   const treeKeyParts: string[] = []
-  for (const file of files) {
+  for (const file of filteredFiles) {
     const fileStats = fileChangeStats(file)
     stats.set(file.name, fileStats)
     treeKeyParts.push(
@@ -1022,17 +1028,35 @@ function FileRail({
   return (
     <nav className="file-rail" aria-label="Changed files">
       <div className="rail-heading">
-        <span>Files</span>
-        <em>{files.length}</em>
+        <div className="rail-heading-title">
+          <span>Files</span>
+          <em>{normalizedQuery === '' ? files.length : `${filteredFiles.length}/${files.length}`}</em>
+        </div>
+        <input
+          className="file-filter"
+          type="search"
+          value={query}
+          onChange={(event) => setQuery(event.currentTarget.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') setQuery('')
+          }}
+          placeholder="Search"
+          aria-label="Filter files"
+          autoComplete="off"
+          spellCheck={false}
+        />
       </div>
-      {files.length > 0 && (
+      {filteredFiles.length > 0 && (
         <ChangedFileTree
           key={treeKey}
-          files={files}
+          files={filteredFiles}
           stats={stats}
           resolvedTheme={resolvedTheme}
           onSelect={onSelect}
         />
+      )}
+      {files.length > 0 && filteredFiles.length === 0 && (
+        <p className="file-filter-empty">No matching files</p>
       )}
     </nav>
   )
