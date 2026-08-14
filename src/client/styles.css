@@ -806,6 +806,39 @@ body.resizing-panels * {
   border-bottom: 1px solid var(--border-soft);
 }
 
+.file-header-controls {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.file-collapse-button {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  padding: 0;
+  place-items: center;
+  color: var(--faint);
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+}
+
+.file-collapse-button:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.file-collapse-button svg {
+  width: 13px;
+  height: 13px;
+  transition: transform 120ms ease;
+}
+
+.file-collapse-button[aria-expanded='false'] svg {
+  transform: rotate(-90deg);
+}
+
 .file-viewed-toggle {
   display: flex;
   align-items: center;

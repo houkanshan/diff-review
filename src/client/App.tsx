@@ -169,6 +169,16 @@ function ReviewWorkspace({
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
   const viewedFiles = useMemo(() => new Set(session.viewedFiles), [session.viewedFiles])
+  const [collapsedFiles, setCollapsedFiles] = useState(() => new Set(session.viewedFiles))
+
+  const setFileCollapsed = useCallback((filePath: string, collapsed: boolean) => {
+    setCollapsedFiles((current) => {
+      const next = new Set(current)
+      if (collapsed) next.add(filePath)
+      else next.delete(filePath)
+      return next
+    })
+  }, [])
 
   useEffect(() => {
     setSelection(null)
@@ -176,6 +186,10 @@ function ReviewWorkspace({
     setComment('')
     setCommentError(null)
   }, [session.patch])
+
+  useEffect(() => {
+    setCollapsedFiles(new Set(session.viewedFiles))
+  }, [session.id])
 
   const parsedFiles = useMemo(() => {
     if (!session.patch.trim()) return []
@@ -202,10 +216,11 @@ function ReviewWorkspace({
         type: 'diff',
         fileDiff,
         version,
+        collapsed: collapsedFiles.has(fileDiff.name),
         annotations: annotationsForFile(session.annotations, fileDiff, composerSelection),
       }
     })
-  }, [composerSelection, parsedFiles, selectionRevision, session.annotations, session.id, session.updatedAt])
+  }, [collapsedFiles, composerSelection, parsedFiles, selectionRevision, session.annotations, session.id, session.updatedAt])
 
   const diffOptions = useMemo<CodeViewReactOptions<ReviewLineAnnotation>>(
     () => ({
@@ -315,8 +330,10 @@ function ReviewWorkspace({
   }, [onSessionChange, session.id])
 
   const setViewed = useCallback(async (filePath: string, viewed: boolean) => {
-    onSessionChange(await setFileViewed(session.id, filePath, viewed))
-  }, [onSessionChange, session.id])
+    const updated = await setFileViewed(session.id, filePath, viewed)
+    setFileCollapsed(filePath, viewed)
+    onSessionChange(updated)
+  }, [onSessionChange, session.id, setFileCollapsed])
 
   const refresh = useCallback(async () => {
     setBusy(true)
@@ -433,10 +450,23 @@ function ReviewWorkspace({
               selectedLines={selection}
               onSelectedLinesChange={handleSelection}
               renderHeaderMetadata={(item) => (
-                <FileViewedToggle
-                  viewed={viewedFiles.has(item.id)}
-                  onChange={(viewed) => setViewed(item.id, viewed)}
-                />
+                <div className="file-header-controls">
+                  <button
+                    className="file-collapse-button"
+                    aria-label={`${collapsedFiles.has(item.id) ? 'Expand' : 'Collapse'} ${item.id}`}
+                    aria-expanded={!collapsedFiles.has(item.id)}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      setFileCollapsed(item.id, !collapsedFiles.has(item.id))
+                    }}
+                  >
+                    <ChevronIcon />
+                  </button>
+                  <FileViewedToggle
+                    viewed={viewedFiles.has(item.id)}
+                    onChange={(viewed) => setViewed(item.id, viewed)}
+                  />
+                </div>
               )}
               renderAnnotation={(annotation) => {
                 const metadata = annotation.metadata
