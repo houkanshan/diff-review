@@ -50,6 +50,16 @@ export function selectCommits(
   })
 }
 
+export function setIgnoreWhitespace(
+  id: string,
+  ignoreWhitespace: boolean,
+): Promise<ReviewSession> {
+  return request(`/api/sessions/${encodeURIComponent(id)}/whitespace`, {
+    method: 'POST',
+    body: JSON.stringify({ ignoreWhitespace }),
+  })
+}
+
 export function addAnnotation(
   id: string,
   input: AddAnnotationInput,

@@ -576,6 +576,29 @@ svg {
   box-shadow: 0 1px 3px var(--shadow-soft);
 }
 
+.whitespace-toggle {
+  height: 34px;
+  padding: 0 9px;
+  color: var(--faint);
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  background: var(--surface);
+  font-size: 9px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.whitespace-toggle:hover {
+  color: var(--text-soft);
+  border-color: var(--border-strong);
+}
+
+.whitespace-toggle[data-pressed] {
+  color: var(--accent);
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
 .icon-button,
 .agent-button {
   height: 34px;
@@ -1391,6 +1414,8 @@ body.resizing-panels * {
   .target-divider { display: none; }
   .target-trigger { max-width: 180px; }
   .commit-trigger { width: 160px; }
+  .whitespace-toggle { width: 34px; padding: 0; font-size: 0; }
+  .whitespace-toggle::after { content: 'Ws'; font-size: 9px; }
   .agent-button { width: 34px; padding: 0; font-size: 0; }
 }
 

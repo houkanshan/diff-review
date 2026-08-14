@@ -44,6 +44,18 @@ describe('Git review targets', () => {
     expect(review.gitCommand).toBe("git diff 'origin/main...HEAD'")
   })
 
+  test('can omit whitespace-only changes from a review', async () => {
+    const review = await resolveTarget(
+      fixture.repository,
+      { kind: 'range', expression: 'origin/main...HEAD' },
+      true,
+    )
+
+    expect(review.patch).not.toContain('spacing.txt')
+    expect(review.patch).toContain('feature one')
+    expect(review.gitCommand).toBe("git diff --ignore-all-space 'origin/main...HEAD'")
+  })
+
   test('resolves a single selected commit against its first parent', async () => {
     const range = await resolveTarget(fixture.repository, {
       kind: 'range',
@@ -146,6 +158,18 @@ describe('local review storage', () => {
     expect(updated.commits).toEqual(review.commits)
     expect(updated.selectedCommitStart).toBe(selectedCommit.oid)
     expect(updated.patch).toContain('feature two')
+    expect(updated.ignoreWhitespace).toBe(false)
+
+    expect(
+      store.updateResolvedReview(
+        session.id,
+        selected,
+        selectedCommit.oid,
+        selectedCommit.oid,
+        undefined,
+        true,
+      ).ignoreWhitespace,
+    ).toBe(true)
 
     const annotation = store.addAnnotation(session.id, {
       filePath: 'tracked.txt',
@@ -282,6 +306,7 @@ describe('local review storage', () => {
 
     expect(store.getSession('drs_legacy').commits).toEqual([commit])
     expect(store.getSession('drs_legacy').viewedFiles).toEqual([])
+    expect(store.getSession('drs_legacy').ignoreWhitespace).toBe(false)
     expect(store.getSession('drs_legacy').annotations).toMatchObject([
       { id: 'ann_legacy', endSide: null, archivedAt: null },
     ])
@@ -299,6 +324,7 @@ function createGitFixture(): { directory: string; repository: string } {
 
   writeFileSync(path.join(repository, 'tracked.txt'), 'one\ntwo\nthree\n')
   writeFileSync(path.join(repository, 'deleted.txt'), 'old\nremoved\n')
+  writeFileSync(path.join(repository, 'spacing.txt'), 'const value = 1\n')
   git(repository, ['add', '.'])
   git(repository, ['commit', '-m', 'base'])
 
@@ -309,7 +335,8 @@ function createGitFixture(): { directory: string; repository: string } {
 
   git(repository, ['switch', '-c', 'feature'])
   writeFileSync(path.join(repository, 'tracked.txt'), 'one\ntwo\nthree\nfeature one\n')
-  git(repository, ['add', 'tracked.txt'])
+  writeFileSync(path.join(repository, 'spacing.txt'), 'const value  =  1\n')
+  git(repository, ['add', 'tracked.txt', 'spacing.txt'])
   git(repository, ['commit', '-m', 'feature one'])
 
   git(repository, ['switch', '-c', 'side'])

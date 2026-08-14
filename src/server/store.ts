@@ -27,6 +27,7 @@ interface SessionRow {
   selected_commit_start: string | null
   selected_commit_end: string | null
   viewed_files_json: string
+  ignore_whitespace: number
   created_at: string
   updated_at: string
 }
@@ -68,6 +69,7 @@ export class ReviewStore {
         selected_commit_start TEXT,
         selected_commit_end TEXT,
         viewed_files_json TEXT NOT NULL DEFAULT '[]',
+        ignore_whitespace INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -164,6 +166,7 @@ export class ReviewStore {
     selectedStart: string | null,
     selectedEnd: string | null,
     availableCommits?: CommitSummary[],
+    ignoreWhitespace?: boolean,
   ): ReviewSession {
     const now = new Date().toISOString()
     const result = this.database
@@ -171,7 +174,8 @@ export class ReviewStore {
         UPDATE sessions
         SET target_label = ?, git_command = ?, patch = ?, resolved_json = ?,
             available_commits_json = COALESCE(?, available_commits_json),
-            selected_commit_start = ?, selected_commit_end = ?, updated_at = ?
+            selected_commit_start = ?, selected_commit_end = ?,
+            ignore_whitespace = COALESCE(?, ignore_whitespace), updated_at = ?
         WHERE id = ?
       `)
       .run(
@@ -182,6 +186,7 @@ export class ReviewStore {
         availableCommits == null ? null : JSON.stringify(availableCommits),
         selectedStart,
         selectedEnd,
+        ignoreWhitespace == null ? null : Number(ignoreWhitespace),
         now,
         id,
       )
@@ -311,6 +316,11 @@ export class ReviewStore {
         "ALTER TABLE sessions ADD COLUMN viewed_files_json TEXT NOT NULL DEFAULT '[]'",
       )
     }
+    if (!columns.some((column) => column.name === 'ignore_whitespace')) {
+      this.database.exec(
+        'ALTER TABLE sessions ADD COLUMN ignore_whitespace INTEGER NOT NULL DEFAULT 0',
+      )
+    }
   }
 
   private migrateAnnotationsTable(): void {
@@ -342,6 +352,7 @@ export class ReviewStore {
       selectedCommitEnd: row.selected_commit_end,
       annotations: this.annotationsForSession(row.id),
       viewedFiles: JSON.parse(row.viewed_files_json) as string[],
+      ignoreWhitespace: row.ignore_whitespace === 1,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }

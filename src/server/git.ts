@@ -77,20 +77,21 @@ export async function getRepositoryInfo(repositoryPath: string): Promise<Reposit
 export async function resolveTarget(
   repositoryPath: string,
   target: ReviewTarget,
+  ignoreWhitespace = false,
 ): Promise<ResolvedReview> {
   const root = await resolveRepository(repositoryPath)
 
   switch (target.kind) {
     case 'worktree':
-      return resolveWorktree(root)
+      return resolveWorktree(root, ignoreWhitespace)
     case 'unstaged':
-      return resolveUnstaged(root)
+      return resolveUnstaged(root, ignoreWhitespace)
     case 'staged':
-      return resolveStaged(root)
+      return resolveStaged(root, ignoreWhitespace)
     case 'range':
-      return resolveRange(root, target.expression)
+      return resolveRange(root, target.expression, ignoreWhitespace)
     case 'pr':
-      return resolvePullRequest(root, target.number)
+      return resolvePullRequest(root, target.number, ignoreWhitespace)
   }
 }
 
@@ -98,11 +99,12 @@ export async function resolveCommitSpan(
   repositoryPath: string,
   oldestCommit: string,
   newestCommit: string,
+  ignoreWhitespace = false,
 ): Promise<ResolvedReview> {
   const root = await resolveRepository(repositoryPath)
   const oldCommit = await firstParentOrEmptyTree(root, oldestCommit)
   const newCommit = await resolveCommit(root, newestCommit)
-  const patch = await gitDiff(root, [oldCommit, newCommit])
+  const patch = await gitDiff(root, [oldCommit, newCommit], ignoreWhitespace)
   const commits = await listCommits(root, oldCommit, newCommit)
 
   return {
@@ -112,8 +114,8 @@ export async function resolveCommitSpan(
         : `${shortOid(oldestCommit)}…${shortOid(newCommit)}`,
     gitCommand:
       oldestCommit === newestCommit
-        ? `git show ${shellQuote(newCommit)}`
-        : `git diff ${shellQuote(oldCommit)} ${shellQuote(newCommit)}`,
+        ? `git show${ignoreWhitespace ? ' --ignore-all-space' : ''} ${shellQuote(newCommit)}`
+        : `git diff${ignoreWhitespace ? ' --ignore-all-space' : ''} ${shellQuote(oldCommit)} ${shellQuote(newCommit)}`,
     patch,
     oldSnapshot: { kind: 'commit', id: oldCommit },
     newSnapshot: { kind: 'commit', id: newCommit },
@@ -185,13 +187,13 @@ export function validateReviewFilePath(patch: string, filePath: string): string 
   return normalizedPath
 }
 
-async function resolveWorktree(root: string): Promise<ResolvedReview> {
+async function resolveWorktree(root: string, ignoreWhitespace: boolean): Promise<ResolvedReview> {
   const head = await resolveCommit(root, 'HEAD')
-  const trackedPatch = await gitDiff(root, ['HEAD'])
-  const patch = trackedPatch + (await untrackedPatch(root))
+  const trackedPatch = await gitDiff(root, ['HEAD'], ignoreWhitespace)
+  const patch = trackedPatch + (await untrackedPatch(root, ignoreWhitespace))
   return {
     label: 'Working tree',
-    gitCommand: 'git diff HEAD',
+    gitCommand: `git diff${ignoreWhitespace ? ' --ignore-all-space' : ''} HEAD`,
     patch,
     oldSnapshot: { kind: 'commit', id: head },
     newSnapshot: { kind: 'worktree', id: contentId(patch) },
@@ -199,12 +201,12 @@ async function resolveWorktree(root: string): Promise<ResolvedReview> {
   }
 }
 
-async function resolveUnstaged(root: string): Promise<ResolvedReview> {
-  const patch = await gitDiff(root, [])
+async function resolveUnstaged(root: string, ignoreWhitespace: boolean): Promise<ResolvedReview> {
+  const patch = await gitDiff(root, [], ignoreWhitespace)
   const indexId = await indexTreeId(root)
   return {
     label: 'Unstaged changes',
-    gitCommand: 'git diff',
+    gitCommand: `git diff${ignoreWhitespace ? ' --ignore-all-space' : ''}`,
     patch,
     oldSnapshot: { kind: 'index', id: indexId },
     newSnapshot: { kind: 'worktree', id: contentId(patch) },
@@ -212,12 +214,12 @@ async function resolveUnstaged(root: string): Promise<ResolvedReview> {
   }
 }
 
-async function resolveStaged(root: string): Promise<ResolvedReview> {
+async function resolveStaged(root: string, ignoreWhitespace: boolean): Promise<ResolvedReview> {
   const head = await resolveCommit(root, 'HEAD')
-  const patch = await gitDiff(root, ['--cached'])
+  const patch = await gitDiff(root, ['--cached'], ignoreWhitespace)
   return {
     label: 'Staged changes',
-    gitCommand: 'git diff --cached',
+    gitCommand: `git diff${ignoreWhitespace ? ' --ignore-all-space' : ''} --cached`,
     patch,
     oldSnapshot: { kind: 'commit', id: head },
     newSnapshot: { kind: 'index', id: await indexTreeId(root) },
@@ -225,7 +227,11 @@ async function resolveStaged(root: string): Promise<ResolvedReview> {
   }
 }
 
-async function resolveRange(root: string, rawExpression: string): Promise<ResolvedReview> {
+async function resolveRange(
+  root: string,
+  rawExpression: string,
+  ignoreWhitespace: boolean,
+): Promise<ResolvedReview> {
   const expression = rawExpression.trim()
   if (expression.length === 0 || /\s/.test(expression)) {
     throw new AppError('INVALID_RANGE', 'Revision range must be one Git revision expression without spaces')
@@ -253,20 +259,24 @@ async function resolveRange(root: string, rawExpression: string): Promise<Resolv
     headRevision = await resolveCommit(root, right)
     label = expression
   } else {
-    return resolveCommitSpan(root, expression, expression)
+    return resolveCommitSpan(root, expression, expression, ignoreWhitespace)
   }
 
   return {
     label,
-    gitCommand: `git diff ${shellQuote(label)}`,
-    patch: await gitDiff(root, [baseRevision, headRevision]),
+    gitCommand: `git diff${ignoreWhitespace ? ' --ignore-all-space' : ''} ${shellQuote(label)}`,
+    patch: await gitDiff(root, [baseRevision, headRevision], ignoreWhitespace),
     oldSnapshot: { kind: 'commit', id: baseRevision },
     newSnapshot: { kind: 'commit', id: headRevision },
     commits: await listCommits(root, baseRevision, headRevision),
   }
 }
 
-async function resolvePullRequest(root: string, number: number): Promise<ResolvedReview> {
+async function resolvePullRequest(
+  root: string,
+  number: number,
+  ignoreWhitespace: boolean,
+): Promise<ResolvedReview> {
   if (!Number.isInteger(number) || number <= 0) {
     throw new AppError('INVALID_PULL_REQUEST', `Invalid pull request number: ${number}`)
   }
@@ -280,8 +290,8 @@ async function resolvePullRequest(root: string, number: number): Promise<Resolve
 
   return {
     label: `PR #${number} · ${details.title}`,
-    gitCommand: `git diff ${shellQuote(`${details.baseRefOid}...${details.headRefOid}`)}`,
-    patch: await gitDiff(root, [base, details.headRefOid]),
+    gitCommand: `git diff${ignoreWhitespace ? ' --ignore-all-space' : ''} ${shellQuote(`${details.baseRefOid}...${details.headRefOid}`)}`,
+    patch: await gitDiff(root, [base, details.headRefOid], ignoreWhitespace),
     oldSnapshot: { kind: 'commit', id: base },
     newSnapshot: { kind: 'commit', id: details.headRefOid },
     commits: await listCommits(root, base, details.headRefOid),
@@ -425,11 +435,22 @@ async function listCommits(
     })
 }
 
-async function gitDiff(root: string, args: string[]): Promise<string> {
-  return (await runGit(root, [...DIFF_ARGS, ...args, '--'])).stdout
+async function gitDiff(
+  root: string,
+  args: string[],
+  ignoreWhitespace: boolean,
+): Promise<string> {
+  return (
+    await runGit(root, [
+      ...DIFF_ARGS,
+      ...(ignoreWhitespace ? ['--ignore-all-space'] : []),
+      ...args,
+      '--',
+    ])
+  ).stdout
 }
 
-async function untrackedPatch(root: string): Promise<string> {
+async function untrackedPatch(root: string, ignoreWhitespace: boolean): Promise<string> {
   const files = (
     await runGit(root, ['ls-files', '--others', '--exclude-standard', '-z'])
   ).stdout
@@ -449,6 +470,7 @@ async function untrackedPatch(root: string): Promise<string> {
         '--full-index',
         '--src-prefix=a/',
         '--dst-prefix=b/',
+        ...(ignoreWhitespace ? ['--ignore-all-space'] : []),
         '--',
         '/dev/null',
         file,

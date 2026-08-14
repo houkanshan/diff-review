@@ -44,6 +44,7 @@ export interface ReviewSession {
   selectedCommitEnd: string | null
   annotations: SessionAnnotation[]
   viewedFiles: string[]
+  ignoreWhitespace: boolean
   createdAt: string
   updatedAt: string
 }

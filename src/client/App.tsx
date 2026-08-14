@@ -38,6 +38,7 @@ import {
   selectCommits,
   setAnnotationArchived,
   setFileViewed,
+  setIgnoreWhitespace,
 } from './api'
 import { applyImportance } from './importance'
 import {
@@ -326,6 +327,15 @@ function ReviewWorkspace({
     }
   }, [onSessionChange, session.id])
 
+  const updateIgnoreWhitespace = useCallback(async (ignoreWhitespace: boolean) => {
+    setBusy(true)
+    try {
+      onSessionChange(await setIgnoreWhitespace(session.id, ignoreWhitespace))
+    } finally {
+      setBusy(false)
+    }
+  }, [onSessionChange, session.id])
+
   const copyForAgent = useCallback(async () => {
     const text = [
       `Session: ${session.id}`,
@@ -374,6 +384,14 @@ function ReviewWorkspace({
             Split
           </Toggle>
         </ToggleGroup>
+        <Toggle
+          className="whitespace-toggle"
+          pressed={session.ignoreWhitespace}
+          disabled={busy}
+          onPressedChange={updateIgnoreWhitespace}
+        >
+          Ignore whitespace
+        </Toggle>
         <ThemePicker value={themePreference} onChange={onThemeChange} />
         <button className="icon-button" onClick={refresh} aria-label="Refresh diff" disabled={busy}>
           <RefreshIcon className={busy ? 'spinning' : ''} />

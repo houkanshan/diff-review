@@ -61,6 +61,7 @@ export class ApiHandler {
     const sessionMatch = /^\/api\/sessions\/([^/]+)$/.exec(url.pathname)
     const refreshMatch = /^\/api\/sessions\/([^/]+)\/refresh$/.exec(url.pathname)
     const selectionMatch = /^\/api\/sessions\/([^/]+)\/selection$/.exec(url.pathname)
+    const whitespaceMatch = /^\/api\/sessions\/([^/]+)\/whitespace$/.exec(url.pathname)
     const annotationsMatch = /^\/api\/sessions\/([^/]+)\/annotations$/.exec(url.pathname)
     const annotationMatch = /^\/api\/sessions\/([^/]+)\/annotations\/([^/]+)$/.exec(
       url.pathname,
@@ -108,7 +109,11 @@ export class ApiHandler {
     if (method === 'POST' && refreshMatch != null) {
       const id = refreshMatch[1] ?? ''
       const session = this.store.getSession(id)
-      const resolved = await resolveTarget(session.repositoryRoot, session.target)
+      const resolved = await resolveTarget(
+        session.repositoryRoot,
+        session.target,
+        session.ignoreWhitespace,
+      )
       const updated = this.store.updateResolvedReview(
         id,
         resolved,
@@ -136,9 +141,47 @@ export class ApiHandler {
 
       const isFullRange = startIndex === 0 && endIndex === session.commits.length - 1
       const resolved = isFullRange
-        ? await resolveTarget(session.repositoryRoot, session.target)
-        : await resolveCommitSpan(session.repositoryRoot, input.start, input.end)
+        ? await resolveTarget(session.repositoryRoot, session.target, session.ignoreWhitespace)
+        : await resolveCommitSpan(
+            session.repositoryRoot,
+            input.start,
+            input.end,
+            session.ignoreWhitespace,
+          )
       const updated = this.store.updateResolvedReview(id, resolved, input.start, input.end)
+      this.emitSessionUpdate(id)
+      sendJson(response, 200, updated)
+      return
+    }
+
+    if (method === 'POST' && whitespaceMatch != null) {
+      const id = whitespaceMatch[1] ?? ''
+      const { ignoreWhitespace } = parseWhitespaceInput(await readJson(request))
+      const session = this.store.getSession(id)
+      if (session.ignoreWhitespace === ignoreWhitespace) {
+        sendJson(response, 200, session)
+        return
+      }
+
+      const isFullRange =
+        session.selectedCommitStart === session.commits.at(0)?.oid &&
+        session.selectedCommitEnd === session.commits.at(-1)?.oid
+      const resolved = isFullRange || session.selectedCommitStart == null || session.selectedCommitEnd == null
+        ? await resolveTarget(session.repositoryRoot, session.target, ignoreWhitespace)
+        : await resolveCommitSpan(
+            session.repositoryRoot,
+            session.selectedCommitStart,
+            session.selectedCommitEnd,
+            ignoreWhitespace,
+          )
+      const updated = this.store.updateResolvedReview(
+        id,
+        resolved,
+        session.selectedCommitStart,
+        session.selectedCommitEnd,
+        undefined,
+        ignoreWhitespace,
+      )
       this.emitSessionUpdate(id)
       sendJson(response, 200, updated)
       return
@@ -346,6 +389,14 @@ function parseSelectionInput(value: unknown): { start: string; end: string } {
     start: expectString(object.start, 'start'),
     end: expectString(object.end, 'end'),
   }
+}
+
+function parseWhitespaceInput(value: unknown): { ignoreWhitespace: boolean } {
+  const object = expectObject(value)
+  if (typeof object.ignoreWhitespace !== 'boolean') {
+    throw new AppError('INVALID_INPUT', 'ignoreWhitespace must be a boolean')
+  }
+  return { ignoreWhitespace: object.ignoreWhitespace }
 }
 
 function parseAnnotationInput(value: unknown): AddAnnotationInput {
