@@ -979,15 +979,27 @@ function ChangedFileTree({
       if (item.kind !== 'file') return null
       const fileStats = stats.get(item.path)
       if (fileStats == null) return null
-      const text = `+${fileStats.additions} -${fileStats.deletions} ~${fileStats.modifications}`
+      const parts: { text: string; color: string }[] = []
+      if (fileStats.additions > 0) {
+        parts.push({ text: `+${fileStats.additions}`, color: 'var(--green)' })
+      }
+      if (fileStats.deletions > 0) {
+        parts.push({
+          text: `${parts.length > 0 ? ' ' : ''}-${fileStats.deletions}`,
+          color: 'var(--red)',
+        })
+      }
+      if (fileStats.modifications > 0) {
+        parts.push({
+          text: `${parts.length > 0 ? ' ' : ''}~${fileStats.modifications}`,
+          color: 'var(--blue)',
+        })
+      }
+      if (parts.length === 0) return null
       return {
-        text,
+        text: parts.map((part) => part.text).join(''),
         title: `${fileStats.additions} added, ${fileStats.deletions} deleted, ${fileStats.modifications} modified`,
-        parts: [
-          { text: `+${fileStats.additions}`, color: 'var(--green)' },
-          { text: ` -${fileStats.deletions}`, color: 'var(--red)' },
-          { text: ` ~${fileStats.modifications}`, color: 'var(--blue)' },
-        ],
+        parts,
       }
     },
   })
