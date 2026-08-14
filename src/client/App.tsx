@@ -514,6 +514,7 @@ function ReviewWorkspace({
         />
         <Inspector
           session={session}
+          files={parsedFiles}
           onSetArchived={setArchived}
           onArchiveAll={archiveAll}
           onNavigate={(annotation) => {
@@ -1138,11 +1139,13 @@ function FileViewedToggle({
 
 function Inspector({
   session,
+  files,
   onSetArchived,
   onArchiveAll,
   onNavigate,
 }: {
   session: ReviewSession
+  files: FileDiffMetadata[]
   onSetArchived(annotationId: string, archived: boolean): Promise<void>
   onArchiveAll(): Promise<void>
   onNavigate(annotation: SessionAnnotation): void
@@ -1167,7 +1170,9 @@ function Inspector({
             {myComments.length > 0 && (
               <button
                 onClick={async () => {
-                  await navigator.clipboard.writeText(formatCommentsForAgent(myComments))
+                  await navigator.clipboard.writeText(
+                    await formatCommentsForAgent(session.id, myComments, files),
+                  )
                   setCommentsCopied(true)
                   window.setTimeout(() => setCommentsCopied(false), 1600)
                 }}
@@ -1505,13 +1510,31 @@ function lineLabel(annotation: SessionAnnotation): string {
   return `${prefix}${annotation.startLine}${annotation.startLine === annotation.endLine ? '' : `–${annotation.endLine}`}`
 }
 
-function formatCommentsForAgent(annotations: SessionAnnotation[]): string {
-  const comments = annotations.flatMap((annotation) => {
-    const comment = annotation.comment?.trim()
-    if (!comment) return []
-    return [`- \`${annotation.filePath}:${agentLineLabel(annotation)}\` — ${comment.replaceAll('\n', '\n  ')}`]
-  })
-  return ['Review comments:', ...comments].join('\n')
+async function formatCommentsForAgent(
+  sessionId: string,
+  annotations: SessionAnnotation[],
+  files: FileDiffMetadata[],
+): Promise<string> {
+  const contents = new Map<string, Promise<string | null>>()
+  const comments = await Promise.all(annotations.map(async (annotation) => {
+    const file = files.find(
+      (candidate) =>
+        candidate.name === annotation.filePath || candidate.prevName === annotation.filePath,
+    )
+    const filePath = annotation.side === 'old'
+      ? file?.prevName ?? annotation.filePath
+      : file?.name ?? annotation.filePath
+    const key = `${annotation.side}:${filePath}`
+    let contentsRequest = contents.get(key)
+    if (contentsRequest == null) {
+      contentsRequest = getFileContents(sessionId, filePath, annotation.side)
+      contents.set(key, contentsRequest)
+    }
+    const fileContents = await contentsRequest
+    const code = truncateCodeLine(fileContents?.split('\n')[annotation.startLine - 1] ?? '')
+    return `${annotation.filePath}:${agentLineLabel(annotation)}: ${code}\n\n${annotation.comment!.trim()}`
+  }))
+  return comments.join('\n\n')
 }
 
 function agentLineLabel(annotation: SessionAnnotation): string {
@@ -1520,6 +1543,11 @@ function agentLineLabel(annotation: SessionAnnotation): string {
     return `${start}->${annotation.endSide}:${annotation.endLine}`
   }
   return annotation.startLine === annotation.endLine ? start : `${start}-${annotation.endLine}`
+}
+
+function truncateCodeLine(line: string): string {
+  const trimmed = line.trim()
+  return trimmed.length > 100 ? `${trimmed.slice(0, 99)}…` : trimmed
 }
 
 function annotationRangeFromSelection(selection: CodeViewLineSelection): {
