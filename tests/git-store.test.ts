@@ -1,0 +1,274 @@
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
+
+import { afterAll, describe, expect, test } from 'vitest'
+
+import {
+  getRepositoryInfo,
+  resolveCommitSpan,
+  resolveTarget,
+  validateAnnotationTarget,
+} from '../src/server/git.js'
+import { ReviewStore } from '../src/server/store.js'
+
+const fixture = createGitFixture()
+
+afterAll(() => {
+  rmSync(fixture.directory, { recursive: true, force: true })
+})
+
+describe('Git review targets', () => {
+  test('exposes the origin default branch comparison as a first-class range', async () => {
+    const repository = await getRepositoryInfo(fixture.repository)
+
+    expect(repository.defaultBranchRef).toBe('origin/main')
+    expect(repository.branchRange).toBe('origin/main...HEAD')
+  })
+
+  test('resolves a merge-base range and lists only the first-parent timeline', async () => {
+    const review = await resolveTarget(fixture.repository, {
+      kind: 'range',
+      expression: 'origin/main...HEAD',
+    })
+
+    expect(review.patch).toContain('feature one')
+    expect(review.patch).toContain('from side')
+    expect(review.commits.map((commit) => commit.subject)).toEqual([
+      'feature one',
+      'feature two',
+      'merge side',
+    ])
+    expect(review.gitCommand).toBe("git diff 'origin/main...HEAD'")
+  })
+
+  test('resolves a single selected commit against its first parent', async () => {
+    const range = await resolveTarget(fixture.repository, {
+      kind: 'range',
+      expression: 'origin/main...HEAD',
+    })
+    const commit = range.commits[1]
+    expect(commit).toBeDefined()
+
+    const review = await resolveCommitSpan(fixture.repository, commit!.oid, commit!.oid)
+
+    expect(review.patch).toContain('\n+feature two')
+    expect(review.patch).not.toContain('\n+feature one')
+    expect(review.commits).toHaveLength(1)
+  })
+
+  test('treats a lone revision as one commit rather than an implicit branch range', async () => {
+    const range = await resolveTarget(fixture.repository, {
+      kind: 'range',
+      expression: 'origin/main...HEAD',
+    })
+    const commit = range.commits[0]!
+
+    const review = await resolveTarget(fixture.repository, {
+      kind: 'range',
+      expression: commit.oid,
+    })
+
+    expect(review.commits.map((item) => item.oid)).toEqual([commit.oid])
+    expect(review.patch).toContain('\n+feature one')
+    expect(review.patch).not.toContain('\n+feature two')
+    expect(review.gitCommand).toMatch(/^git show /)
+  })
+
+  test('keeps unstaged, staged, and all-uncommitted targets distinct', async () => {
+    const [unstaged, staged, worktree] = await Promise.all([
+      resolveTarget(fixture.repository, { kind: 'unstaged' }),
+      resolveTarget(fixture.repository, { kind: 'staged' }),
+      resolveTarget(fixture.repository, { kind: 'worktree' }),
+    ])
+
+    expect(unstaged.patch).toContain('two edited')
+    expect(unstaged.patch).not.toContain('staged content')
+    expect(unstaged.patch).not.toContain('untracked content')
+
+    expect(staged.patch).toContain('staged content')
+    expect(staged.patch).toContain('deleted.txt')
+    expect(staged.patch).not.toContain('two edited')
+
+    expect(worktree.patch).toContain('two edited')
+    expect(worktree.patch).toContain('staged content')
+    expect(worktree.patch).toContain('untracked content')
+  })
+
+  test('validates changed ranges on new, old, deleted, and untracked files', async () => {
+    const review = await resolveTarget(fixture.repository, { kind: 'worktree' })
+
+    expect(() => validateAnnotationTarget(review.patch, 'tracked.txt', 'new', 2, 2)).not.toThrow()
+    expect(() => validateAnnotationTarget(review.patch, 'deleted.txt', 'old', 1, 2)).not.toThrow()
+    expect(() => validateAnnotationTarget(review.patch, 'untracked.txt', 'new', 1, 1)).not.toThrow()
+    expect(() => validateAnnotationTarget(review.patch, 'tracked.txt', 'new', 1, 1)).toThrow(
+      /not a changed line/,
+    )
+  })
+})
+
+describe('local review storage', () => {
+  test('preserves the full commit timeline while viewing a selected span', async () => {
+    const review = await resolveTarget(fixture.repository, {
+      kind: 'range',
+      expression: 'origin/main...HEAD',
+    })
+    const databasePath = path.join(fixture.directory, 'store.db')
+    const store = new ReviewStore(databasePath)
+    const session = store.createSession(
+      fixture.repository,
+      'repo',
+      { kind: 'range', expression: 'origin/main...HEAD' },
+      review,
+    )
+    const selectedCommit = review.commits[1]!
+    const selected = await resolveCommitSpan(
+      fixture.repository,
+      selectedCommit.oid,
+      selectedCommit.oid,
+    )
+
+    const updated = store.updateResolvedReview(
+      session.id,
+      selected,
+      selectedCommit.oid,
+      selectedCommit.oid,
+    )
+
+    expect(updated.commits).toEqual(review.commits)
+    expect(updated.selectedCommitStart).toBe(selectedCommit.oid)
+    expect(updated.patch).toContain('feature two')
+
+    const annotation = store.addAnnotation(session.id, {
+      filePath: 'tracked.txt',
+      side: 'new',
+      startLine: 5,
+      endLine: 5,
+      comment: 'The second feature change',
+      source: 'agent',
+    })
+    expect(annotation.importance).toBeNull()
+    expect(store.getSession(session.id).annotations).toEqual([annotation])
+  })
+
+  test('migrates sessions created before commit timelines were stored separately', () => {
+    const databasePath = path.join(fixture.directory, 'legacy.db')
+    const database = new DatabaseSync(databasePath)
+    database.exec(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        repository_root TEXT NOT NULL,
+        repository_name TEXT NOT NULL,
+        target_json TEXT NOT NULL,
+        target_label TEXT NOT NULL,
+        git_command TEXT NOT NULL,
+        patch TEXT NOT NULL,
+        resolved_json TEXT NOT NULL,
+        selected_commit_start TEXT,
+        selected_commit_end TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `)
+    const commit = {
+      oid: 'a'.repeat(40),
+      shortOid: 'aaaaaaaa',
+      subject: 'legacy commit',
+      author: 'Reviewer',
+      authoredAt: '2026-01-01T00:00:00Z',
+    }
+    database
+      .prepare(`
+        INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        'drs_legacy',
+        fixture.repository,
+        'repo',
+        JSON.stringify({ kind: 'range', expression: 'main..HEAD' }),
+        'main..HEAD',
+        "git diff 'main..HEAD'",
+        '',
+        JSON.stringify({
+          label: 'main..HEAD',
+          gitCommand: "git diff 'main..HEAD'",
+          oldSnapshot: { kind: 'commit', id: 'b'.repeat(40) },
+          newSnapshot: { kind: 'commit', id: commit.oid },
+          commits: [commit],
+        }),
+        commit.oid,
+        commit.oid,
+        '2026-01-01T00:00:00Z',
+        '2026-01-01T00:00:00Z',
+      )
+    database.close()
+
+    const store = new ReviewStore(databasePath)
+
+    expect(store.getSession('drs_legacy').commits).toEqual([commit])
+  })
+})
+
+function createGitFixture(): { directory: string; repository: string } {
+  const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-'))
+  const repository = path.join(directory, 'repo')
+  const remote = path.join(directory, 'remote.git')
+  mkdirSync(repository)
+  git(repository, ['init', '-b', 'main'])
+  git(repository, ['config', 'user.name', 'Diff Reviewer'])
+  git(repository, ['config', 'user.email', 'reviewer@example.com'])
+
+  writeFileSync(path.join(repository, 'tracked.txt'), 'one\ntwo\nthree\n')
+  writeFileSync(path.join(repository, 'deleted.txt'), 'old\nremoved\n')
+  git(repository, ['add', '.'])
+  git(repository, ['commit', '-m', 'base'])
+
+  git(directory, ['init', '--bare', '--initial-branch=main', remote])
+  git(repository, ['remote', 'add', 'origin', remote])
+  git(repository, ['push', '-u', 'origin', 'main'])
+  git(repository, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+
+  git(repository, ['switch', '-c', 'feature'])
+  writeFileSync(path.join(repository, 'tracked.txt'), 'one\ntwo\nthree\nfeature one\n')
+  git(repository, ['add', 'tracked.txt'])
+  git(repository, ['commit', '-m', 'feature one'])
+
+  git(repository, ['switch', '-c', 'side'])
+  writeFileSync(path.join(repository, 'side.txt'), 'from side\n')
+  git(repository, ['add', 'side.txt'])
+  git(repository, ['commit', '-m', 'side branch commit'])
+
+  git(repository, ['switch', 'feature'])
+  writeFileSync(
+    path.join(repository, 'tracked.txt'),
+    'one\ntwo\nthree\nfeature one\nfeature two\n',
+  )
+  git(repository, ['add', 'tracked.txt'])
+  git(repository, ['commit', '-m', 'feature two'])
+  git(repository, ['merge', '--no-ff', 'side', '-m', 'merge side'])
+
+  writeFileSync(path.join(repository, 'staged.txt'), 'staged content\n')
+  git(repository, ['add', 'staged.txt'])
+  git(repository, ['rm', 'deleted.txt'])
+  writeFileSync(
+    path.join(repository, 'tracked.txt'),
+    'one\ntwo edited\nthree\nfeature one\nfeature two\n',
+  )
+  writeFileSync(path.join(repository, 'untracked.txt'), 'untracked content\n')
+
+  return { directory, repository }
+}
+
+function git(cwd: string, args: string[]): string {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      GIT_AUTHOR_DATE: '2026-01-01T00:00:00Z',
+      GIT_COMMITTER_DATE: '2026-01-01T00:00:00Z',
+    },
+  })
+}
