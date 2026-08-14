@@ -113,3 +113,11 @@ export function EyeOffIcon(props: IconProps) {
     </Icon>
   )
 }
+
+export function WrapIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M2 4h12M2 8h9a2 2 0 0 1 0 4H8m2-2-2 2 2 2M2 12h3" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+    </Icon>
+  )
+}

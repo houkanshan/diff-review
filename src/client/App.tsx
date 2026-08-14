@@ -53,9 +53,11 @@ import {
   EyeOffIcon,
   RefreshIcon,
   ThemeIcon,
+  WrapIcon,
 } from './icons'
 
 type DiffLayout = 'unified' | 'split'
+type DiffOverflow = 'wrap' | 'scroll'
 type ThemePreference = 'system' | 'light' | 'dark'
 type ResolvedTheme = 'light' | 'dark'
 type ReviewLineAnnotation =
@@ -156,6 +158,7 @@ function ReviewWorkspace({
 }) {
   const viewerRef = useRef<CodeViewHandle<ReviewLineAnnotation>>(null)
   const [layout, setLayout] = useState<DiffLayout>('unified')
+  const [overflow, setOverflow] = useState<DiffOverflow>('wrap')
   const [selection, setSelection] = useState<CodeViewLineSelection | null>(null)
   const [composerSelection, setComposerSelection] = useState<CodeViewLineSelection | null>(null)
   const [selectionRevision, setSelectionRevision] = useState(0)
@@ -231,7 +234,7 @@ function ReviewWorkspace({
       themeType: resolvedTheme,
       diffStyle: layout,
       diffIndicators: 'bars',
-      overflow: 'scroll',
+      overflow,
       enableLineSelection: true,
       lineHoverHighlight: 'both',
       hunkSeparators: 'line-info-basic',
@@ -287,7 +290,7 @@ function ReviewWorkspace({
         applyImportance(node, phase, context, session.annotations)
       },
     }),
-    [layout, resolvedTheme, session.annotations, session.id, session.updatedAt],
+    [layout, overflow, resolvedTheme, session.annotations, session.id, session.updatedAt],
   )
 
   const handleSelection = useCallback((next: CodeViewLineSelection | null) => {
@@ -405,14 +408,13 @@ function ReviewWorkspace({
             Split
           </Toggle>
         </ToggleGroup>
-        <Toggle
-          className="whitespace-toggle"
-          pressed={session.ignoreWhitespace}
-          disabled={busy}
-          onPressedChange={updateIgnoreWhitespace}
-        >
-          Ignore whitespace
-        </Toggle>
+        <DiffOptionsMenu
+          wrap={overflow === 'wrap'}
+          ignoreWhitespace={session.ignoreWhitespace}
+          busy={busy}
+          onWrapChange={(wrap) => setOverflow(wrap ? 'wrap' : 'scroll')}
+          onIgnoreWhitespaceChange={updateIgnoreWhitespace}
+        />
         <ThemePicker value={themePreference} onChange={onThemeChange} />
         <button className="icon-button" onClick={refresh} aria-label="Refresh diff" disabled={busy}>
           <RefreshIcon className={busy ? 'spinning' : ''} />
@@ -625,6 +627,60 @@ function ThemePicker({
                   </Menu.RadioItem>
                 ))}
               </Menu.RadioGroup>
+            </Menu.Group>
+          </Menu.Popup>
+        </Menu.Positioner>
+      </Menu.Portal>
+    </Menu.Root>
+  )
+}
+
+function DiffOptionsMenu({
+  wrap,
+  ignoreWhitespace,
+  busy,
+  onWrapChange,
+  onIgnoreWhitespaceChange,
+}: {
+  wrap: boolean
+  ignoreWhitespace: boolean
+  busy: boolean
+  onWrapChange(wrap: boolean): void
+  onIgnoreWhitespaceChange(ignoreWhitespace: boolean): void
+}) {
+  return (
+    <Menu.Root>
+      <Menu.Trigger className="diff-options-trigger" aria-label="Diff options">
+        <WrapIcon />
+        <span>Options</span>
+        <ChevronIcon />
+      </Menu.Trigger>
+      <Menu.Portal>
+        <Menu.Positioner className="popup-positioner" sideOffset={8} align="end">
+          <Menu.Popup className="diff-options-menu">
+            <Menu.Group>
+              <Menu.GroupLabel className="menu-kicker">Diff options</Menu.GroupLabel>
+              <Menu.CheckboxItem
+                checked={wrap}
+                onCheckedChange={onWrapChange}
+                className="diff-option"
+              >
+                <Menu.CheckboxItemIndicator className="diff-option-check">
+                  <CheckIcon />
+                </Menu.CheckboxItemIndicator>
+                <span>Wrap lines</span>
+              </Menu.CheckboxItem>
+              <Menu.CheckboxItem
+                checked={ignoreWhitespace}
+                disabled={busy}
+                onCheckedChange={onIgnoreWhitespaceChange}
+                className="diff-option"
+              >
+                <Menu.CheckboxItemIndicator className="diff-option-check">
+                  <CheckIcon />
+                </Menu.CheckboxItemIndicator>
+                <span>Ignore whitespace</span>
+              </Menu.CheckboxItem>
             </Menu.Group>
           </Menu.Popup>
         </Menu.Positioner>

@@ -242,7 +242,8 @@ svg {
 
 .target-menu,
 .commit-menu,
-.theme-menu {
+.theme-menu,
+.diff-options-menu {
   color: var(--text);
   border: 1px solid var(--border-strong);
   border-radius: 11px;
@@ -258,7 +259,9 @@ svg {
 .commit-menu[data-starting-style],
 .commit-menu[data-ending-style],
 .theme-menu[data-starting-style],
-.theme-menu[data-ending-style] {
+.theme-menu[data-ending-style],
+.diff-options-menu[data-starting-style],
+.diff-options-menu[data-ending-style] {
   opacity: 0;
   transform: scale(0.98) translateY(-3px);
 }
@@ -550,6 +553,40 @@ svg {
   color: var(--accent);
 }
 
+.diff-options-menu {
+  width: 205px;
+  padding: 6px;
+}
+
+.diff-option {
+  min-height: 34px;
+  display: grid;
+  grid-template-columns: 17px 1fr;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 7px;
+  border-radius: 6px;
+  outline: none;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.diff-option[data-highlighted] {
+  background: var(--hover);
+}
+
+.diff-option[data-disabled] {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.diff-option-check,
+.diff-option-check svg {
+  width: 13px;
+  height: 13px;
+  color: var(--accent);
+}
+
 .layout-switch {
   display: flex;
   padding: 2px;
@@ -576,9 +613,12 @@ svg {
   box-shadow: 0 1px 3px var(--shadow-soft);
 }
 
-.whitespace-toggle {
+.diff-options-trigger {
   height: 34px;
-  padding: 0 9px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
   color: var(--faint);
   border: 1px solid var(--border-soft);
   border-radius: 7px;
@@ -588,15 +628,16 @@ svg {
   white-space: nowrap;
 }
 
-.whitespace-toggle:hover {
+.diff-options-trigger:hover,
+.diff-options-trigger[data-popup-open] {
   color: var(--text-soft);
   border-color: var(--border-strong);
+  background: var(--surface-raised);
 }
 
-.whitespace-toggle[data-pressed] {
-  color: var(--accent);
-  border-color: var(--accent-border);
-  background: var(--accent-soft);
+.diff-options-trigger svg {
+  width: 13px;
+  height: 13px;
 }
 
 .icon-button,
@@ -1483,8 +1524,9 @@ body.resizing-panels * {
   .target-divider { display: none; }
   .target-trigger { max-width: 180px; }
   .commit-trigger { width: 160px; }
-  .whitespace-toggle { width: 34px; padding: 0; font-size: 0; }
-  .whitespace-toggle::after { content: 'Ws'; font-size: 9px; }
+  .diff-options-trigger { width: 34px; justify-content: center; padding: 0; }
+  .diff-options-trigger span,
+  .diff-options-trigger svg:last-child { display: none; }
   .agent-button { width: 34px; padding: 0; font-size: 0; }
 }
 
