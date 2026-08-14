@@ -20,8 +20,11 @@ export function getSession(id: string): Promise<ReviewSession> {
   return request(`/api/sessions/${encodeURIComponent(id)}`)
 }
 
-export function getSessions(): Promise<ReviewSession[]> {
-  return request('/api/sessions')
+export function getSessions(repositoryPath?: string): Promise<ReviewSession[]> {
+  const query = repositoryPath == null
+    ? ''
+    : `?repositoryPath=${encodeURIComponent(repositoryPath)}`
+  return request(`/api/sessions${query}`)
 }
 
 export function getRepositoryInfo(repositoryPath: string): Promise<RepositoryInfo> {

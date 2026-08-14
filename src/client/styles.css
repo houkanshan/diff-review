@@ -306,12 +306,12 @@ svg {
   background: var(--hover);
 }
 
-.target-option.featured {
+.target-option.selected {
   border: 1px solid var(--accent-border);
   background: var(--accent-soft);
 }
 
-.target-option.featured:hover {
+.target-option.selected:hover {
   background: color-mix(in srgb, var(--accent-soft) 82%, var(--accent) 18%);
 }
 

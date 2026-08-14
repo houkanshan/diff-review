@@ -608,23 +608,51 @@ function TargetPicker({
 }) {
   const [open, setOpen] = useState(false)
   const [repository, setRepository] = useState<RepositoryInfo | null>(null)
+  const visitedSessions = useRef(new Map<string, string>())
   const [customRange, setCustomRange] = useState('')
   const [prNumber, setPrNumber] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!open || repository != null) return
+    visitedSessions.current.set(reviewTargetKey(session.repositoryRoot, session.target), session.id)
+  }, [session.id, session.repositoryRoot, session.target])
+
+  useEffect(() => {
+    if (!open) return
     void getRepositoryInfo(session.repositoryRoot)
       .then(setRepository)
       .catch((caught) => setError(caught instanceof Error ? caught.message : String(caught)))
-  }, [open, repository, session.repositoryRoot])
+  }, [open, session.repositoryRoot])
 
   const choose = async (target: ReviewTarget) => {
+    if (reviewTargetsEqual(session.target, target)) {
+      setOpen(false)
+      return
+    }
     setBusy(true)
     setError(null)
     try {
+      const targetKey = reviewTargetKey(session.repositoryRoot, target)
+      const visitedId = visitedSessions.current.get(targetKey)
+      if (visitedId != null) {
+        setOpen(false)
+        onOpenSession(visitedId)
+        return
+      }
+      const matchingSessions = (await getSessions(session.repositoryRoot)).filter((item) =>
+        reviewTargetsEqual(item.target, target)
+      )
+      const existing =
+        matchingSessions.find((item) => item.annotations.length > 0) ?? matchingSessions.at(0)
+      if (existing != null) {
+        visitedSessions.current.set(targetKey, existing.id)
+        setOpen(false)
+        onOpenSession(existing.id)
+        return
+      }
       const next = await createSession({ repositoryPath: session.repositoryRoot, target })
+      visitedSessions.current.set(targetKey, next.id)
       setOpen(false)
       onOpenSession(next.id)
     } catch (caught) {
@@ -647,12 +675,30 @@ function TargetPicker({
         <Popover.Positioner className="popup-positioner" sideOffset={8} align="start">
           <Popover.Popup className="target-menu">
             <Popover.Title className="menu-kicker">Review target</Popover.Title>
-            <TargetOption label="Working tree" detail="git diff HEAD" onClick={() => void choose({ kind: 'worktree' })} />
-            <TargetOption label="Unstaged changes" detail="git diff" onClick={() => void choose({ kind: 'unstaged' })} />
-            <TargetOption label="Staged changes" detail="git diff --cached" onClick={() => void choose({ kind: 'staged' })} />
+            <TargetOption
+              selected={session.target.kind === 'worktree'}
+              label="Working tree"
+              detail="git diff HEAD"
+              onClick={() => void choose({ kind: 'worktree' })}
+            />
+            <TargetOption
+              selected={session.target.kind === 'unstaged'}
+              label="Unstaged changes"
+              detail="git diff"
+              onClick={() => void choose({ kind: 'unstaged' })}
+            />
+            <TargetOption
+              selected={session.target.kind === 'staged'}
+              label="Staged changes"
+              detail="git diff --cached"
+              onClick={() => void choose({ kind: 'staged' })}
+            />
             {repository?.branchRange != null && (
               <TargetOption
-                featured
+                selected={reviewTargetsEqual(session.target, {
+                  kind: 'range',
+                  expression: repository.branchRange,
+                })}
                 label="Current branch changes"
                 detail={repository.branchRange}
                 onClick={() => void choose({ kind: 'range', expression: repository.branchRange! })}
@@ -663,6 +709,10 @@ function TargetPicker({
             {repository?.pullRequests.slice(0, 4).map((pullRequest) => (
               <TargetOption
                 key={pullRequest.number}
+                selected={reviewTargetsEqual(session.target, {
+                  kind: 'pr',
+                  number: pullRequest.number,
+                })}
                 label={`#${pullRequest.number} ${pullRequest.title}`}
                 detail={`${pullRequest.baseRefName} ← ${pullRequest.headRefName}`}
                 onClick={() => void choose({ kind: 'pr', number: pullRequest.number })}
@@ -701,20 +751,39 @@ function TargetPicker({
 function TargetOption({
   label,
   detail,
-  featured = false,
+  selected = false,
   onClick,
 }: {
   label: string
   detail: string
-  featured?: boolean
+  selected?: boolean
   onClick(): void
 }) {
   return (
-    <button className={`target-option ${featured ? 'featured' : ''}`} onClick={onClick}>
+    <button
+      className={`target-option ${selected ? 'selected' : ''}`}
+      aria-current={selected ? 'true' : undefined}
+      onClick={onClick}
+    >
       <span>{label}</span>
       <code>{detail}</code>
     </button>
   )
+}
+
+function reviewTargetsEqual(left: ReviewTarget, right: ReviewTarget): boolean {
+  if (left.kind !== right.kind) return false
+  if (left.kind === 'range' && right.kind === 'range') {
+    return left.expression.trim() === right.expression.trim()
+  }
+  if (left.kind === 'pr' && right.kind === 'pr') return left.number === right.number
+  return true
+}
+
+function reviewTargetKey(repositoryRoot: string, target: ReviewTarget): string {
+  if (target.kind === 'range') return `${repositoryRoot}:range:${target.expression.trim()}`
+  if (target.kind === 'pr') return `${repositoryRoot}:pr:${target.number}`
+  return `${repositoryRoot}:${target.kind}`
 }
 
 function CommitPicker({
