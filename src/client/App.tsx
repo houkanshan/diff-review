@@ -221,7 +221,7 @@ function ReviewWorkspace({
       collapsedContextThreshold: 10,
       expansionLineCount: 20,
       lineDiffType: 'word-alt',
-      itemMetrics: { lineHeight: 13 },
+      itemMetrics: { lineHeight: 16 },
       onLineSelectionEnd(range, context) {
         if (range == null) return
         const next = { id: context.item.id, range }
@@ -958,6 +958,7 @@ function ChangedFileTree({
     density: 'compact',
     icons: { set: 'standard', colored: false },
     unsafeCSS: `
+      [data-item-type="file"] > [data-item-section="icon"] { display: none; }
       [data-item-section="content"] { flex: 1 1 auto; }
       [data-item-section="decoration"] {
         flex: 0 0 auto;

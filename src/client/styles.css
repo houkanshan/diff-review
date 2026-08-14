@@ -781,8 +781,8 @@ body.resizing-panels * {
   overflow: auto;
   --diffs-font-family: var(--font-mono);
   --diffs-header-font-family: var(--font-sans);
-  --diffs-font-size: 11px;
-  --diffs-line-height: 13px;
+  --diffs-font-size: 13px;
+  --diffs-line-height: 16px;
   --diffs-light-bg: #ffffff;
   --diffs-light: #242520;
   --diffs-dark-bg: #1a1b17;
