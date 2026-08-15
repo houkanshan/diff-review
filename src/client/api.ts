@@ -2,6 +2,11 @@ import type {
   AddAnnotationInput,
   ApiErrorShape,
   CreateSessionInput,
+  PiReviewStatus,
+  PullRequestDetails,
+  PullRequestListView,
+  PullRequestRevision,
+  PullRequestSummary,
   RepositoryInfo,
   ReviewSession,
   SessionAnnotation,
@@ -31,6 +36,33 @@ export function getRepositoryInfo(repositoryPath: string): Promise<RepositoryInf
   return request(`/api/repository?path=${encodeURIComponent(repositoryPath)}`)
 }
 
+export function getPullRequests(
+  repositoryPath: string,
+  view: PullRequestListView,
+): Promise<PullRequestSummary[]> {
+  return request(
+    `/api/pull-requests?repositoryPath=${encodeURIComponent(repositoryPath)}&view=${view}`,
+  )
+}
+
+export function getPullRequest(
+  repositoryPath: string,
+  number: number,
+): Promise<PullRequestDetails> {
+  return request(
+    `/api/pull-requests/${number}?repositoryPath=${encodeURIComponent(repositoryPath)}`,
+  )
+}
+
+export function getPullRequestRevisions(
+  repositoryPath: string,
+  number: number,
+): Promise<PullRequestRevision[]> {
+  return request(
+    `/api/pull-requests/${number}/revisions?repositoryPath=${encodeURIComponent(repositoryPath)}`,
+  )
+}
+
 export function createSession(input: CreateSessionInput): Promise<ReviewSession> {
   return request('/api/sessions', {
     method: 'POST',
@@ -40,6 +72,14 @@ export function createSession(input: CreateSessionInput): Promise<ReviewSession>
 
 export function refreshSession(id: string): Promise<ReviewSession> {
   return request(`/api/sessions/${encodeURIComponent(id)}/refresh`, { method: 'POST' })
+}
+
+export function getPiReviewStatus(id: string): Promise<PiReviewStatus> {
+  return request(`/api/sessions/${encodeURIComponent(id)}/pi-review`)
+}
+
+export function startPiReview(id: string): Promise<PiReviewStatus> {
+  return request(`/api/sessions/${encodeURIComponent(id)}/pi-review`, { method: 'POST' })
 }
 
 export function selectCommits(

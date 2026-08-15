@@ -7,6 +7,8 @@ import type {
   AddAnnotationInput,
   ApiErrorShape,
   CreateSessionInput,
+  PullRequestListView,
+  ReviewSession,
   ReviewTarget,
 } from '../shared/types.js'
 import { AppError, errorMessage } from './errors.js'
@@ -20,18 +22,22 @@ import {
   validateAnnotationTarget,
   validateReviewFilePath,
 } from './git.js'
+import { getPullRequestDetails, listPullRequests } from './github.js'
+import { PiReviewRunner } from './pi.js'
 import { ReviewStore } from './store.js'
 
 const JSON_BODY_LIMIT = 2 * 1024 * 1024
 
 export class ApiHandler {
   private readonly events = new EventEmitter()
+  private readonly piReviews: PiReviewRunner
 
   constructor(
     private readonly store: ReviewStore,
     private readonly clientDirectory: string | null,
   ) {
     this.events.setMaxListeners(100)
+    this.piReviews = new PiReviewRunner(store, (sessionId) => this.emitSessionUpdate(sessionId))
   }
 
   handle = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
@@ -75,6 +81,11 @@ export class ApiHandler {
     const fileStageMatch = /^\/api\/sessions\/([^/]+)\/files\/stage$/.exec(url.pathname)
     const fileViewedMatch = /^\/api\/sessions\/([^/]+)\/files\/viewed$/.exec(url.pathname)
     const fileMatch = /^\/api\/sessions\/([^/]+)\/file$/.exec(url.pathname)
+    const piReviewMatch = /^\/api\/sessions\/([^/]+)\/pi-review$/.exec(url.pathname)
+    const pullRequestMatch = /^\/api\/pull-requests\/(\d+)$/.exec(url.pathname)
+    const pullRequestRevisionsMatch = /^\/api\/pull-requests\/(\d+)\/revisions$/.exec(
+      url.pathname,
+    )
 
     if (method === 'GET' && url.pathname === '/api/health') {
       sendJson(response, 200, { app: 'diff-review', ok: true })
@@ -84,6 +95,29 @@ export class ApiHandler {
     if (method === 'GET' && url.pathname === '/api/repository') {
       const repositoryPath = requiredQuery(url, 'path')
       sendJson(response, 200, await getRepositoryInfo(repositoryPath))
+      return
+    }
+
+    if (method === 'GET' && url.pathname === '/api/pull-requests') {
+      const root = await resolveRepository(requiredQuery(url, 'repositoryPath'))
+      const view = parsePullRequestListView(requiredQuery(url, 'view'))
+      sendJson(response, 200, await listPullRequests(root, view))
+      return
+    }
+
+    if (method === 'GET' && pullRequestMatch != null) {
+      const root = await resolveRepository(requiredQuery(url, 'repositoryPath'))
+      sendJson(response, 200, await getPullRequestDetails(root, Number(pullRequestMatch[1])))
+      return
+    }
+
+    if (method === 'GET' && pullRequestRevisionsMatch != null) {
+      const root = await resolveRepository(requiredQuery(url, 'repositoryPath'))
+      sendJson(
+        response,
+        200,
+        this.store.listPullRequestRevisions(root, Number(pullRequestRevisionsMatch[1])),
+      )
       return
     }
 
@@ -98,7 +132,7 @@ export class ApiHandler {
       const input = parseCreateSessionInput(await readJson(request))
       const root = await resolveRepository(input.repositoryPath)
       const resolved = await resolveTarget(root, input.target)
-      const session = this.store.createSession(root, path.basename(root), input.target, resolved)
+      const session = this.createOrReuseSession(root, input.target, resolved)
       this.emitSessionUpdate(session.id)
       sendJson(response, 201, session)
       return
@@ -106,6 +140,16 @@ export class ApiHandler {
 
     if (method === 'GET' && sessionMatch != null) {
       sendJson(response, 200, this.store.getSession(sessionMatch[1] ?? ''))
+      return
+    }
+
+    if (method === 'GET' && piReviewMatch != null) {
+      sendJson(response, 200, this.piReviews.getStatus(piReviewMatch[1] ?? ''))
+      return
+    }
+
+    if (method === 'POST' && piReviewMatch != null) {
+      sendJson(response, 202, this.piReviews.start(piReviewMatch[1] ?? ''))
       return
     }
 
@@ -117,6 +161,16 @@ export class ApiHandler {
         session.target,
         session.ignoreWhitespace,
       )
+      if (session.target.kind === 'pr') {
+        const updated = this.createOrReuseSession(
+          session.repositoryRoot,
+          session.target,
+          resolved,
+        )
+        this.emitSessionUpdate(updated.id)
+        sendJson(response, 200, updated)
+        return
+      }
       const updated = this.store.updateResolvedReview(
         id,
         resolved,
@@ -132,6 +186,12 @@ export class ApiHandler {
     if (method === 'POST' && selectionMatch != null) {
       const id = selectionMatch[1] ?? ''
       const session = this.store.getSession(id)
+      if (session.target.kind === 'pr') {
+        throw new AppError(
+          'IMMUTABLE_PULL_REQUEST_REVISION',
+          'Commit selection cannot change an immutable pull request revision',
+        )
+      }
       const input = parseSelectionInput(await readJson(request))
       const startIndex = session.commits.findIndex((commit) => commit.oid === input.start)
       const endIndex = session.commits.findIndex((commit) => commit.oid === input.end)
@@ -161,6 +221,12 @@ export class ApiHandler {
       const id = whitespaceMatch[1] ?? ''
       const { ignoreWhitespace } = parseWhitespaceInput(await readJson(request))
       const session = this.store.getSession(id)
+      if (session.target.kind === 'pr') {
+        throw new AppError(
+          'IMMUTABLE_PULL_REQUEST_REVISION',
+          'Whitespace settings cannot change an immutable pull request revision',
+        )
+      }
       if (session.ignoreWhitespace === ignoreWhitespace) {
         sendJson(response, 200, session)
         return
@@ -364,6 +430,27 @@ export class ApiHandler {
     this.events.emit(`session:${sessionId}`)
   }
 
+  private createOrReuseSession(
+    root: string,
+    target: ReviewTarget,
+    resolved: Awaited<ReturnType<typeof resolveTarget>>,
+  ): ReviewSession {
+    if (
+      target.kind === 'pr' &&
+      resolved.oldSnapshot.kind === 'commit' &&
+      resolved.newSnapshot.kind === 'commit'
+    ) {
+      const existing = this.store.findPullRequestRevision(
+        root,
+        target.number,
+        resolved.oldSnapshot.id,
+        resolved.newSnapshot.id,
+      )
+      if (existing != null) return existing
+    }
+    return this.store.createSession(root, path.basename(root), target, resolved)
+  }
+
   private serveClient(response: ServerResponse, pathname: string): void {
     if (this.clientDirectory == null) {
       sendJson(response, 503, {
@@ -412,6 +499,11 @@ function parseCreateSessionInput(value: unknown): CreateSessionInput {
   const object = expectObject(value)
   const repositoryPath = expectString(object.repositoryPath, 'repositoryPath')
   return { repositoryPath, target: parseTarget(object.target) }
+}
+
+function parsePullRequestListView(value: string): PullRequestListView {
+  if (value === 'open' || value === 'additional-review' || value === 'merged') return value
+  throw new AppError('INVALID_INPUT', `Unknown pull request list view: ${value}`)
 }
 
 function parseTarget(value: unknown): ReviewTarget {

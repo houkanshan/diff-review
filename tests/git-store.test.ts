@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -13,6 +21,7 @@ import {
   stageReviewFile,
   validateAnnotationTarget,
 } from '../src/server/git.js'
+import { PiReviewRunner } from '../src/server/pi.js'
 import { ReviewStore } from '../src/server/store.js'
 
 const fixture = createGitFixture()
@@ -127,6 +136,48 @@ describe('Git review targets', () => {
     ).rejects.toThrow(/does not exist/)
   })
 
+  test('pins the merge base and head of a pull request revision', async () => {
+    const bin = path.join(fixture.directory, 'bin')
+    mkdirSync(bin, { recursive: true })
+    const gh = path.join(bin, 'gh')
+    const baseRefOid = git(fixture.repository, ['rev-parse', 'origin/main']).trim()
+    const headRefOid = git(fixture.repository, ['rev-parse', 'HEAD']).trim()
+    writeFileSync(
+      gh,
+      `#!/bin/sh
+cat <<'JSON'
+${JSON.stringify({
+  number: 42,
+  title: 'Fixture pull request',
+  url: 'https://example.test/pull/42',
+  baseRefName: 'main',
+  headRefName: 'feature',
+  baseRefOid,
+  headRefOid,
+})}
+JSON
+`,
+    )
+    chmodSync(gh, 0o755)
+    const originalPath = process.env.PATH
+    process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`
+
+    try {
+      const review = await resolveTarget(fixture.repository, { kind: 'pr', number: 42 })
+      const mergeBase = git(fixture.repository, ['merge-base', baseRefOid, headRefOid]).trim()
+      expect(review.oldSnapshot).toEqual({ kind: 'commit', id: mergeBase })
+      expect(review.newSnapshot).toEqual({ kind: 'commit', id: headRefOid })
+      const pinned = git(fixture.repository, [
+        'for-each-ref',
+        '--format=%(objectname)',
+        'refs/diff-review/pull-requests/42/',
+      ]).trim().split('\n').sort()
+      expect(pinned).toEqual([mergeBase, headRefOid].sort())
+    } finally {
+      process.env.PATH = originalPath
+    }
+  })
+
   test('adds one reviewed file to the index', async () => {
     const stagingFixture = createGitFixture()
     try {
@@ -145,6 +196,99 @@ describe('Git review targets', () => {
 })
 
 describe('local review storage', () => {
+  test('runs Pi against the immutable head in a disposable worktree', async () => {
+    const review = await resolveTarget(fixture.repository, {
+      kind: 'range',
+      expression: 'origin/main...HEAD',
+    })
+    const store = new ReviewStore(path.join(fixture.directory, 'pi-review.db'))
+    const session = store.createSession(
+      fixture.repository,
+      'repo',
+      { kind: 'pr', number: 42 },
+      review,
+    )
+    const bin = path.join(fixture.directory, 'bin')
+    mkdirSync(bin, { recursive: true })
+    const pi = path.join(bin, 'pi')
+    const output = path.join(fixture.directory, 'pi-output.txt')
+    writeFileSync(
+      pi,
+      `#!/bin/sh
+exec > "$PI_TEST_OUTPUT"
+pwd
+git rev-parse HEAD
+printf '%s\n' "$@"
+`,
+    )
+    chmodSync(pi, 0o755)
+    const originalPath = process.env.PATH
+    const originalOutput = process.env.PI_TEST_OUTPUT
+    process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`
+    process.env.PI_TEST_OUTPUT = output
+    const updates: string[] = []
+    const runner = new PiReviewRunner(store, (sessionId) => updates.push(sessionId))
+
+    try {
+      expect(runner.start(session.id).state).toBe('running')
+      expect(runner.start(session.id).state).toBe('running')
+      await waitFor(() => updates.length >= 2)
+      const lines = readFileSync(output, 'utf8').split('\n')
+      const worktree = lines[0] ?? ''
+      expect(lines[1]).toBe(session.revisionHeadOid)
+      expect(lines.join('\n')).toContain(`diff-review annotate ${session.id}`)
+      expect(runner.getStatus(session.id).state).toBe('completed')
+      expect(existsSync(worktree)).toBe(false)
+    } finally {
+      process.env.PATH = originalPath
+      if (originalOutput == null) delete process.env.PI_TEST_OUTPUT
+      else process.env.PI_TEST_OUTPUT = originalOutput
+    }
+  })
+
+  test('indexes pull request sessions by immutable base and head revisions', async () => {
+    const review = await resolveTarget(fixture.repository, {
+      kind: 'range',
+      expression: 'origin/main...HEAD',
+    })
+    expect(review.oldSnapshot.kind).toBe('commit')
+    expect(review.newSnapshot.kind).toBe('commit')
+    const databasePath = path.join(fixture.directory, 'pr-revisions.db')
+    const store = new ReviewStore(databasePath)
+    const session = store.createSession(
+      fixture.repository,
+      'repo',
+      { kind: 'pr', number: 42 },
+      review,
+    )
+    const baseOid = review.oldSnapshot.id
+    const headOid = review.newSnapshot.id
+
+    expect(session.revisionBaseOid).toBe(baseOid)
+    expect(session.revisionHeadOid).toBe(headOid)
+    expect(store.findPullRequestRevision(fixture.repository, 42, baseOid, headOid)?.id)
+      .toBe(session.id)
+    expect(store.findPullRequestRevision(fixture.repository, 43, baseOid, headOid)).toBeNull()
+
+    store.addAnnotation(session.id, {
+      filePath: 'tracked.txt',
+      side: 'new',
+      startLine: 5,
+      endLine: 5,
+      comment: 'Revision-specific finding',
+      source: 'agent',
+    })
+    expect(store.listPullRequestRevisions(fixture.repository, 42)).toEqual([
+      {
+        sessionId: session.id,
+        baseOid,
+        headOid,
+        annotationCount: 1,
+        createdAt: session.createdAt,
+      },
+    ])
+  })
+
   test('preserves the full commit timeline while viewing a selected span', async () => {
     const review = await resolveTarget(fixture.repository, {
       kind: 'range',
@@ -177,6 +321,8 @@ describe('local review storage', () => {
     expect(updated.patch).toContain('feature two')
     expect(updated.ignoreWhitespace).toBe(false)
     expect(updated.globalComment).toBeNull()
+    expect(updated.revisionBaseOid).toBeNull()
+    expect(updated.revisionHeadOid).toBeNull()
 
     expect(store.setGlobalComment(session.id, 'Review the routing behavior first').globalComment)
       .toBe('Review the routing behavior first')
@@ -314,6 +460,30 @@ describe('local review storage', () => {
         '2026-01-01T00:00:00Z',
       )
     database
+      .prepare(`
+        INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        'drs_legacy_pr',
+        fixture.repository,
+        'repo',
+        JSON.stringify({ kind: 'pr', number: 42 }),
+        'PR #42',
+        'git diff base head',
+        '',
+        JSON.stringify({
+          label: 'PR #42',
+          gitCommand: 'git diff base head',
+          oldSnapshot: { kind: 'commit', id: 'b'.repeat(40) },
+          newSnapshot: { kind: 'commit', id: commit.oid },
+          commits: [commit],
+        }),
+        commit.oid,
+        commit.oid,
+        '2026-01-02T00:00:00Z',
+        '2026-01-02T00:00:00Z',
+      )
+    database
       .prepare('INSERT INTO annotations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(
         'ann_legacy',
@@ -336,9 +506,13 @@ describe('local review storage', () => {
     expect(store.getSession('drs_legacy').viewedFiles).toEqual([])
     expect(store.getSession('drs_legacy').ignoreWhitespace).toBe(false)
     expect(store.getSession('drs_legacy').globalComment).toBeNull()
+    expect(store.getSession('drs_legacy').revisionBaseOid).toBeNull()
+    expect(store.getSession('drs_legacy').revisionHeadOid).toBeNull()
     expect(store.getSession('drs_legacy').annotations).toMatchObject([
       { id: 'ann_legacy', endSide: null, archivedAt: null },
     ])
+    expect(store.getSession('drs_legacy_pr').revisionBaseOid).toBe('b'.repeat(40))
+    expect(store.getSession('drs_legacy_pr').revisionHeadOid).toBe(commit.oid)
   })
 })
 
@@ -404,4 +578,12 @@ function git(cwd: string, args: string[]): string {
       GIT_COMMITTER_DATE: '2026-01-01T00:00:00Z',
     },
   })
+}
+
+async function waitFor(condition: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (condition()) return
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error('Timed out waiting for asynchronous work')
 }

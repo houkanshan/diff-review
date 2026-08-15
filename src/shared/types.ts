@@ -46,6 +46,8 @@ export interface ReviewSession {
   globalComment: string | null
   viewedFiles: string[]
   ignoreWhitespace: boolean
+  revisionBaseOid: string | null
+  revisionHeadOid: string | null
   createdAt: string
   updatedAt: string
 }
@@ -56,15 +58,95 @@ export interface RepositoryInfo {
   branch: string | null
   defaultBranchRef: string | null
   branchRange: string | null
-  pullRequests: PullRequestSummary[]
+}
+
+export type PullRequestListView = 'open' | 'additional-review' | 'merged'
+export type PullRequestState = 'OPEN' | 'CLOSED' | 'MERGED'
+export type PullRequestCheckStatus = 'none' | 'pending' | 'pass' | 'fail'
+
+export interface GitHubUser {
+  login: string
+  name: string | null
+  avatarUrl: string | null
+}
+
+export interface GitHubLabel {
+  name: string
+  color: string
 }
 
 export interface PullRequestSummary {
   number: number
   title: string
+  url: string
+  state: PullRequestState
+  isDraft: boolean
   baseRefName: string
   headRefName: string
+  additions: number
+  deletions: number
+  createdAt: string
+  updatedAt: string
+  author: GitHubUser
+  assignees: GitHubUser[]
+  labels: GitHubLabel[]
+  checkStatus: PullRequestCheckStatus
 }
+
+export type PullRequestActivity =
+  | {
+      kind: 'comment'
+      id: string
+      author: GitHubUser
+      body: string
+      createdAt: string
+      updatedAt: string
+      url: string | null
+    }
+  | {
+      kind: 'review'
+      id: string
+      author: GitHubUser
+      body: string
+      state: string
+      createdAt: string
+      updatedAt: string
+      url: string | null
+    }
+  | {
+      kind: 'review-comment'
+      id: string
+      author: GitHubUser
+      body: string
+      path: string
+      line: number | null
+      side: DiffSide | null
+      replyToId: string | null
+      createdAt: string
+      updatedAt: string
+      url: string | null
+    }
+
+export interface PullRequestDetails extends PullRequestSummary {
+  body: string
+  baseRefOid: string
+  headRefOid: string
+  activity: PullRequestActivity[]
+}
+
+export interface PullRequestRevision {
+  sessionId: string
+  baseOid: string
+  headOid: string
+  annotationCount: number
+  createdAt: string
+}
+
+export type PiReviewStatus =
+  | { state: 'idle' }
+  | { state: 'running'; startedAt: string }
+  | { state: 'completed'; startedAt: string; completedAt: string }
+  | { state: 'failed'; startedAt: string; completedAt: string; error: string }
 
 export interface CreateSessionInput {
   repositoryPath: string

@@ -5,11 +5,11 @@ import path from 'node:path'
 
 import type {
   CommitSummary,
-  PullRequestSummary,
   RepositoryInfo,
   ReviewTarget,
 } from '../shared/types.js'
-import { AppError, errorMessage } from './errors.js'
+import { AppError } from './errors.js'
+import { getPullRequestRevisionDetails } from './github.js'
 
 export type SnapshotRef =
   | { kind: 'commit'; id: string }
@@ -29,12 +29,6 @@ interface CommandResult {
   stdout: string
   stderr: string
   exitCode: number
-}
-
-interface PullRequestDetails extends PullRequestSummary {
-  baseRefOid: string
-  headRefOid: string
-  url: string
 }
 
 const MAX_OUTPUT_BYTES = 128 * 1024 * 1024
@@ -62,7 +56,6 @@ export async function getRepositoryInfo(repositoryPath: string): Promise<Reposit
   const branchResult = await runGit(root, ['branch', '--show-current'], true)
   const branch = branchResult.stdout.trim() || null
   const defaultBranchRef = await resolveDefaultBranch(root)
-  const pullRequests = await listPullRequests(root)
 
   return {
     root,
@@ -70,7 +63,6 @@ export async function getRepositoryInfo(repositoryPath: string): Promise<Reposit
     branch,
     defaultBranchRef,
     branchRange: defaultBranchRef == null ? null : `${defaultBranchRef}...HEAD`,
-    pullRequests,
   }
 }
 
@@ -295,12 +287,13 @@ async function resolvePullRequest(
     throw new AppError('INVALID_PULL_REQUEST', `Invalid pull request number: ${number}`)
   }
 
-  const details = await pullRequestDetails(root, number)
+  const details = await getPullRequestRevisionDetails(root, number)
   await ensureCommitAvailable(root, details.baseRefOid, details.baseRefName)
   await ensurePullRequestHeadAvailable(root, number, details.headRefOid)
   const base = (
     await runGit(root, ['merge-base', details.baseRefOid, details.headRefOid])
   ).stdout.trim()
+  await pinPullRequestRevision(root, number, base, details.headRefOid)
 
   return {
     label: `PR #${number} · ${details.title}`,
@@ -327,48 +320,16 @@ async function resolveDefaultBranch(root: string): Promise<string | null> {
   return null
 }
 
-async function listPullRequests(root: string): Promise<PullRequestSummary[]> {
-  const result = await runCommand(
-    'gh',
-    [
-      'pr',
-      'list',
-      '--limit',
-      '20',
-      '--json',
-      'number,title,baseRefName,headRefName',
-    ],
-    root,
-    true,
-  )
-  if (result.exitCode !== 0) return []
-  try {
-    return JSON.parse(result.stdout) as PullRequestSummary[]
-  } catch {
-    return []
-  }
-}
-
-async function pullRequestDetails(root: string, number: number): Promise<PullRequestDetails> {
-  const result = await runCommand(
-    'gh',
-    [
-      'pr',
-      'view',
-      String(number),
-      '--json',
-      'number,title,url,baseRefName,headRefName,baseRefOid,headRefOid',
-    ],
-    root,
-  )
-  try {
-    return JSON.parse(result.stdout) as PullRequestDetails
-  } catch (error) {
-    throw new AppError(
-      'GITHUB_RESPONSE_INVALID',
-      `Could not parse GitHub PR #${number}: ${errorMessage(error)}`,
-    )
-  }
+async function pinPullRequestRevision(
+  root: string,
+  number: number,
+  baseOid: string,
+  headOid: string,
+): Promise<void> {
+  const key = contentId(`${baseOid}\0${headOid}`).slice(0, 16)
+  const prefix = `refs/diff-review/pull-requests/${number}/${key}`
+  await runGit(root, ['update-ref', `${prefix}/base`, baseOid])
+  await runGit(root, ['update-ref', `${prefix}/head`, headOid])
 }
 
 async function ensureCommitAvailable(root: string, oid: string, fallbackRef: string): Promise<void> {

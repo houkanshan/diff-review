@@ -18,6 +18,8 @@ import { ToggleGroup } from '@base-ui/react/toggle-group'
 import { Tooltip } from '@base-ui/react/tooltip'
 import type { GitStatusEntry } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
+import Markdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import {
   useCallback,
   useEffect,
@@ -31,6 +33,12 @@ import {
 
 import type {
   DiffSide,
+  PiReviewStatus,
+  PullRequestActivity,
+  PullRequestDetails,
+  PullRequestListView,
+  PullRequestRevision,
+  PullRequestSummary,
   RepositoryInfo,
   ReviewSession,
   ReviewTarget,
@@ -41,6 +49,10 @@ import {
   archiveAllAnnotations,
   createSession,
   getFileContents,
+  getPiReviewStatus,
+  getPullRequest,
+  getPullRequestRevisions,
+  getPullRequests,
   getRepositoryInfo,
   getSession,
   getSessions,
@@ -50,6 +62,7 @@ import {
   setFileViewed,
   setIgnoreWhitespace,
   stageFile,
+  startPiReview,
   updateAnnotationComment,
   updateGlobalComment,
 } from './api'
@@ -79,6 +92,26 @@ type ReviewLineAnnotation =
   | { kind: 'saved'; annotation: SessionAnnotation }
   | { kind: 'composer'; selection: CodeViewLineSelection }
 
+type AppRoute =
+  | { kind: 'root' }
+  | { kind: 'session'; sessionId: string }
+  | {
+      kind: 'pull-requests'
+      repositoryPath: string
+      pullRequestNumber: number | null
+      revisionId: string | null
+    }
+
+interface PullRequestWorkspaceContext {
+  details: PullRequestDetails
+  revisions: PullRequestRevision[]
+  currentSessionId: string
+  list: ReactNode
+  piStatus: PiReviewStatus
+  onSelectRevision(sessionId: string): void
+  onStartPiReview(): Promise<void>
+}
+
 interface FileChangeStats {
   additions: number
   deletions: number
@@ -87,22 +120,104 @@ interface FileChangeStats {
 
 export default function App() {
   const theme = useThemePreference()
-  const [sessionId, setSessionId] = useState<string | null>(() => sessionIdFromPath())
+  const [route, setRoute] = useState<AppRoute>(() => routeFromLocation())
+
+  useEffect(() => {
+    const onPopState = () => setRoute(routeFromLocation())
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
+
+  const openSession = useCallback((id: string, replace = false) => {
+    const pathname = `/s/${encodeURIComponent(id)}`
+    window.history[replace ? 'replaceState' : 'pushState'](null, '', pathname)
+    setRoute({ kind: 'session', sessionId: id })
+  }, [])
+
+  const openPullRequests = useCallback((
+    repositoryPath: string,
+    pullRequestNumber: number | null = null,
+    revisionId: string | null = null,
+    replace = false,
+  ) => {
+    const query = new URLSearchParams({ repo: repositoryPath })
+    if (pullRequestNumber != null) query.set('pr', String(pullRequestNumber))
+    if (revisionId != null) query.set('revision', revisionId)
+    window.history[replace ? 'replaceState' : 'pushState'](
+      null,
+      '',
+      `/pull-requests?${query}`,
+    )
+    setRoute({ kind: 'pull-requests', repositoryPath, pullRequestNumber, revisionId })
+  }, [])
+
+  if (route.kind === 'root') {
+    return <RootRedirect onOpenSession={openSession} />
+  }
+  if (route.kind === 'pull-requests') {
+    return (
+      <PullRequestsPage
+        route={route}
+        onOpenSession={openSession}
+        onOpenPullRequests={openPullRequests}
+        themePreference={theme.preference}
+        resolvedTheme={theme.resolved}
+        onThemeChange={theme.setPreference}
+      />
+    )
+  }
+  return (
+    <SessionPage
+      sessionId={route.sessionId}
+      onOpenSession={openSession}
+      onOpenPullRequests={openPullRequests}
+      themePreference={theme.preference}
+      resolvedTheme={theme.resolved}
+      onThemeChange={theme.setPreference}
+    />
+  )
+}
+
+function SessionPage({
+  sessionId,
+  onOpenSession,
+  onOpenPullRequests,
+  themePreference,
+  resolvedTheme,
+  onThemeChange,
+}: {
+  sessionId: string
+  onOpenSession(id: string, replace?: boolean): void
+  onOpenPullRequests(
+    repositoryPath: string,
+    pullRequestNumber?: number | null,
+    revisionId?: string | null,
+    replace?: boolean,
+  ): void
+  themePreference: ThemePreference
+  resolvedTheme: ResolvedTheme
+  onThemeChange(theme: ThemePreference): void
+}) {
   const [session, setSession] = useState<ReviewSession | null>(null)
-  const [loading, setLoading] = useState(sessionId != null)
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const loadSession = useCallback(async (id: string, quiet = false) => {
     if (!quiet) setLoading(true)
     try {
-      setSession(await getSession(id))
+      const next = await getSession(id)
+      if (next.target.kind === 'pr') {
+        onOpenPullRequests(next.repositoryRoot, next.target.number, next.id, true)
+        return
+      }
+      setSession(next)
       setError(null)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught))
     } finally {
       if (!quiet) setLoading(false)
     }
-  }, [])
+  }, [onOpenPullRequests])
 
   useEffect(() => {
     if (sessionId == null) return
@@ -112,29 +227,9 @@ export default function App() {
     return () => events.close()
   }, [loadSession, sessionId])
 
-  useEffect(() => {
-    const onPopState = () => setSessionId(sessionIdFromPath())
-    window.addEventListener('popstate', onPopState)
-    return () => window.removeEventListener('popstate', onPopState)
-  }, [])
-
-  const openSession = useCallback((id: string) => {
-    window.history.pushState(null, '', `/s/${id}`)
-    setSessionId(id)
-  }, [])
-
-  if (sessionId == null) {
-    return (
-      <Welcome
-        onOpenSession={openSession}
-        themePreference={theme.preference}
-        onThemeChange={theme.setPreference}
-      />
-    )
-  }
   if (loading && session == null) return <LoadingScreen />
   if (error != null && session == null) {
-    return <ErrorScreen message={error} onBack={() => openHome(setSessionId)} />
+    return <ErrorScreen message={error} onBack={() => window.history.back()} />
   }
   if (session == null) return null
 
@@ -143,11 +238,246 @@ export default function App() {
       session={session}
       error={error}
       onSessionChange={setSession}
-      onOpenSession={openSession}
+      onOpenSession={onOpenSession}
+      onOpenPullRequests={onOpenPullRequests}
       onReload={() => loadSession(session.id, true)}
-      themePreference={theme.preference}
-      resolvedTheme={theme.resolved}
-      onThemeChange={theme.setPreference}
+      themePreference={themePreference}
+      resolvedTheme={resolvedTheme}
+      onThemeChange={onThemeChange}
+    />
+  )
+}
+
+function RootRedirect({
+  onOpenSession,
+}: {
+  onOpenSession(id: string, replace?: boolean): void
+}) {
+  const [empty, setEmpty] = useState(false)
+  useEffect(() => {
+    void getSessions()
+      .then((sessions) => {
+        const latest = sessions.at(0)
+        if (latest == null) setEmpty(true)
+        else onOpenSession(latest.id, true)
+      })
+      .catch(() => setEmpty(true))
+  }, [onOpenSession])
+  if (!empty) return <LoadingScreen />
+  return (
+    <main className="root-empty">
+      <span className="welcome-mark">Δ</span>
+      <h1>No local reviews yet</h1>
+      <p>Run <code>diff-review</code> from a Git repository to open the review desk.</p>
+    </main>
+  )
+}
+
+function PullRequestsPage({
+  route,
+  onOpenSession,
+  onOpenPullRequests,
+  themePreference,
+  resolvedTheme,
+  onThemeChange,
+}: {
+  route: Extract<AppRoute, { kind: 'pull-requests' }>
+  onOpenSession(id: string, replace?: boolean): void
+  onOpenPullRequests(
+    repositoryPath: string,
+    pullRequestNumber?: number | null,
+    revisionId?: string | null,
+    replace?: boolean,
+  ): void
+  themePreference: ThemePreference
+  resolvedTheme: ResolvedTheme
+  onThemeChange(theme: ThemePreference): void
+}) {
+  const [view, setView] = useState<PullRequestListView>('open')
+  const [repository, setRepository] = useState<RepositoryInfo | null>(null)
+  const [pullRequests, setPullRequests] = useState<PullRequestSummary[]>([])
+  const [listLoading, setListLoading] = useState(true)
+  const [listError, setListError] = useState<string | null>(null)
+  const [details, setDetails] = useState<PullRequestDetails | null>(null)
+  const [session, setSession] = useState<ReviewSession | null>(null)
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
+  const [revisions, setRevisions] = useState<PullRequestRevision[]>([])
+  const [piStatus, setPiStatus] = useState<PiReviewStatus>({ state: 'idle' })
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailError, setDetailError] = useState<string | null>(null)
+
+  useEffect(() => {
+    void getRepositoryInfo(route.repositoryPath).then(setRepository).catch(() => undefined)
+  }, [route.repositoryPath])
+
+  useEffect(() => {
+    let active = true
+    setListLoading(true)
+    setListError(null)
+    void getPullRequests(route.repositoryPath, view)
+      .then((items) => {
+        if (active) setPullRequests(items)
+      })
+      .catch((caught) => {
+        if (active) setListError(caught instanceof Error ? caught.message : String(caught))
+      })
+      .finally(() => {
+        if (active) setListLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [route.repositoryPath, view])
+
+  useEffect(() => {
+    const number = route.pullRequestNumber
+    if (number == null) {
+      setDetails(null)
+      setSession(null)
+      setCurrentSessionId(null)
+      setRevisions([])
+      return
+    }
+    let active = true
+    setDetailLoading(true)
+    setDetailError(null)
+    setDetails(null)
+    setSession(null)
+    setCurrentSessionId(null)
+    setRevisions([])
+    const currentRequest = createSession({
+      repositoryPath: route.repositoryPath,
+      target: { kind: 'pr', number },
+    })
+    void Promise.all([
+      getPullRequest(route.repositoryPath, number),
+      currentRequest,
+      route.revisionId == null ? currentRequest : getSession(route.revisionId),
+    ])
+      .then(async ([nextDetails, current, selected]) => {
+        if (
+          selected.repositoryRoot !== current.repositoryRoot ||
+          selected.target.kind !== 'pr' ||
+          selected.target.number !== number
+        ) {
+          throw new Error('The selected revision does not belong to this pull request')
+        }
+        const [nextRevisions, nextPiStatus] = await Promise.all([
+          getPullRequestRevisions(route.repositoryPath, number),
+          getPiReviewStatus(selected.id),
+        ])
+        if (!active) return
+        setDetails(nextDetails)
+        setSession(selected)
+        setCurrentSessionId(current.id)
+        setRevisions(nextRevisions)
+        setPiStatus(nextPiStatus)
+        if (route.revisionId == null) {
+          onOpenPullRequests(route.repositoryPath, number, current.id, true)
+        }
+      })
+      .catch((caught) => {
+        if (active) setDetailError(caught instanceof Error ? caught.message : String(caught))
+      })
+      .finally(() => {
+        if (active) setDetailLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [
+    onOpenPullRequests,
+    route.pullRequestNumber,
+    route.repositoryPath,
+    route.revisionId,
+  ])
+
+  useEffect(() => {
+    if (session == null || route.pullRequestNumber == null) return
+    const sessionId = session.id
+    const events = new EventSource(`/api/events?session=${encodeURIComponent(sessionId)}`)
+    events.onmessage = () => {
+      void Promise.all([
+        getSession(sessionId),
+        getPullRequestRevisions(route.repositoryPath, route.pullRequestNumber!),
+        getPiReviewStatus(sessionId),
+      ]).then(([nextSession, nextRevisions, nextPiStatus]) => {
+        setSession(nextSession)
+        setRevisions(nextRevisions)
+        setPiStatus(nextPiStatus)
+      })
+    }
+    return () => events.close()
+  }, [route.pullRequestNumber, route.repositoryPath, session?.id])
+
+  const rail = (
+    <PullRequestRail
+      view={view}
+      items={pullRequests}
+      selectedNumber={route.pullRequestNumber}
+      loading={listLoading}
+      error={listError}
+      onViewChange={setView}
+      onSelect={(number) => onOpenPullRequests(route.repositoryPath, number)}
+    />
+  )
+
+  if (session == null || details == null || currentSessionId == null) {
+    return (
+      <main className="review-shell">
+        <header className="topbar">
+          <div className="brand">
+            <span className="brand-mark">Δ</span>
+            <span>Diff Review</span>
+          </div>
+          <button className="global-nav-tab active">Pull requests</button>
+          <LocalReviewPicker
+            repositoryRoot={route.repositoryPath}
+            repositoryName={repository?.name ?? repositoryNameFromPath(route.repositoryPath)}
+            currentSession={null}
+            active={false}
+            onOpenSession={onOpenSession}
+          />
+          <div className="topbar-spacer" />
+          <ThemePicker value={themePreference} onChange={onThemeChange} />
+        </header>
+        <div className="pr-empty-workspace">
+          {rail}
+          <section className="pr-selection-empty">
+            {detailError != null ? (
+              <><span>Pull request unavailable</span><p>{detailError}</p></>
+            ) : detailLoading ? (
+              <><span className="loading-ring" /><p>Resolving pull request revision…</p></>
+            ) : (
+              <><span className="empty-glyph">↗</span><p>Select a pull request to begin.</p></>
+            )}
+          </section>
+        </div>
+      </main>
+    )
+  }
+
+  const number = details.number
+  return (
+    <ReviewWorkspace
+      session={session}
+      error={detailError}
+      onSessionChange={setSession}
+      onOpenSession={(id) => onOpenPullRequests(route.repositoryPath, number, id)}
+      onOpenPullRequests={onOpenPullRequests}
+      onReload={async () => setSession(await getSession(session.id))}
+      themePreference={themePreference}
+      resolvedTheme={resolvedTheme}
+      onThemeChange={onThemeChange}
+      pullRequest={{
+        details,
+        revisions,
+        currentSessionId,
+        list: rail,
+        piStatus,
+        onSelectRevision: (id) => onOpenPullRequests(route.repositoryPath, number, id),
+        onStartPiReview: async () => setPiStatus(await startPiReview(session.id)),
+      }}
     />
   )
 }
@@ -157,19 +487,23 @@ function ReviewWorkspace({
   error,
   onSessionChange,
   onOpenSession,
+  onOpenPullRequests,
   onReload,
   themePreference,
   resolvedTheme,
   onThemeChange,
+  pullRequest,
 }: {
   session: ReviewSession
   error: string | null
   onSessionChange(session: ReviewSession): void
   onOpenSession(id: string): void
+  onOpenPullRequests(repositoryPath: string, pullRequestNumber?: number | null): void
   onReload(): Promise<void>
   themePreference: ThemePreference
   resolvedTheme: ResolvedTheme
   onThemeChange(theme: ThemePreference): void
+  pullRequest?: PullRequestWorkspaceContext
 }) {
   const viewerRef = useRef<CodeViewHandle<ReviewLineAnnotation>>(null)
   const [layout, setLayout] = useState<DiffLayout>('unified')
@@ -375,11 +709,13 @@ function ReviewWorkspace({
   const refresh = useCallback(async () => {
     setBusy(true)
     try {
-      onSessionChange(await refreshSession(session.id))
+      const updated = await refreshSession(session.id)
+      if (updated.id === session.id) onSessionChange(updated)
+      else onOpenSession(updated.id)
     } finally {
       setBusy(false)
     }
-  }, [onSessionChange, session.id])
+  }, [onOpenSession, onSessionChange, session.id])
 
   const updateIgnoreWhitespace = useCallback(async (ignoreWhitespace: boolean) => {
     setBusy(true)
@@ -418,12 +754,37 @@ function ReviewWorkspace({
   return (
     <main className="review-shell">
       <header className="topbar">
-        <div className="brand" onClick={() => openHome()} role="button" tabIndex={0}>
+        <div className="brand">
           <span className="brand-mark">Δ</span>
           <span>Diff Review</span>
         </div>
-        <TargetPicker session={session} onOpenSession={onOpenSession} />
-        <CommitPicker session={session} onSessionChange={onSessionChange} />
+        <button
+          className={`global-nav-tab${pullRequest == null ? '' : ' active'}`}
+          onClick={() => onOpenPullRequests(
+            session.repositoryRoot,
+            session.target.kind === 'pr' ? session.target.number : null,
+          )}
+        >
+          Pull requests
+        </button>
+        <LocalReviewPicker
+          repositoryRoot={session.repositoryRoot}
+          repositoryName={session.repositoryName}
+          currentSession={session}
+          active={pullRequest == null}
+          onOpenSession={onOpenSession}
+        />
+        {pullRequest != null && (
+          <RevisionPicker
+            revisions={pullRequest.revisions}
+            selectedSessionId={session.id}
+            currentSessionId={pullRequest.currentSessionId}
+            onSelect={pullRequest.onSelectRevision}
+          />
+        )}
+        {pullRequest == null && (
+          <CommitPicker session={session} onSessionChange={onSessionChange} />
+        )}
         <div className="topbar-spacer" />
         <ToggleGroup
           className="layout-switch"
@@ -445,6 +806,7 @@ function ReviewWorkspace({
           wrap={overflow === 'wrap'}
           ignoreWhitespace={session.ignoreWhitespace}
           busy={busy}
+          showIgnoreWhitespace={pullRequest == null}
           onWrapChange={(wrap) => setOverflow(wrap ? 'wrap' : 'scroll')}
           onIgnoreWhitespaceChange={updateIgnoreWhitespace}
         />
@@ -452,13 +814,26 @@ function ReviewWorkspace({
         <button className="icon-button" onClick={refresh} aria-label="Refresh diff" disabled={busy}>
           <RefreshIcon className={busy ? 'spinning' : ''} />
         </button>
-        <button className="agent-button" onClick={copyForAgent}>
-          <CopyIcon />
-          {copied ? 'Copied' : 'Agent instruction'}
-        </button>
+        {pullRequest == null ? (
+          <button className="agent-button" onClick={copyForAgent}>
+            <CopyIcon />
+            {copied ? 'Copied' : 'Agent instruction'}
+          </button>
+        ) : (
+          <button
+            className="agent-button"
+            disabled={pullRequest.piStatus.state === 'running'}
+            title={pullRequest.piStatus.state === 'failed' ? pullRequest.piStatus.error : undefined}
+            onClick={() => void pullRequest.onStartPiReview()}
+          >
+            <span className={pullRequest.piStatus.state === 'running' ? 'pi-pulse' : ''}>π</span>
+            {piReviewButtonLabel(pullRequest.piStatus)}
+          </button>
+        )}
       </header>
 
-      <div className="workspace" style={workspaceStyle}>
+      <div className={`workspace${pullRequest == null ? '' : ' pr-workspace'}`} style={workspaceStyle}>
+        {pullRequest?.list}
         <FileRail
           files={parsedFiles}
           resolvedTheme={resolvedTheme}
@@ -496,6 +871,23 @@ function ReviewWorkspace({
               options={diffOptions}
               selectedLines={selection}
               onSelectedLinesChange={handleSelection}
+              renderCodeViewHeader={pullRequest == null ? undefined : () => (
+                <PullRequestConversation
+                  details={pullRequest.details}
+                  oldRevision={session.id !== pullRequest.currentSessionId}
+                  onNavigate={(activity) => {
+                    if (activity.kind !== 'review-comment' || activity.line == null) return
+                    viewerRef.current?.scrollTo({
+                      type: 'line',
+                      id: activity.path,
+                      lineNumber: activity.line,
+                      side: activity.side === 'old' ? 'deletions' : 'additions',
+                      align: 'start',
+                      behavior: 'smooth-auto',
+                    })
+                  }}
+                />
+              )}
               renderHeaderMetadata={(item) => (
                 <div
                   className="file-header-controls"
@@ -567,6 +959,7 @@ function ReviewWorkspace({
           onSetArchived={setArchived}
           onUpdateComment={editAnnotation}
           onUpdateGlobalComment={editGlobalComment}
+          allowGlobalComment={pullRequest == null}
           onArchiveAll={archiveAll}
           onNavigate={(annotation) => {
             viewerRef.current?.scrollTo({
@@ -691,12 +1084,14 @@ function DiffOptionsMenu({
   wrap,
   ignoreWhitespace,
   busy,
+  showIgnoreWhitespace,
   onWrapChange,
   onIgnoreWhitespaceChange,
 }: {
   wrap: boolean
   ignoreWhitespace: boolean
   busy: boolean
+  showIgnoreWhitespace: boolean
   onWrapChange(wrap: boolean): void
   onIgnoreWhitespaceChange(ignoreWhitespace: boolean): void
 }) {
@@ -722,17 +1117,19 @@ function DiffOptionsMenu({
                 </Menu.CheckboxItemIndicator>
                 <span>Wrap lines</span>
               </Menu.CheckboxItem>
-              <Menu.CheckboxItem
-                checked={ignoreWhitespace}
-                disabled={busy}
-                onCheckedChange={onIgnoreWhitespaceChange}
-                className="diff-option"
-              >
-                <Menu.CheckboxItemIndicator className="diff-option-check">
-                  <CheckIcon />
-                </Menu.CheckboxItemIndicator>
-                <span>Ignore whitespace</span>
-              </Menu.CheckboxItem>
+              {showIgnoreWhitespace && (
+                <Menu.CheckboxItem
+                  checked={ignoreWhitespace}
+                  disabled={busy}
+                  onCheckedChange={onIgnoreWhitespaceChange}
+                  className="diff-option"
+                >
+                  <Menu.CheckboxItemIndicator className="diff-option-check">
+                    <CheckIcon />
+                  </Menu.CheckboxItemIndicator>
+                  <span>Ignore whitespace</span>
+                </Menu.CheckboxItem>
+              )}
             </Menu.Group>
           </Menu.Popup>
         </Menu.Positioner>
@@ -741,48 +1138,297 @@ function DiffOptionsMenu({
   )
 }
 
-function TargetPicker({
-  session,
+function PullRequestRail({
+  view,
+  items,
+  selectedNumber,
+  loading,
+  error,
+  onViewChange,
+  onSelect,
+}: {
+  view: PullRequestListView
+  items: PullRequestSummary[]
+  selectedNumber: number | null
+  loading: boolean
+  error: string | null
+  onViewChange(view: PullRequestListView): void
+  onSelect(number: number): void
+}) {
+  const views: { id: PullRequestListView; label: string }[] = [
+    { id: 'open', label: 'Open' },
+    { id: 'additional-review', label: 'Additional' },
+    { id: 'merged', label: 'Merged' },
+  ]
+  return (
+    <aside className="pr-rail">
+      <div className="pr-rail-heading">
+        <div><span>Pull requests</span><strong>{loading ? '…' : items.length}</strong></div>
+        <div className="pr-view-tabs" role="tablist" aria-label="Pull request view">
+          {views.map((item) => (
+            <button
+              key={item.id}
+              role="tab"
+              aria-selected={view === item.id}
+              className={view === item.id ? 'active' : ''}
+              onClick={() => onViewChange(item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="pr-list">
+        {error != null ? (
+          <div className="pr-list-message error">{error}</div>
+        ) : loading ? (
+          <div className="pr-list-message"><span className="loading-ring" /> Loading pull requests…</div>
+        ) : items.length === 0 ? (
+          <div className="pr-list-message">No pull requests in this view.</div>
+        ) : items.map((pullRequest) => (
+          <button
+            key={pullRequest.number}
+            className={`pr-list-item${selectedNumber === pullRequest.number ? ' selected' : ''}`}
+            onClick={() => onSelect(pullRequest.number)}
+          >
+            <div className="pr-item-kicker">
+              <span className={`pr-state ${pullRequest.isDraft ? 'draft' : pullRequest.state.toLowerCase()}`}>
+                {pullRequest.isDraft ? 'Draft' : titleCase(pullRequest.state)}
+              </span>
+              <span className={`check-state ${pullRequest.checkStatus}`}>
+                <i />{checkStatusLabel(pullRequest.checkStatus)}
+              </span>
+              <code>#{pullRequest.number}</code>
+            </div>
+            <strong className="pr-item-title">{pullRequest.title}</strong>
+            <div className="pr-item-people">
+              <span>{pullRequest.author.login}</span>
+              {pullRequest.assignees.length > 0 && (
+                <span>→ {pullRequest.assignees.map((assignee) => assignee.login).join(', ')}</span>
+              )}
+            </div>
+            <div className="pr-item-stats">
+              <span className="addition">+{pullRequest.additions}</span>
+              <span className="deletion">−{pullRequest.deletions}</span>
+              <time title={`Created ${formatTimestamp(pullRequest.createdAt)}`}>
+                created {relativeTime(pullRequest.createdAt)}
+              </time>
+              <time title={`Updated ${formatTimestamp(pullRequest.updatedAt)}`}>
+                updated {relativeTime(pullRequest.updatedAt)}
+              </time>
+            </div>
+          </button>
+        ))}
+      </div>
+    </aside>
+  )
+}
+
+function RevisionPicker({
+  revisions,
+  selectedSessionId,
+  currentSessionId,
+  onSelect,
+}: {
+  revisions: PullRequestRevision[]
+  selectedSessionId: string
+  currentSessionId: string
+  onSelect(sessionId: string): void
+}) {
+  const selected = revisions.find((revision) => revision.sessionId === selectedSessionId)
+  const isCurrent = selectedSessionId === currentSessionId
+  return (
+    <Popover.Root>
+      <Popover.Trigger className={`revision-trigger${isCurrent ? '' : ' old'}`}>
+        <CommitIcon />
+        <span>{isCurrent ? 'Current' : 'Older revision'}</span>
+        <code>{selected?.headOid.slice(0, 8) ?? 'revision'}</code>
+        <ChevronIcon />
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Positioner className="popup-positioner" sideOffset={8} align="start">
+          <Popover.Popup className="revision-menu">
+            <Popover.Title className="menu-kicker">Pull request revisions</Popover.Title>
+            {revisions.map((revision) => {
+              const current = revision.sessionId === currentSessionId
+              const selectedRevision = revision.sessionId === selectedSessionId
+              return (
+                <button
+                  key={revision.sessionId}
+                  className={selectedRevision ? 'selected' : ''}
+                  onClick={() => onSelect(revision.sessionId)}
+                >
+                  <span className="revision-status">{current ? 'Current' : 'Previous'}</span>
+                  <code>{revision.headOid.slice(0, 8)}</code>
+                  <time>{relativeTime(revision.createdAt)}</time>
+                  <small>{revision.annotationCount} annotations</small>
+                </button>
+              )
+            })}
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
+  )
+}
+
+function PullRequestConversation({
+  details,
+  oldRevision,
+  onNavigate,
+}: {
+  details: PullRequestDetails
+  oldRevision: boolean
+  onNavigate(activity: PullRequestActivity): void
+}) {
+  return (
+    <section className="pr-conversation">
+      {oldRevision && (
+        <div className="old-revision-banner">
+          You are viewing an older code revision. The GitHub conversation below is current.
+        </div>
+      )}
+      <header className="pr-conversation-header">
+        <div className="pr-conversation-kicker">
+          <span className={`pr-state ${details.isDraft ? 'draft' : details.state.toLowerCase()}`}>
+            {details.isDraft ? 'Draft' : titleCase(details.state)}
+          </span>
+          <span className={`check-state ${details.checkStatus}`}>
+            <i />{checkStatusLabel(details.checkStatus)}
+          </span>
+          <code>#{details.number}</code>
+        </div>
+        <h1>{details.title}</h1>
+        <div className="pr-conversation-meta">
+          <span>{details.author.name ?? details.author.login}</span>
+          <span>{details.baseRefName} ← {details.headRefName}</span>
+          <span className="addition">+{details.additions}</span>
+          <span className="deletion">−{details.deletions}</span>
+          <a href={details.url} target="_blank" rel="noreferrer">Open on GitHub ↗</a>
+        </div>
+        {details.labels.length > 0 && (
+          <div className="pr-labels">
+            {details.labels.map((label) => (
+              <span key={label.name} style={{ '--label-color': `#${label.color}` } as CSSProperties}>
+                {label.name}
+              </span>
+            ))}
+          </div>
+        )}
+      </header>
+      <ConversationCard
+        eyebrow="Description"
+        author={details.author.login}
+        body={details.body || 'No description provided.'}
+        timestamp={details.createdAt}
+      />
+      {details.activity.map((activity) => (
+        <ConversationCard
+          key={`${activity.kind}:${activity.id}`}
+          eyebrow={activityLabel(activity)}
+          author={activity.author.login}
+          body={activity.body || activityLabel(activity)}
+          timestamp={activity.createdAt}
+          target={activity.kind === 'review-comment'
+            ? `${activity.path}${activity.line == null ? '' : `:${activity.line}`}`
+            : undefined}
+          onTarget={activity.kind === 'review-comment' ? () => onNavigate(activity) : undefined}
+          url={activity.url}
+        />
+      ))}
+      <div className="diff-divider"><span>Files changed</span></div>
+    </section>
+  )
+}
+
+function ConversationCard({
+  eyebrow,
+  author,
+  body,
+  timestamp,
+  target,
+  onTarget,
+  url,
+}: {
+  eyebrow: string
+  author: string
+  body: string
+  timestamp: string
+  target?: string
+  onTarget?: () => void
+  url?: string | null
+}) {
+  return (
+    <article className="conversation-card">
+      <div className="conversation-avatar">{author.slice(0, 2).toUpperCase()}</div>
+      <div className="conversation-card-body">
+        <header>
+          <div><strong>{author}</strong><span>{eyebrow}</span></div>
+          <time title={formatTimestamp(timestamp)}>{relativeTime(timestamp)}</time>
+        </header>
+        {target != null && (
+          <button className="conversation-target" onClick={onTarget}><code>{target}</code></button>
+        )}
+        <div className="markdown-body">
+          <Markdown remarkPlugins={[remarkGfm]}>{body}</Markdown>
+        </div>
+        {url != null && <a href={url} target="_blank" rel="noreferrer">View on GitHub ↗</a>}
+      </div>
+    </article>
+  )
+}
+
+function LocalReviewPicker({
+  repositoryRoot,
+  repositoryName,
+  currentSession,
+  active,
   onOpenSession,
 }: {
-  session: ReviewSession
+  repositoryRoot: string
+  repositoryName: string
+  currentSession: ReviewSession | null
+  active: boolean
   onOpenSession(id: string): void
 }) {
   const [open, setOpen] = useState(false)
   const [repository, setRepository] = useState<RepositoryInfo | null>(null)
   const visitedSessions = useRef(new Map<string, string>())
   const [customRange, setCustomRange] = useState('')
-  const [prNumber, setPrNumber] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    visitedSessions.current.set(reviewTargetKey(session.repositoryRoot, session.target), session.id)
-  }, [session.id, session.repositoryRoot, session.target])
+    if (currentSession == null || currentSession.target.kind === 'pr') return
+    visitedSessions.current.set(
+      reviewTargetKey(repositoryRoot, currentSession.target),
+      currentSession.id,
+    )
+  }, [currentSession, repositoryRoot])
 
   useEffect(() => {
     if (!open) return
-    void getRepositoryInfo(session.repositoryRoot)
+    void getRepositoryInfo(repositoryRoot)
       .then(setRepository)
       .catch((caught) => setError(caught instanceof Error ? caught.message : String(caught)))
-  }, [open, session.repositoryRoot])
+  }, [open, repositoryRoot])
 
   const choose = async (target: ReviewTarget) => {
-    if (reviewTargetsEqual(session.target, target)) {
+    if (currentSession != null && reviewTargetsEqual(currentSession.target, target)) {
       setOpen(false)
       return
     }
     setBusy(true)
     setError(null)
     try {
-      const targetKey = reviewTargetKey(session.repositoryRoot, target)
+      const targetKey = reviewTargetKey(repositoryRoot, target)
       const visitedId = visitedSessions.current.get(targetKey)
       if (visitedId != null) {
         setOpen(false)
         onOpenSession(visitedId)
         return
       }
-      const matchingSessions = (await getSessions(session.repositoryRoot)).filter((item) =>
+      const matchingSessions = (await getSessions(repositoryRoot)).filter((item) =>
         reviewTargetsEqual(item.target, target)
       )
       const existing =
@@ -793,7 +1439,7 @@ function TargetPicker({
         onOpenSession(existing.id)
         return
       }
-      const next = await createSession({ repositoryPath: session.repositoryRoot, target })
+      const next = await createSession({ repositoryPath: repositoryRoot, target })
       visitedSessions.current.set(targetKey, next.id)
       setOpen(false)
       onOpenSession(next.id)
@@ -806,70 +1452,47 @@ function TargetPicker({
 
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Trigger className="target-trigger">
+      <Popover.Trigger className={`global-nav-tab local-review-trigger${active ? ' active' : ''}`}>
         <BranchIcon />
-        <span className="target-repo">{session.repositoryName}</span>
-        <span className="target-divider">/</span>
-        <span className="target-label">{session.targetLabel}</span>
+        <span>Local diff review</span>
         <ChevronIcon />
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner className="popup-positioner" sideOffset={8} align="start">
           <Popover.Popup className="target-menu">
-            <Popover.Title className="menu-kicker">Review target</Popover.Title>
+            <Popover.Title className="menu-kicker">{repositoryName} · Local review</Popover.Title>
             <TargetOption
-              selected={session.target.kind === 'worktree'}
+              selected={currentSession?.target.kind === 'worktree'}
               label="Working tree"
               detail="git diff HEAD"
               onClick={() => void choose({ kind: 'worktree' })}
             />
             <TargetOption
-              selected={session.target.kind === 'unstaged'}
+              selected={currentSession?.target.kind === 'unstaged'}
               label="Unstaged changes"
               detail="git diff"
               onClick={() => void choose({ kind: 'unstaged' })}
             />
             <TargetOption
-              selected={session.target.kind === 'staged'}
+              selected={currentSession?.target.kind === 'staged'}
               label="Staged changes"
               detail="git diff --cached"
               onClick={() => void choose({ kind: 'staged' })}
             />
             {repository?.branchRange != null && (
               <TargetOption
-                selected={reviewTargetsEqual(session.target, {
-                  kind: 'range',
-                  expression: repository.branchRange,
-                })}
+                selected={
+                  currentSession != null &&
+                  reviewTargetsEqual(currentSession.target, {
+                    kind: 'range',
+                    expression: repository.branchRange,
+                  })
+                }
                 label="Current branch changes"
                 detail={repository.branchRange}
                 onClick={() => void choose({ kind: 'range', expression: repository.branchRange! })}
               />
             )}
-
-            <div className="menu-section-label">GitHub pull request</div>
-            {repository?.pullRequests.slice(0, 4).map((pullRequest) => (
-              <TargetOption
-                key={pullRequest.number}
-                selected={reviewTargetsEqual(session.target, {
-                  kind: 'pr',
-                  number: pullRequest.number,
-                })}
-                label={`#${pullRequest.number} ${pullRequest.title}`}
-                detail={`${pullRequest.baseRefName} ← ${pullRequest.headRefName}`}
-                onClick={() => void choose({ kind: 'pr', number: pullRequest.number })}
-              />
-            ))}
-            <form
-              className="compact-form"
-              onSubmit={(event) => {
-                event.preventDefault()
-                void choose({ kind: 'pr', number: Number(prNumber) })
-              }}
-            >
-              <input value={prNumber} onChange={(event) => setPrNumber(event.target.value)} placeholder="PR number" inputMode="numeric" />
-              <button disabled={!prNumber || busy}>Open</button>
-            </form>
 
             <div className="menu-section-label">Revision range</div>
             <form
@@ -1245,6 +1868,7 @@ function Inspector({
   onSetArchived,
   onUpdateComment,
   onUpdateGlobalComment,
+  allowGlobalComment,
   onArchiveAll,
   onNavigate,
 }: {
@@ -1253,6 +1877,7 @@ function Inspector({
   onSetArchived(annotationId: string, archived: boolean): Promise<void>
   onUpdateComment(annotationId: string, comment: string): Promise<void>
   onUpdateGlobalComment(comment: string): Promise<void>
+  allowGlobalComment: boolean
   onArchiveAll(): Promise<void>
   onNavigate(annotation: SessionAnnotation): void
 }) {
@@ -1268,7 +1893,10 @@ function Inspector({
     (annotation) => annotation.source === 'user' && Boolean(annotation.comment?.trim()),
   )
   const visible = view === 'active' ? active : archived
-  const showGlobalComment = view === 'active' && (session.globalComment != null || globalEditing)
+  const showGlobalComment =
+    allowGlobalComment &&
+    view === 'active' &&
+    (session.globalComment != null || globalEditing)
 
   return (
     <aside className="inspector">
@@ -1276,7 +1904,10 @@ function Inspector({
         <div className="notes-heading">
           <span>Annotations</span>
           <div>
-            {view === 'active' && session.globalComment == null && !globalEditing && (
+            {allowGlobalComment &&
+              view === 'active' &&
+              session.globalComment == null &&
+              !globalEditing && (
               <AnnotationIconButton
                 label="Add global comment"
                 onClick={() => setGlobalEditing(true)}
@@ -1284,14 +1915,14 @@ function Inspector({
                 <AddCommentIcon />
               </AnnotationIconButton>
             )}
-            {(session.globalComment != null || myComments.length > 0) && (
+            {((allowGlobalComment && session.globalComment != null) || myComments.length > 0) && (
               <AnnotationIconButton
                 label={commentsCopied ? 'Copied' : 'Copy my comments'}
                 onClick={async () => {
                   await navigator.clipboard.writeText(
                     await formatCommentsForAgent(
                       session.id,
-                      session.globalComment,
+                      allowGlobalComment ? session.globalComment : null,
                       myComments,
                       files,
                     ),
@@ -1613,92 +2244,6 @@ function InlineAnnotation({
   )
 }
 
-function Welcome({
-  onOpenSession,
-  themePreference,
-  onThemeChange,
-}: {
-  onOpenSession(id: string): void
-  themePreference: ThemePreference
-  onThemeChange(theme: ThemePreference): void
-}) {
-  const [repositoryPath, setRepositoryPath] = useState('')
-  const [range, setRange] = useState('')
-  const [sessions, setSessions] = useState<ReviewSession[]>([])
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-
-  useEffect(() => {
-    void getSessions().then(setSessions).catch(() => undefined)
-  }, [])
-
-  const start = async () => {
-    setBusy(true)
-    setError(null)
-    try {
-      const session = await createSession({
-        repositoryPath,
-        target: range.trim() ? { kind: 'range', expression: range.trim() } : { kind: 'worktree' },
-      })
-      onOpenSession(session.id)
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <main className="welcome">
-      <div className="welcome-grid" />
-      <ThemePicker
-        value={themePreference}
-        onChange={onThemeChange}
-        className="welcome-theme-trigger"
-      />
-      <section className="welcome-copy">
-        <span className="welcome-mark">Δ</span>
-        <p className="eyebrow">Local code review</p>
-        <h1>Read the change,<br />not the noise.</h1>
-        <p>
-          A focused review desk for working trees, branch ranges, and GitHub pull requests—with agent rationale kept beside the code.
-        </p>
-      </section>
-      <section className="start-card">
-        <div>
-          <span className="step-number">01</span>
-          <h2>Open a repository</h2>
-        </div>
-        <label>
-          Repository path
-          <input value={repositoryPath} onChange={(event) => setRepositoryPath(event.target.value)} placeholder="/path/to/repository" />
-        </label>
-        <label>
-          Revision range <em>optional</em>
-          <input value={range} onChange={(event) => setRange(event.target.value)} placeholder="origin/master...HEAD" />
-        </label>
-        {error != null && <div className="welcome-error">{error}</div>}
-        <button className="start-button" disabled={!repositoryPath || busy} onClick={() => void start()}>
-          {busy ? 'Resolving…' : 'Open review'}
-        </button>
-        <code className="cli-hint">or run: diff-review origin/master...HEAD</code>
-      </section>
-      {sessions.length > 0 && (
-        <section className="recent-sessions">
-          <span>Recent</span>
-          {sessions.slice(0, 4).map((session) => (
-            <button key={session.id} onClick={() => onOpenSession(session.id)}>
-              <strong>{session.repositoryName}</strong>
-              <span>{session.targetLabel}</span>
-              <time>{relativeTime(session.updatedAt)}</time>
-            </button>
-          ))}
-        </section>
-      )}
-    </main>
-  )
-}
-
 function LoadingScreen() {
   return (
     <main className="loading-screen">
@@ -1765,14 +2310,33 @@ function annotationsForFile(
   return result
 }
 
-function sessionIdFromPath(): string | null {
-  return /^\/s\/([^/]+)$/.exec(window.location.pathname)?.[1] ?? null
-}
-
-function openHome(setter?: (id: string | null) => void): void {
-  window.history.pushState(null, '', '/')
-  setter?.(null)
-  if (setter == null) window.location.assign('/')
+function routeFromLocation(): AppRoute {
+  const sessionMatch = /^\/s\/([^/]+)$/.exec(window.location.pathname)
+  if (sessionMatch != null) {
+    try {
+      return { kind: 'session', sessionId: decodeURIComponent(sessionMatch[1] ?? '') }
+    } catch {
+      return { kind: 'root' }
+    }
+  }
+  if (window.location.pathname === '/pull-requests') {
+    const query = new URLSearchParams(window.location.search)
+    const repositoryPath = query.get('repo')
+    if (repositoryPath != null) {
+      const rawNumber = query.get('pr')
+      const parsedNumber = rawNumber == null ? null : Number(rawNumber)
+      return {
+        kind: 'pull-requests',
+        repositoryPath,
+        pullRequestNumber:
+          parsedNumber != null && Number.isInteger(parsedNumber) && parsedNumber > 0
+            ? parsedNumber
+            : null,
+        revisionId: query.get('revision'),
+      }
+    }
+  }
+  return { kind: 'root' }
 }
 
 function lineLabel(annotation: SessionAnnotation): string {
@@ -1920,6 +2484,53 @@ function relativeTime(value: string): string {
   if (minutes < 60) return `${minutes}m`
   const hours = Math.round(minutes / 60)
   return hours < 24 ? `${hours}h` : `${Math.round(hours / 24)}d`
+}
+
+function formatTimestamp(value: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(new Date(value))
+}
+
+function repositoryNameFromPath(repositoryPath: string): string {
+  return repositoryPath.replace(/\/$/, '').split('/').at(-1) || repositoryPath
+}
+
+function titleCase(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase()
+}
+
+function checkStatusLabel(status: PullRequestSummary['checkStatus']): string {
+  switch (status) {
+    case 'none':
+      return 'No checks'
+    case 'pending':
+      return 'Pending'
+    case 'pass':
+      return 'Passing'
+    case 'fail':
+      return 'Failing'
+  }
+}
+
+function activityLabel(activity: PullRequestActivity): string {
+  if (activity.kind === 'comment') return 'Commented'
+  if (activity.kind === 'review-comment') return 'Review comment'
+  return titleCase(activity.state.replaceAll('_', ' '))
+}
+
+function piReviewButtonLabel(status: PiReviewStatus): string {
+  switch (status.state) {
+    case 'idle':
+      return 'Review with Pi'
+    case 'running':
+      return 'Pi reviewing…'
+    case 'completed':
+      return 'Run Pi again'
+    case 'failed':
+      return 'Retry Pi review'
+  }
 }
 
 function capitalize(value: string): string {

@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite'
 import type {
   AddAnnotationInput,
   CommitSummary,
+  PullRequestRevision,
   ReviewSession,
   ReviewTarget,
   SessionAnnotation,
@@ -29,6 +30,8 @@ interface SessionRow {
   global_comment: string | null
   viewed_files_json: string
   ignore_whitespace: number
+  revision_base_oid: string | null
+  revision_head_oid: string | null
   created_at: string
   updated_at: string
 }
@@ -72,6 +75,8 @@ export class ReviewStore {
         global_comment TEXT,
         viewed_files_json TEXT NOT NULL DEFAULT '[]',
         ignore_whitespace INTEGER NOT NULL DEFAULT 0,
+        revision_base_oid TEXT,
+        revision_head_oid TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -109,13 +114,15 @@ export class ReviewStore {
     const now = new Date().toISOString()
     const start = resolved.commits.at(0)?.oid ?? null
     const end = resolved.commits.at(-1)?.oid ?? null
+    const revision = target.kind === 'pr' ? revisionFromResolved(resolved) : null
     this.database
       .prepare(`
         INSERT INTO sessions (
           id, repository_root, repository_name, target_json, target_label,
           git_command, patch, resolved_json, available_commits_json,
-          selected_commit_start, selected_commit_end, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          selected_commit_start, selected_commit_end, revision_base_oid,
+          revision_head_oid, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         id,
@@ -129,6 +136,8 @@ export class ReviewStore {
         JSON.stringify(resolved.commits),
         start,
         end,
+        revision?.baseOid ?? null,
+        revision?.headOid ?? null,
         now,
         now,
       )
@@ -144,6 +153,57 @@ export class ReviewStore {
           .prepare('SELECT * FROM sessions ORDER BY updated_at DESC LIMIT 50')
           .all() as unknown as SessionRow[])
     return rows.map((row) => this.sessionFromRow(row))
+  }
+
+  findPullRequestRevision(
+    repositoryRoot: string,
+    number: number,
+    baseOid: string,
+    headOid: string,
+  ): ReviewSession | null {
+    const rows = this.database
+      .prepare(`
+        SELECT * FROM sessions
+        WHERE repository_root = ? AND revision_base_oid = ? AND revision_head_oid = ?
+        ORDER BY updated_at DESC
+      `)
+      .all(repositoryRoot, baseOid, headOid) as unknown as SessionRow[]
+    const row = rows.find((candidate) => {
+      const target = JSON.parse(candidate.target_json) as ReviewTarget
+      return target.kind === 'pr' && target.number === number
+    })
+    return row == null ? null : this.sessionFromRow(row)
+  }
+
+  listPullRequestRevisions(repositoryRoot: string, number: number): PullRequestRevision[] {
+    const rows = this.database
+      .prepare(`
+        SELECT * FROM sessions
+        WHERE repository_root = ? AND revision_base_oid IS NOT NULL AND revision_head_oid IS NOT NULL
+        ORDER BY created_at DESC
+      `)
+      .all(repositoryRoot) as unknown as SessionRow[]
+    const revisions = new Map<string, PullRequestRevision>()
+    for (const row of rows) {
+      const target = JSON.parse(row.target_json) as ReviewTarget
+      if (target.kind !== 'pr' || target.number !== number) continue
+      const baseOid = row.revision_base_oid
+      const headOid = row.revision_head_oid
+      if (baseOid == null || headOid == null) continue
+      const key = `${baseOid}:${headOid}`
+      const candidate = {
+        sessionId: row.id,
+        baseOid,
+        headOid,
+        annotationCount: this.annotationsForSession(row.id).length,
+        createdAt: row.created_at,
+      }
+      const existing = revisions.get(key)
+      if (existing == null || candidate.annotationCount > existing.annotationCount) {
+        revisions.set(key, candidate)
+      }
+    }
+    return [...revisions.values()]
   }
 
   getSession(id: string): ReviewSession {
@@ -358,6 +418,31 @@ export class ReviewStore {
     if (!columns.some((column) => column.name === 'global_comment')) {
       this.database.exec('ALTER TABLE sessions ADD COLUMN global_comment TEXT')
     }
+    if (!columns.some((column) => column.name === 'revision_base_oid')) {
+      this.database.exec('ALTER TABLE sessions ADD COLUMN revision_base_oid TEXT')
+    }
+    if (!columns.some((column) => column.name === 'revision_head_oid')) {
+      this.database.exec('ALTER TABLE sessions ADD COLUMN revision_head_oid TEXT')
+    }
+    const rows = this.database
+      .prepare(`
+        SELECT id, target_json, resolved_json, revision_base_oid, revision_head_oid
+        FROM sessions
+        WHERE revision_base_oid IS NULL OR revision_head_oid IS NULL
+      `)
+      .all() as unknown as Pick<
+        SessionRow,
+        'id' | 'target_json' | 'resolved_json' | 'revision_base_oid' | 'revision_head_oid'
+      >[]
+    const updateRevision = this.database.prepare(
+      'UPDATE sessions SET revision_base_oid = ?, revision_head_oid = ? WHERE id = ?',
+    )
+    for (const row of rows) {
+      const target = JSON.parse(row.target_json) as ReviewTarget
+      if (target.kind !== 'pr') continue
+      const revision = revisionFromResolved(JSON.parse(row.resolved_json) as ResolvedReview)
+      if (revision != null) updateRevision.run(revision.baseOid, revision.headOid, row.id)
+    }
   }
 
   private migrateAnnotationsTable(): void {
@@ -391,6 +476,8 @@ export class ReviewStore {
       globalComment: row.global_comment,
       viewedFiles: JSON.parse(row.viewed_files_json) as string[],
       ignoreWhitespace: row.ignore_whitespace === 1,
+      revisionBaseOid: row.revision_base_oid,
+      revisionHeadOid: row.revision_head_oid,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }
@@ -418,6 +505,13 @@ function annotationFromRow(row: AnnotationRow): SessionAnnotation {
 function withoutPatch(resolved: ResolvedReview): Omit<ResolvedReview, 'patch'> {
   const { patch: _, ...rest } = resolved
   return rest
+}
+
+function revisionFromResolved(
+  resolved: Pick<ResolvedReview, 'oldSnapshot' | 'newSnapshot'>,
+): { baseOid: string; headOid: string } | null {
+  if (resolved.oldSnapshot.kind !== 'commit' || resolved.newSnapshot.kind !== 'commit') return null
+  return { baseOid: resolved.oldSnapshot.id, headOid: resolved.newSnapshot.id }
 }
 
 function createId(prefix: string): string {
