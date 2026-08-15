@@ -440,7 +440,7 @@ svg {
   min-height: 48px;
   display: grid;
   grid-template-columns: 17px minmax(0, 1fr);
-  align-items: center;
+  align-items: start;
   gap: 10px;
   padding: 7px 9px;
   border-radius: 7px;
@@ -460,6 +460,8 @@ svg {
   width: 16px;
   height: 16px;
   display: grid;
+  margin: 0;
+  padding: 0;
   place-items: center;
   border: 1px solid var(--border-strong);
   border-radius: 4px;
@@ -924,6 +926,23 @@ body.resizing-panels * {
   transform: rotate(-90deg);
 }
 
+.file-stage-button {
+  padding: 3px 7px;
+  color: var(--accent);
+  border: 1px solid var(--accent-border);
+  border-radius: 5px;
+  background: var(--accent-soft);
+  font-family: var(--font-sans);
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.file-stage-button:hover {
+  color: var(--on-accent);
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
 .file-viewed-toggle {
   display: flex;
   align-items: center;
@@ -958,8 +977,8 @@ body.resizing-panels * {
 }
 
 .file-viewed-toggle[data-checked] .file-viewed-checkbox {
-  border-color: var(--accent);
-  background: var(--accent);
+  border-color: var(--green);
+  background: var(--green);
 }
 
 .file-viewed-checkbox svg {

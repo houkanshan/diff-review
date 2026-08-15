@@ -16,6 +16,7 @@ import {
   resolveCommitSpan,
   resolveRepository,
   resolveTarget,
+  stageReviewFile,
   validateAnnotationTarget,
   validateReviewFilePath,
 } from './git.js'
@@ -71,6 +72,7 @@ export class ApiHandler {
       /^\/api\/sessions\/([^/]+)\/annotations\/([^/]+)\/archive$/.exec(url.pathname)
     const annotationsArchiveMatch =
       /^\/api\/sessions\/([^/]+)\/annotations\/archive$/.exec(url.pathname)
+    const fileStageMatch = /^\/api\/sessions\/([^/]+)\/files\/stage$/.exec(url.pathname)
     const fileViewedMatch = /^\/api\/sessions\/([^/]+)\/files\/viewed$/.exec(url.pathname)
     const fileMatch = /^\/api\/sessions\/([^/]+)\/file$/.exec(url.pathname)
 
@@ -257,6 +259,34 @@ export class ApiHandler {
       )
       this.emitSessionUpdate(sessionId)
       sendJson(response, 200, annotation)
+      return
+    }
+
+    if (method === 'POST' && fileStageMatch != null) {
+      const sessionId = fileStageMatch[1] ?? ''
+      const session = this.store.getSession(sessionId)
+      if (session.target.kind !== 'worktree' && session.target.kind !== 'unstaged') {
+        throw new AppError(
+          'INVALID_REVIEW_TARGET',
+          'Files can only be added from working tree or unstaged reviews',
+        )
+      }
+      const { filePath } = parseFileInput(await readJson(request))
+      await stageReviewFile(session.repositoryRoot, session.patch, filePath)
+      const resolved = await resolveTarget(
+        session.repositoryRoot,
+        session.target,
+        session.ignoreWhitespace,
+      )
+      const updated = this.store.updateResolvedReview(
+        sessionId,
+        resolved,
+        resolved.commits.at(0)?.oid ?? null,
+        resolved.commits.at(-1)?.oid ?? null,
+        resolved.commits,
+      )
+      this.emitSessionUpdate(sessionId)
+      sendJson(response, 200, updated)
       return
     }
 
@@ -491,6 +521,11 @@ function parseViewedFileInput(value: unknown): { filePath: string; viewed: boole
     throw new AppError('INVALID_INPUT', 'viewed must be a boolean')
   }
   return { filePath: expectString(object.filePath, 'filePath'), viewed: object.viewed }
+}
+
+function parseFileInput(value: unknown): { filePath: string } {
+  const object = expectObject(value)
+  return { filePath: expectString(object.filePath, 'filePath') }
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {

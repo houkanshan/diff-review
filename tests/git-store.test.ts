@@ -10,6 +10,7 @@ import {
   getRepositoryInfo,
   resolveCommitSpan,
   resolveTarget,
+  stageReviewFile,
   validateAnnotationTarget,
 } from '../src/server/git.js'
 import { ReviewStore } from '../src/server/store.js'
@@ -124,6 +125,22 @@ describe('Git review targets', () => {
     await expect(
       validateAnnotationTarget(fixture.repository, review, 'tracked.txt', 'new', 99, 99),
     ).rejects.toThrow(/does not exist/)
+  })
+
+  test('adds one reviewed file to the index', async () => {
+    const stagingFixture = createGitFixture()
+    try {
+      const review = await resolveTarget(stagingFixture.repository, { kind: 'unstaged' })
+
+      await stageReviewFile(stagingFixture.repository, review.patch, 'tracked.txt')
+
+      const staged = await resolveTarget(stagingFixture.repository, { kind: 'staged' })
+      const unstaged = await resolveTarget(stagingFixture.repository, { kind: 'unstaged' })
+      expect(staged.patch).toContain('two edited')
+      expect(unstaged.patch).not.toContain('two edited')
+    } finally {
+      rmSync(stagingFixture.directory, { recursive: true, force: true })
+    }
   })
 })
 

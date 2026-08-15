@@ -128,6 +128,13 @@ export function setFileViewed(
   })
 }
 
+export function stageFile(id: string, filePath: string): Promise<ReviewSession> {
+  return request(`/api/sessions/${encodeURIComponent(id)}/files/stage`, {
+    method: 'POST',
+    body: JSON.stringify({ filePath }),
+  })
+}
+
 export async function getFileContents(
   sessionId: string,
   filePath: string,

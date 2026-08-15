@@ -187,6 +187,20 @@ export function validateReviewFilePath(patch: string, filePath: string): string 
   return normalizedPath
 }
 
+export async function stageReviewFile(
+  repositoryPath: string,
+  patch: string,
+  filePath: string,
+): Promise<void> {
+  const root = await resolveRepository(repositoryPath)
+  const normalizedPath = validateReviewFilePath(patch, filePath)
+  const file = filePathsFromPatch(patch).get(normalizedPath)!
+  const paths = [...new Set([file.old, file.new])]
+    .filter((candidate): candidate is string => candidate != null)
+    .map((candidate) => normalizeRepositoryFilePath(root, candidate))
+  await runGit(root, ['add', '--', ...paths])
+}
+
 async function resolveWorktree(root: string, ignoreWhitespace: boolean): Promise<ResolvedReview> {
   const head = await resolveCommit(root, 'HEAD')
   const trackedPatch = await gitDiff(root, ['HEAD'], ignoreWhitespace)

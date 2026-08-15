@@ -49,6 +49,7 @@ import {
   setAnnotationArchived,
   setFileViewed,
   setIgnoreWhitespace,
+  stageFile,
   updateAnnotationComment,
   updateGlobalComment,
 } from './api'
@@ -367,6 +368,10 @@ function ReviewWorkspace({
     onSessionChange(updated)
   }, [onSessionChange, session.id, setFileCollapsed])
 
+  const addFile = useCallback(async (filePath: string) => {
+    onSessionChange(await stageFile(session.id, filePath))
+  }, [onSessionChange, session.id])
+
   const refresh = useCallback(async () => {
     setBusy(true)
     try {
@@ -449,7 +454,7 @@ function ReviewWorkspace({
         </button>
         <button className="agent-button" onClick={copyForAgent}>
           <CopyIcon />
-          {copied ? 'Copied' : 'Copy for agent'}
+          {copied ? 'Copied' : 'Agent instruction'}
         </button>
       </header>
 
@@ -508,6 +513,9 @@ function ReviewWorkspace({
                   >
                     <ChevronIcon />
                   </button>
+                  {(session.target.kind === 'worktree' || session.target.kind === 'unstaged') && (
+                    <FileStageButton filePath={item.id} onAdd={() => addFile(item.id)} />
+                  )}
                   <FileViewedToggle
                     viewed={viewedFiles.has(item.id)}
                     onChange={(viewed) => setViewed(item.id, viewed)}
@@ -1151,7 +1159,7 @@ function ChangedFileTree({
       if (fileStats.modifications > 0) {
         parts.push({
           text: `${parts.length > 0 ? ' ' : ''}~${fileStats.modifications}`,
-          color: 'var(--blue)',
+          color: 'var(--accent)',
         })
       }
       if (parts.length === 0) return null
@@ -1169,6 +1177,33 @@ function ChangedFileTree({
       className="changed-file-tree"
       style={{ colorScheme: resolvedTheme }}
     />
+  )
+}
+
+function FileStageButton({
+  filePath,
+  onAdd,
+}: {
+  filePath: string
+  onAdd(): Promise<void>
+}) {
+  const [busy, setBusy] = useState(false)
+  return (
+    <button
+      className="file-stage-button"
+      disabled={busy}
+      title={`git add -- ${filePath}`}
+      onClick={async () => {
+        setBusy(true)
+        try {
+          await onAdd()
+        } finally {
+          setBusy(false)
+        }
+      }}
+    >
+      {busy ? 'Adding…' : 'Add'}
+    </button>
   )
 }
 
@@ -1772,7 +1807,7 @@ async function formatCommentsForAgent(
     }
     const fileContents = await contentsRequest
     const code = truncateCodeLine(fileContents?.split('\n')[annotation.startLine - 1] ?? '')
-    return `${annotation.filePath}:${annotationPosition(annotation)}: ${code}\n\n${annotation.comment!.trim()}`
+    return `> ${annotation.filePath}:${annotationPosition(annotation)}: ${code}\n\n${annotation.comment!.trim()}`
   }))
   return [globalComment?.trim(), ...comments].filter(Boolean).join('\n\n')
 }
