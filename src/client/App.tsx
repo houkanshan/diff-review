@@ -36,6 +36,7 @@ import {
 
 import type {
   DiffSide,
+  GitHubUser,
   PiReviewStatus,
   PullRequestActivity,
   PullRequestDetails,
@@ -1230,6 +1231,7 @@ function PullRequestRail({
             </div>
             <strong className="pr-item-title">{pullRequest.title}</strong>
             <div className="pr-item-people">
+              <UserAvatar user={pullRequest.author} />
               <span>{pullRequest.author.login}</span>
               {pullRequest.assignees.length > 0 && (
                 <span>→ {pullRequest.assignees.map((assignee) => assignee.login).join(', ')}</span>
@@ -1346,7 +1348,7 @@ function PullRequestConversation({
       </header>
       <ConversationCard
         eyebrow="Description"
-        author={details.author.login}
+        author={details.author}
         body={details.body || 'No description provided.'}
         timestamp={details.createdAt}
       />
@@ -1354,7 +1356,7 @@ function PullRequestConversation({
         <ConversationCard
           key={`${activity.kind}:${activity.id}`}
           eyebrow={activityLabel(activity)}
-          author={activity.author.login}
+          author={activity.author}
           body={activity.body || activityLabel(activity)}
           timestamp={activity.createdAt}
           target={activity.kind === 'review-comment'
@@ -1379,7 +1381,7 @@ function ConversationCard({
   url,
 }: {
   eyebrow: string
-  author: string
+  author: GitHubUser
   body: string
   timestamp: string
   target?: string
@@ -1388,10 +1390,10 @@ function ConversationCard({
 }) {
   return (
     <article className="conversation-card">
-      <div className="conversation-avatar">{author.slice(0, 2).toUpperCase()}</div>
+      <UserAvatar user={author} />
       <div className="conversation-card-body">
         <header>
-          <div><strong>{author}</strong><span>{eyebrow}</span></div>
+          <div><strong>{author.login}</strong><span>{eyebrow}</span></div>
           <time title={formatTimestamp(timestamp)}>{relativeTime(timestamp)}</time>
         </header>
         {target != null && (
@@ -1408,6 +1410,19 @@ function ConversationCard({
         {url != null && <a href={url} target="_blank" rel="noreferrer">View on GitHub ↗</a>}
       </div>
     </article>
+  )
+}
+
+function UserAvatar({ user }: { user: GitHubUser }) {
+  return user.avatarUrl == null ? (
+    <span className="user-avatar fallback">{user.login.slice(0, 2).toUpperCase()}</span>
+  ) : (
+    <img
+      className="user-avatar"
+      src={`/api/avatar?url=${encodeURIComponent(user.avatarUrl)}`}
+      alt=""
+      loading="lazy"
+    />
   )
 }
 
@@ -1859,6 +1874,7 @@ function ChangedFileTree({
     icons: { set: 'standard', colored: false },
     unsafeCSS: `
       [data-item-type="file"] > [data-item-section="icon"] { display: none; }
+      [data-icon-name="file-tree-icon-chevron"] { width: 11px; height: 11px; }
       [data-item-section="content"] { flex: 1 1 auto; }
       [data-item-section="decoration"] {
         flex: 0 0 auto;

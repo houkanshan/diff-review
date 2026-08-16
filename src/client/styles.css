@@ -905,16 +905,16 @@ svg {
 .pr-list {
   min-height: 0;
   overflow: auto;
-  padding: 5px;
+  padding: 3px;
 }
 
 .pr-list-item {
   width: 100%;
   min-width: 0;
   display: grid;
-  gap: 7px;
-  margin-bottom: 3px;
-  padding: 10px 9px 9px;
+  gap: 5px;
+  margin-bottom: 2px;
+  padding: 7px 7px 6px;
   text-align: left;
   border: 1px solid transparent;
   border-radius: 8px;
@@ -955,6 +955,11 @@ svg {
   color: var(--muted);
   font-size: 8px;
   white-space: nowrap;
+}
+
+.pr-item-people .user-avatar {
+  width: 16px;
+  height: 16px;
 }
 
 .pr-item-people span { overflow: hidden; text-overflow: ellipsis; }
@@ -1249,9 +1254,11 @@ body.resizing-panels * {
   --trees-focus-ring-color-override: var(--accent);
   --trees-font-family-override: var(--font-sans);
   --trees-font-size-override: 11px;
-  --trees-padding-inline-override: 7px;
-  --trees-item-padding-x-override: 6px;
-  --trees-item-margin-x-override: 1px;
+  --trees-padding-inline-override: 3px;
+  --trees-item-padding-x-override: 4px;
+  --trees-item-margin-x-override: 0px;
+  --trees-icon-width-override: 11px;
+  --trees-item-row-gap-override: 4px;
   --trees-git-modified-color-override: var(--blue);
   --trees-git-added-color-override: var(--green);
   --trees-git-deleted-color-override: var(--red);
@@ -1300,7 +1307,7 @@ body.resizing-panels * {
 .pr-conversation {
   max-width: 980px;
   margin: 0 auto;
-  padding: 28px clamp(22px, 5vw, 64px) 34px;
+  padding: 20px clamp(18px, 4vw, 48px) 26px;
   color: var(--text-soft);
   font-family: var(--font-sans);
 }
@@ -1317,7 +1324,7 @@ body.resizing-panels * {
 }
 
 .pr-conversation-header {
-  padding-bottom: 24px;
+  padding-bottom: 16px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -1331,20 +1338,20 @@ body.resizing-panels * {
   gap: 7px;
 }
 
-.pr-conversation-kicker { margin-bottom: 10px; }
+.pr-conversation-kicker { margin-bottom: 7px; }
 .pr-conversation-kicker code { color: var(--faint); font-family: var(--font-mono); font-size: 9px; }
 
 .pr-conversation-header h1 {
   margin: 0;
   color: var(--text);
-  font-size: 24px;
+  font-size: 21px;
   font-weight: 700;
   letter-spacing: -0.035em;
   line-height: 1.2;
 }
 
 .pr-conversation-meta {
-  margin-top: 12px;
+  margin-top: 8px;
   color: var(--muted);
   font-size: 9px;
 }
@@ -1360,7 +1367,7 @@ body.resizing-panels * {
 .pr-conversation-meta a:hover,
 .conversation-card a:hover { text-decoration: underline; }
 
-.pr-labels { margin-top: 12px; }
+.pr-labels { margin-top: 8px; }
 .pr-labels span {
   padding: 2px 6px;
   color: var(--text-soft);
@@ -1371,19 +1378,26 @@ body.resizing-panels * {
 
 .conversation-card {
   display: grid;
-  grid-template-columns: 30px minmax(0, 1fr);
-  gap: 10px;
-  padding-top: 18px;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 8px;
+  padding-top: 12px;
 }
 
-.conversation-avatar {
-  width: 30px;
-  height: 30px;
+.user-avatar {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  object-fit: cover;
+  border: 1px solid var(--border-soft);
+  border-radius: 50%;
+  background: var(--surface-inset);
+}
+
+.user-avatar.fallback {
   display: grid;
   place-items: center;
   color: var(--accent);
   border: 1px solid var(--accent-border);
-  border-radius: 50%;
   background: var(--accent-soft);
   font-size: 8px;
   font-weight: 750;
@@ -1399,12 +1413,12 @@ body.resizing-panels * {
 }
 
 .conversation-card-body > header {
-  min-height: 38px;
+  min-height: 32px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px 11px;
+  padding: 6px 9px;
   border-bottom: 1px solid var(--border-soft);
   background: var(--surface-subtle);
 }
@@ -1421,7 +1435,7 @@ body.resizing-panels * {
 .conversation-card-body > header time { flex: 0 0 auto; color: var(--faint); font-size: 8px; }
 
 .markdown-body {
-  padding: 13px 14px;
+  padding: 10px 11px;
   overflow-wrap: anywhere;
   color: var(--text-soft);
   font-size: 11px;

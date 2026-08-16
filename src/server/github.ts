@@ -250,10 +250,14 @@ function parseReviewComment(value: unknown): PullRequestActivity {
 
 function parseUser(value: unknown): GitHubUser {
   const raw = expectObject(value)
+  const login = expectString(raw.login, 'user.login')
   return {
-    login: expectString(raw.login, 'user.login'),
+    login,
     name: optionalString(raw.name),
-    avatarUrl: optionalString(raw.avatarUrl) ?? optionalString(raw.avatar_url),
+    avatarUrl:
+      optionalString(raw.avatarUrl) ??
+      optionalString(raw.avatar_url) ??
+      `https://github.com/${encodeURIComponent(login)}.png?size=64`,
   }
 }
 

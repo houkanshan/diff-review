@@ -30,9 +30,16 @@ import { PiReviewRunner } from './pi.js'
 import { ReviewStore } from './store.js'
 
 const JSON_BODY_LIMIT = 2 * 1024 * 1024
+const AVATAR_BODY_LIMIT = 5 * 1024 * 1024
+
+interface CachedAvatar {
+  body: Uint8Array
+  contentType: string
+}
 
 export class ApiHandler {
   private readonly events = new EventEmitter()
+  private readonly avatars = new Map<string, Promise<CachedAvatar>>()
   private readonly piReviews: PiReviewRunner
 
   constructor(
@@ -89,6 +96,11 @@ export class ApiHandler {
     const pullRequestRevisionsMatch = /^\/api\/pull-requests\/(\d+)\/revisions$/.exec(
       url.pathname,
     )
+
+    if (method === 'GET' && url.pathname === '/api/avatar') {
+      await this.serveAvatar(response, requiredQuery(url, 'url'))
+      return
+    }
 
     if (method === 'GET' && url.pathname === '/api/health') {
       sendJson(response, 200, { app: 'diff-review', ok: true })
@@ -460,6 +472,31 @@ export class ApiHandler {
     this.events.emit(`session:${sessionId}`)
   }
 
+  private async serveAvatar(response: ServerResponse, source: string): Promise<void> {
+    let sourceUrl: URL
+    try {
+      sourceUrl = new URL(source)
+    } catch {
+      throw new AppError('INVALID_AVATAR_URL', 'Avatar URL is invalid')
+    }
+    if (sourceUrl.protocol !== 'https:') {
+      throw new AppError('INVALID_AVATAR_URL', 'Avatar URL must use HTTPS')
+    }
+
+    let avatar = this.avatars.get(source)
+    if (avatar == null) {
+      avatar = fetchAvatar(sourceUrl)
+      this.avatars.set(source, avatar)
+      void avatar.catch(() => this.avatars.delete(source))
+    }
+    const cached = await avatar
+    response.writeHead(200, {
+      'Content-Type': cached.contentType,
+      'Cache-Control': 'public, max-age=604800, immutable',
+    })
+    response.end(cached.body)
+  }
+
   private createOrReuseSession(
     root: string,
     target: ReviewTarget,
@@ -708,6 +745,26 @@ function setCommonHeaders(response: ServerResponse): void {
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' })
   response.end(JSON.stringify(body))
+}
+
+async function fetchAvatar(url: URL): Promise<CachedAvatar> {
+  const response = await fetch(url, { redirect: 'follow' })
+  if (!response.ok) {
+    throw new AppError('AVATAR_FETCH_FAILED', `Avatar request failed with ${response.status}`, 502)
+  }
+  const contentType = response.headers.get('content-type')?.split(';', 1)[0] ?? ''
+  if (!contentType.startsWith('image/')) {
+    throw new AppError('AVATAR_FETCH_FAILED', 'Avatar response was not an image', 502)
+  }
+  const contentLength = Number(response.headers.get('content-length'))
+  if (Number.isFinite(contentLength) && contentLength > AVATAR_BODY_LIMIT) {
+    throw new AppError('AVATAR_TOO_LARGE', 'Avatar exceeds 5 MiB', 502)
+  }
+  const body = new Uint8Array(await response.arrayBuffer())
+  if (body.byteLength > AVATAR_BODY_LIMIT) {
+    throw new AppError('AVATAR_TOO_LARGE', 'Avatar exceeds 5 MiB', 502)
+  }
+  return { body, contentType }
 }
 
 function mimeType(filePath: string): string {
