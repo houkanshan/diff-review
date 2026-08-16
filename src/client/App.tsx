@@ -815,6 +815,7 @@ function ReviewWorkspace({
     const effectiveIntent: AnnotationIntent =
       commentIntent === 'review-comment' &&
       pullRequest != null &&
+      pullRequest.details.state === 'OPEN' &&
       session.id === pullRequest.currentSessionId &&
       range.endSide == null
         ? 'review-comment'
@@ -1194,6 +1195,7 @@ function ReviewWorkspace({
                       intent={commentIntent}
                       reviewCommentAvailable={
                         pullRequest != null &&
+                        pullRequest.details.state === 'OPEN' &&
                         session.id === pullRequest.currentSessionId &&
                         annotationRangeFromSelection(metadata.selection).endSide == null
                       }

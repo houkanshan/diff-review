@@ -224,6 +224,30 @@ describe('GitHub review comment targets', () => {
     expect(() => validateReviewCommentTarget(patch, 'example.ts', 'new', 10, 12)).not.toThrow()
   })
 
+  test('counts hunk content that resembles file headers', () => {
+    const deletedPrefixPatch = `diff --git a/example.ts b/example.ts
+--- a/example.ts
++++ b/example.ts
+@@ -1,2 +1,1 @@
+ context
+--- deleted content
+`
+    const addedPrefixPatch = `diff --git a/example.ts b/example.ts
+--- a/example.ts
++++ b/example.ts
+@@ -1,1 +1,2 @@
+ context
++++ added content
+`
+
+    expect(() => {
+      validateReviewCommentTarget(deletedPrefixPatch, 'example.ts', 'old', 2, 2)
+    }).not.toThrow()
+    expect(() => {
+      validateReviewCommentTarget(addedPrefixPatch, 'example.ts', 'new', 2, 2)
+    }).not.toThrow()
+  })
+
   test('rejects expanded context and cross-hunk ranges', () => {
     expect(() => validateReviewCommentTarget(patch, 'example.ts', 'new', 5, 5)).toThrow(
       'not a commentable range',

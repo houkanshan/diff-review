@@ -206,13 +206,32 @@ function reviewCommentLines(
   let currentFile = false
   let oldLine = 0
   let newLine = 0
+  let oldRemaining = 0
+  let newRemaining = 0
   let hunk = 0
-  let inHunk = false
   for (const line of patch.split('\n')) {
+    if (oldRemaining > 0 || newRemaining > 0) {
+      if (line.startsWith('\\ No newline at end of file')) continue
+      if (line.startsWith(' ')) {
+        lines.set(side === 'old' ? oldLine : newLine, hunk)
+        oldLine += 1
+        newLine += 1
+        oldRemaining -= 1
+        newRemaining -= 1
+      } else if (line.startsWith('-')) {
+        if (side === 'old') lines.set(oldLine, hunk)
+        oldLine += 1
+        oldRemaining -= 1
+      } else if (line.startsWith('+')) {
+        if (side === 'new') lines.set(newLine, hunk)
+        newLine += 1
+        newRemaining -= 1
+      }
+      continue
+    }
     if (line.startsWith('diff --git ')) {
       oldPath = null
       currentFile = false
-      inHunk = false
       continue
     }
     if (line.startsWith('--- ')) {
@@ -228,25 +247,17 @@ function reviewCommentLines(
       currentFile = oldPath === filePath || newPath === filePath
       continue
     }
-    const header = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line)
+    const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line)
     if (header != null) {
       oldLine = Number(header[1])
-      newLine = Number(header[2])
+      newLine = Number(header[3])
+      oldRemaining = Number(header[2] ?? 1)
+      newRemaining = Number(header[4] ?? 1)
       hunk += 1
-      inHunk = currentFile
-      continue
-    }
-    if (!inHunk || line.startsWith('\\ No newline at end of file')) continue
-    if (line.startsWith(' ')) {
-      lines.set(side === 'old' ? oldLine : newLine, hunk)
-      oldLine += 1
-      newLine += 1
-    } else if (line.startsWith('-')) {
-      if (side === 'old') lines.set(oldLine, hunk)
-      oldLine += 1
-    } else if (line.startsWith('+')) {
-      if (side === 'new') lines.set(newLine, hunk)
-      newLine += 1
+      if (!currentFile) {
+        oldRemaining = 0
+        newRemaining = 0
+      }
     }
   }
   return lines
