@@ -223,13 +223,13 @@ export class PiReviewRunner {
         const session = this.store.getSession(current.sessionId)
         const status = await runProcess(
           'git',
-          ['status', '--porcelain', '--untracked-files=all', '--ignored'],
+          ['status', '--porcelain', '--untracked-files=all'],
           { cwd: current.worktreePath },
         )
         if (status.stdout.trim() !== '') {
           this.store.updatePiReviewRun(current.id, {
             state: 'cleanup-blocked',
-            error: 'Automatic cleanup is blocked because the worktree contains local, untracked, or ignored files.',
+            error: 'Automatic cleanup is blocked because the worktree contains local or untracked files.',
           })
           this.onUpdate(current.sessionId)
           return

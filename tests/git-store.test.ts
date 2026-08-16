@@ -545,7 +545,7 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
     expect(() => runner.acquireLease(run.id, process.pid)).toThrow(/cleaned up/)
   })
 
-  test('blocks automatic cleanup for a dirty worktree', async () => {
+  test('blocks untracked files but cleans a worktree containing only ignored files', async () => {
     const review = await resolveTarget(fixture.repository, {
       kind: 'range',
       expression: 'origin/main...HEAD',
@@ -583,24 +583,24 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
       await runner.reconcileAndCleanup()
       expect(store.getPiReviewRun(run.id)).toMatchObject({
         state: 'cleanup-blocked',
-        error: expect.stringContaining('local, untracked, or ignored files'),
+        error: expect.stringContaining('local or untracked files'),
       })
       expect(existsSync(worktree)).toBe(true)
       expect(existsSync(piSessionDir)).toBe(true)
 
       rmSync(path.join(worktree, 'untracked.txt'))
       writeFileSync(excludePath, `${originalExclude}\nignored-cleanup.log\n`)
-      writeFileSync(path.join(worktree, 'ignored-cleanup.log'), 'keep me too')
+      writeFileSync(path.join(worktree, 'ignored-cleanup.log'), 'delete me')
       store.updatePiReviewRun(run.id, { state: 'completed', error: null })
       await runner.reconcileAndCleanup()
-      expect(store.getPiReviewRun(run.id)).toMatchObject({
-        state: 'cleanup-blocked',
-        error: expect.stringContaining('ignored files'),
-      })
-      expect(existsSync(path.join(worktree, 'ignored-cleanup.log'))).toBe(true)
+      expect(store.getPiReviewRun(run.id)).toMatchObject({ state: 'cleaned', error: null })
+      expect(existsSync(worktree)).toBe(false)
+      expect(existsSync(piSessionDir)).toBe(false)
     } finally {
       writeFileSync(excludePath, originalExclude)
-      execFileSync('git', ['worktree', 'remove', '--force', worktree], { cwd: fixture.repository })
+      if (existsSync(worktree)) {
+        execFileSync('git', ['worktree', 'remove', '--force', worktree], { cwd: fixture.repository })
+      }
     }
   })
 
