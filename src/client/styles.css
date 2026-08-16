@@ -144,6 +144,43 @@ svg {
   font-size: 14px;
 }
 
+.repository-trigger {
+  min-width: 0;
+  max-width: min(250px, 22vw);
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
+  color: var(--text-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: 0 1px 1px var(--shadow-soft);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.repository-trigger:hover,
+.repository-trigger[data-popup-open] {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--surface-raised);
+}
+
+.repository-trigger > svg:first-child { color: var(--accent); }
+.repository-trigger > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.repository-trigger > svg:last-child {
+  width: 12px;
+  color: var(--faint);
+  transition: transform 120ms ease;
+}
+.repository-trigger[data-popup-open] > svg:last-child { transform: rotate(180deg); }
+
 .global-nav-tab,
 .local-review-trigger {
   height: 34px;
@@ -284,6 +321,7 @@ svg {
 
 .target-menu,
 .commit-menu,
+.repository-menu,
 .theme-menu,
 .diff-options-menu {
   color: var(--text);
@@ -300,6 +338,8 @@ svg {
 .target-menu[data-ending-style],
 .commit-menu[data-starting-style],
 .commit-menu[data-ending-style],
+.repository-menu[data-starting-style],
+.repository-menu[data-ending-style],
 .theme-menu[data-starting-style],
 .theme-menu[data-ending-style],
 .diff-options-menu[data-starting-style],
@@ -313,6 +353,48 @@ svg {
   max-height: min(710px, calc(100vh - 76px));
   padding: 8px;
   overflow: auto;
+}
+
+.repository-menu {
+  width: min(390px, calc(100vw - 18px));
+  max-height: min(480px, calc(100vh - 76px));
+  padding: 8px;
+  overflow: auto;
+}
+
+.repository-option {
+  width: 100%;
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 7px;
+  outline: none;
+}
+
+.repository-option:hover,
+.repository-option[data-highlighted] { background: var(--hover); }
+.repository-option > svg:first-child { color: var(--accent); }
+.repository-option > svg:last-child { color: var(--accent); }
+.repository-option > span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+.repository-option strong,
+.repository-option small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.repository-option strong { font-size: 11px; font-weight: 650; }
+.repository-option small { color: var(--muted); font-size: 9px; }
+.repository-menu-status {
+  padding: 14px 8px;
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .menu-kicker,
@@ -783,7 +865,6 @@ svg {
   font-size: 9px;
   font-weight: 750;
   letter-spacing: 0.02em;
-  text-transform: uppercase;
 }
 
 .pr-rail-heading > div:first-child > strong {
@@ -892,7 +973,6 @@ svg {
   font-size: 7px;
   font-weight: 760;
   letter-spacing: 0.02em;
-  text-transform: uppercase;
 }
 
 .pr-state { padding: 3px 6px; }
@@ -1012,7 +1092,6 @@ svg {
   border-radius: 999px;
   font-size: 7px;
   font-weight: 700;
-  text-transform: uppercase;
 }
 
 .pi-pulse {
@@ -1426,7 +1505,6 @@ body.resizing-panels * {
   font-size: 8px;
   font-weight: 750;
   letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 
 .diff-divider::before,
@@ -2060,6 +2138,7 @@ body.resizing-panels * {
 
 @media (max-width: 1220px) {
   .brand > span:last-child { display: none; }
+  .repository-trigger { max-width: 180px; }
   .commit-trigger { width: 210px; }
   .target-trigger { max-width: 285px; }
   .pr-workspace {
@@ -2094,6 +2173,8 @@ body.resizing-panels * {
 @media (max-width: 700px) {
   .topbar { gap: 6px; padding-inline: 9px; }
   .brand { display: none; }
+  .repository-trigger { max-width: 120px; }
+  .repository-trigger > svg:first-child { display: none; }
   .global-nav-tab { padding-inline: 7px; font-size: 8px; }
   .local-review-trigger { width: 32px; justify-content: center; padding: 0; font-size: 0; }
   .target-trigger { max-width: 145px; }

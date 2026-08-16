@@ -79,6 +79,7 @@ import {
   CopyIcon,
   EditIcon,
   RefreshIcon,
+  RepositoryIcon,
   RestoreIcon,
   ThemeIcon,
   WrapIcon,
@@ -430,6 +431,11 @@ function PullRequestsPage({
             <span className="brand-mark">Δ</span>
             <span>Diff Review</span>
           </div>
+          <RepositoryPicker
+            repositoryRoot={route.repositoryPath}
+            repositoryName={repository?.name ?? repositoryNameFromPath(route.repositoryPath)}
+            onSelect={onOpenPullRequests}
+          />
           <button className="global-nav-tab active">Pull requests</button>
           <LocalReviewPicker
             repositoryRoot={route.repositoryPath}
@@ -758,6 +764,11 @@ function ReviewWorkspace({
           <span className="brand-mark">Δ</span>
           <span>Diff Review</span>
         </div>
+        <RepositoryPicker
+          repositoryRoot={session.repositoryRoot}
+          repositoryName={session.repositoryName}
+          onSelect={onOpenPullRequests}
+        />
         <button
           className={`global-nav-tab${pullRequest == null ? '' : ' active'}`}
           onClick={() => onOpenPullRequests(
@@ -1375,6 +1386,84 @@ function ConversationCard({
         {url != null && <a href={url} target="_blank" rel="noreferrer">View on GitHub ↗</a>}
       </div>
     </article>
+  )
+}
+
+interface RecentRepository {
+  root: string
+  name: string
+}
+
+function RepositoryPicker({
+  repositoryRoot,
+  repositoryName,
+  onSelect,
+}: {
+  repositoryRoot: string
+  repositoryName: string
+  onSelect(repositoryPath: string): void
+}) {
+  const [open, setOpen] = useState(false)
+  const [repositories, setRepositories] = useState<RecentRepository[]>([])
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    setLoading(true)
+    void getSessions()
+      .then((sessions) => {
+        const recent = new Map<string, RecentRepository>()
+        recent.set(repositoryRoot, { root: repositoryRoot, name: repositoryName })
+        for (const session of sessions) {
+          if (!recent.has(session.repositoryRoot)) {
+            recent.set(session.repositoryRoot, {
+              root: session.repositoryRoot,
+              name: session.repositoryName,
+            })
+          }
+        }
+        setRepositories([...recent.values()])
+      })
+      .catch(() => {
+        setRepositories([{ root: repositoryRoot, name: repositoryName }])
+      })
+      .finally(() => setLoading(false))
+  }, [open, repositoryName, repositoryRoot])
+
+  return (
+    <Menu.Root open={open} onOpenChange={setOpen}>
+      <Menu.Trigger className="repository-trigger">
+        <RepositoryIcon />
+        <span>{repositoryName}</span>
+        <ChevronIcon />
+      </Menu.Trigger>
+      <Menu.Portal>
+        <Menu.Positioner className="popup-positioner" sideOffset={8} align="start">
+          <Menu.Popup className="repository-menu">
+            <Menu.Group>
+              <Menu.GroupLabel className="menu-kicker">Recent repositories</Menu.GroupLabel>
+              {repositories.map((repository) => (
+                <Menu.Item
+                  key={repository.root}
+                  className="repository-option"
+                  onClick={() => onSelect(repository.root)}
+                >
+                  <RepositoryIcon />
+                  <span>
+                    <strong>{repository.name}</strong>
+                    <small>{repository.root}</small>
+                  </span>
+                  {repository.root === repositoryRoot && <CheckIcon />}
+                </Menu.Item>
+              ))}
+              {loading && repositories.length === 0 && (
+                <div className="repository-menu-status">Loading repositories…</div>
+              )}
+            </Menu.Group>
+          </Menu.Popup>
+        </Menu.Positioner>
+      </Menu.Portal>
+    </Menu.Root>
   )
 }
 

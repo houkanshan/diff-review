@@ -4,4 +4,6 @@ Diff Review is a local daemon and browser GUI for reviewing Git changes. The Rea
 
 Use `pnpm test` for tests, `pnpm run typecheck` for TypeScript checks, and `pnpm run build` for a production build.
 
+Use sentence case for UI labels; do not use all-caps labels.
+
 After making code changes, stop any running Diff Review server, build the project, and restart the server from the newly built output. Do not leave a stale server running an older build.

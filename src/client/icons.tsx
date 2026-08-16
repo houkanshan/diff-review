@@ -89,6 +89,14 @@ export function RefreshIcon(props: IconProps) {
   )
 }
 
+export function RepositoryIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M2.5 2.5h11v11h-11zM5 2.5v11M7.5 5h3.5M7.5 8h3.5" fill="none" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" />
+    </Icon>
+  )
+}
+
 export function RestoreIcon(props: IconProps) {
   return (
     <Icon {...props}>
