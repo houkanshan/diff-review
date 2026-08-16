@@ -1485,6 +1485,28 @@ body.resizing-panels * {
 .markdown-body details { margin: 0.8em 0; }
 .markdown-body summary { cursor: pointer; color: var(--text); font-weight: 600; }
 
+.mermaid-diagram {
+  margin: 0.8em 0;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: #fff;
+  text-align: center;
+}
+
+.mermaid-diagram svg {
+  width: auto;
+  height: auto;
+  max-width: 100%;
+}
+
+.mermaid-source small {
+  display: block;
+  margin-top: -0.45em;
+  color: var(--red);
+}
+
 .conversation-card-body > a {
   display: inline-block;
   margin: 0 14px 12px;

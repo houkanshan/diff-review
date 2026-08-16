@@ -26,12 +26,15 @@ import remarkGfm from 'remark-gfm'
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
   type ButtonHTMLAttributes,
+  type ComponentPropsWithoutRef,
   type CSSProperties,
   type ReactNode,
+  isValidElement,
 } from 'react'
 
 import type {
@@ -1403,6 +1406,7 @@ function ConversationCard({
           <Markdown
             remarkPlugins={[remarkGfm]}
             rehypePlugins={[rehypeRaw, rehypeSanitize]}
+            components={{ pre: MarkdownPre }}
           >
             {body}
           </Markdown>
@@ -1410,6 +1414,79 @@ function ConversationCard({
         {url != null && <a href={url} target="_blank" rel="noreferrer">View on GitHub ↗</a>}
       </div>
     </article>
+  )
+}
+
+type MermaidRender =
+  | { source: string; svg: string }
+  | { source: string; error: string }
+
+let mermaidPromise: Promise<typeof import('mermaid').default> | undefined
+
+function loadMermaid() {
+  mermaidPromise ??= import('mermaid').then(({ default: mermaid }) => {
+    mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'neutral' })
+    return mermaid
+  })
+  return mermaidPromise
+}
+
+function MarkdownPre({
+  children,
+  node: _node,
+  ...props
+}: ComponentPropsWithoutRef<'pre'> & { node?: unknown }) {
+  const child = isValidElement<{ className?: string; children?: ReactNode }>(children)
+    ? children
+    : null
+  const languages = child?.props.className?.split(' ') ?? []
+
+  if (child != null && languages.includes('language-mermaid')) {
+    return <MermaidDiagram source={String(child.props.children).replace(/\n$/, '')} />
+  }
+
+  return <pre {...props}>{children}</pre>
+}
+
+function MermaidDiagram({ source }: { source: string }) {
+  const reactId = useId()
+  const [render, setRender] = useState<MermaidRender | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    void loadMermaid()
+      .then((mermaid) => mermaid.render(`mermaid-${reactId.replace(/:/g, '')}`, source))
+      .then(({ svg }) => {
+        if (!cancelled) setRender({ source, svg })
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setRender({ source, error: error instanceof Error ? error.message : String(error) })
+        }
+      })
+
+    return () => { cancelled = true }
+  }, [reactId, source])
+
+  if (render?.source === source && 'svg' in render) {
+    return (
+      <div
+        className="mermaid-diagram"
+        role="img"
+        aria-label="Mermaid diagram"
+        dangerouslySetInnerHTML={{ __html: render.svg }}
+      />
+    )
+  }
+
+  return (
+    <div className="mermaid-source">
+      <pre><code className="language-mermaid">{source}</code></pre>
+      {render?.source === source && 'error' in render && (
+        <small title={render.error}>Mermaid diagram could not be rendered.</small>
+      )}
+    </div>
   )
 }
 
