@@ -1,4 +1,6 @@
 import { execFileSync } from 'node:child_process'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import {
   chmodSync,
   existsSync,
@@ -17,12 +19,14 @@ import { afterAll, describe, expect, test } from 'vitest'
 import {
   getRepositoryInfo,
   resolveCommitSpan,
+  rerenderCommitReview,
   resolvePullRequestRevision,
   resolveTarget,
   stageReviewFile,
   validateAnnotationTarget,
   validateReviewCommentTarget,
 } from '../src/server/git.js'
+import { ApiHandler } from '../src/server/api.js'
 import { PiReviewRunner } from '../src/server/pi.js'
 import { ReviewStore } from '../src/server/store.js'
 
@@ -66,6 +70,21 @@ describe('Git review targets', () => {
     expect(review.patch).not.toContain('spacing.txt')
     expect(review.patch).toContain('feature one')
     expect(review.gitCommand).toBe("git diff --ignore-all-space 'origin/main...HEAD'")
+  })
+
+  test('re-renders the exact pinned commit snapshots', async () => {
+    const review = await resolveTarget(fixture.repository, {
+      kind: 'range',
+      expression: 'origin/main...HEAD',
+    })
+    const rerendered = await rerenderCommitReview(fixture.repository, review, true)
+
+    expect(rerendered.oldSnapshot).toEqual(review.oldSnapshot)
+    expect(rerendered.newSnapshot).toEqual(review.newSnapshot)
+    expect(rerendered.commits).toEqual(review.commits)
+    expect(rerendered.label).toBe(review.label)
+    expect(rerendered.patch).not.toContain('spacing.txt')
+    expect(rerendered.gitCommand).toContain('--ignore-all-space')
   })
 
   test('resolves a single selected commit against its first parent', async () => {
@@ -259,6 +278,66 @@ describe('GitHub review comment targets', () => {
 })
 
 describe('local review storage', () => {
+  test('defaults API sessions to ignore whitespace and preserves pinned PR snapshots', async () => {
+    const store = new ReviewStore(path.join(fixture.directory, 'whitespace-api.db'))
+    const handler = new ApiHandler(store, null)
+    const server = createServer(handler.handle)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address() as AddressInfo
+    const baseUrl = `http://127.0.0.1:${port}`
+
+    try {
+      const createdResponse = await fetch(`${baseUrl}/api/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repositoryPath: fixture.repository,
+          target: { kind: 'range', expression: 'origin/main...HEAD' },
+        }),
+      })
+      expect(createdResponse.status).toBe(201)
+      const created = await createdResponse.json() as { ignoreWhitespace: boolean; patch: string }
+      expect(created.ignoreWhitespace).toBe(true)
+      expect(created.patch).not.toContain('spacing.txt')
+
+      const pinned = await resolveTarget(fixture.repository, {
+        kind: 'range',
+        expression: 'origin/main...HEAD',
+      })
+      const prSession = store.createSession(
+        fixture.repository,
+        'repo',
+        { kind: 'pr', number: 42 },
+        pinned,
+        false,
+      )
+      const updatedResponse = await fetch(
+        `${baseUrl}/api/sessions/${prSession.id}/whitespace`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ignoreWhitespace: true }),
+        },
+      )
+      expect(updatedResponse.status).toBe(200)
+      const updated = await updatedResponse.json() as {
+        ignoreWhitespace: boolean
+        revisionBaseOid: string
+        revisionHeadOid: string
+        patch: string
+      }
+      expect(updated.ignoreWhitespace).toBe(true)
+      expect(updated.revisionBaseOid).toBe(prSession.revisionBaseOid)
+      expect(updated.revisionHeadOid).toBe(prSession.revisionHeadOid)
+      expect(updated.patch).not.toContain('spacing.txt')
+    } finally {
+      handler.close()
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error == null ? resolve() : reject(error))
+      })
+    }
+  })
+
   test('keeps a resumable Pi session and safely cleans it after retention', async () => {
     const review = await resolveTarget(fixture.repository, {
       kind: 'range',
@@ -270,6 +349,7 @@ describe('local review storage', () => {
       'repo',
       { kind: 'pr', number: 42 },
       review,
+      false,
     )
     const bin = path.join(fixture.directory, 'bin')
     mkdirSync(bin, { recursive: true })
@@ -338,10 +418,11 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
   })
 
   test('indexes pull request sessions by immutable base and head revisions', async () => {
-    const review = await resolveTarget(fixture.repository, {
-      kind: 'range',
-      expression: 'origin/main...HEAD',
-    })
+    const review = await resolveTarget(
+      fixture.repository,
+      { kind: 'range', expression: 'origin/main...HEAD' },
+      true,
+    )
     expect(review.oldSnapshot.kind).toBe('commit')
     expect(review.newSnapshot.kind).toBe('commit')
     const databasePath = path.join(fixture.directory, 'pr-revisions.db')
@@ -351,12 +432,14 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
       'repo',
       { kind: 'pr', number: 42 },
       review,
+      true,
     )
     const baseOid = review.oldSnapshot.id
     const headOid = review.newSnapshot.id
 
     expect(session.revisionBaseOid).toBe(baseOid)
     expect(session.revisionHeadOid).toBe(headOid)
+    expect(session.ignoreWhitespace).toBe(true)
     expect(store.findPullRequestRevision(fixture.repository, 42, baseOid, headOid)?.id)
       .toBe(session.id)
     expect(store.findPullRequestRevision(fixture.repository, 43, baseOid, headOid)).toBeNull()
@@ -392,6 +475,7 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
       'repo',
       { kind: 'range', expression: 'origin/main...HEAD' },
       review,
+      false,
     )
     const first = store.createPiReviewRun(
       session.id,
@@ -461,6 +545,7 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
       'repo',
       { kind: 'range', expression: 'origin/main...HEAD' },
       review,
+      false,
     )
     const createRun = (suffix: string, cleanupEligibleAt = '2026-02-01T00:00:00.000Z') =>
       store.createPiReviewRun(
@@ -505,6 +590,7 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
       'repo',
       { kind: 'pr', number: 42 },
       review,
+      false,
     )
     const worktree = path.join(fixture.directory, 'lease-worktree')
     const piSessionDir = path.join(fixture.directory, 'lease-session')
@@ -541,6 +627,7 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
       'repo',
       { kind: 'pr', number: 42 },
       review,
+      false,
     )
     const worktree = path.join(fixture.directory, 'recovery-worktree')
     const piSessionDir = path.join(fixture.directory, 'recovery-session')
@@ -577,6 +664,7 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
       'repo',
       { kind: 'pr', number: 42 },
       review,
+      false,
     )
     const worktree = path.join(fixture.directory, 'cleanup-lease-worktree')
     const piSessionDir = path.join(fixture.directory, 'cleanup-lease-session')
@@ -609,6 +697,7 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
       'repo',
       { kind: 'pr', number: 42 },
       review,
+      false,
     )
     const worktree = path.join(fixture.directory, 'dirty-worktree')
     const piSessionDir = path.join(fixture.directory, 'dirty-pi-session')
@@ -669,6 +758,7 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
       'repo',
       { kind: 'range', expression: 'origin/main...HEAD' },
       review,
+      false,
     )
     const selectedCommit = review.commits[1]!
     const selected = await resolveCommitSpan(

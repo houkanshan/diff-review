@@ -29,6 +29,7 @@ import {
   GitMerge as MergeIcon,
   GitPullRequest as PullRequestIcon,
   Check as CheckIcon,
+  CheckCheck as ChecksPassedIcon,
   ChevronDown as ChevronIcon,
   CircleDot as IssueIcon,
   X as CloseIcon,
@@ -645,6 +646,7 @@ function ReviewWorkspace({
   const [pullRequestView, setPullRequestView] = useState<PullRequestViewMode>('overview')
   const overviewScrollRef = useRef<HTMLElement>(null)
   const diffWorkspaceRef = useRef<HTMLDivElement>(null)
+  const hoveredFileRef = useRef<string | null>(null)
   const pullRequestScrollPositions = useRef<Record<PullRequestViewMode, number>>({
     overview: 0,
     diff: 0,
@@ -876,9 +878,9 @@ function ReviewWorkspace({
 
   useHotkey('V', () => {
     const viewer = viewerRef.current?.getInstance()
-    let filePath = selection?.id ?? items.at(0)?.id
+    let filePath = hoveredFileRef.current ?? selection?.id ?? items.at(0)?.id
 
-    if (selection == null && viewer != null) {
+    if (hoveredFileRef.current == null && selection == null && viewer != null) {
       const scrollTop = viewer.getScrollTop()
       for (const item of items) {
         const itemTop = viewer.getTopForItem(item.id)
@@ -1050,7 +1052,6 @@ function ReviewWorkspace({
               wrap={overflow === 'wrap'}
               ignoreWhitespace={session.ignoreWhitespace}
               busy={busy}
-              showIgnoreWhitespace={pullRequest == null}
               onWrapChange={(wrap) => setOverflow(wrap ? 'wrap' : 'scroll')}
               onIgnoreWhitespaceChange={updateIgnoreWhitespace}
             />
@@ -1140,6 +1141,12 @@ function ReviewWorkspace({
           />
           <section
             className="diff-stage"
+            onPointerMove={(event) => {
+              hoveredFileRef.current = fileIdFromEvent(event.nativeEvent)
+            }}
+            onPointerLeave={() => {
+              hoveredFileRef.current = null
+            }}
             onClick={(event) => {
               const fileId = fileHeaderIdFromEvent(event.nativeEvent)
               if (fileId != null) {
@@ -1366,14 +1373,12 @@ function DiffOptionsMenu({
   wrap,
   ignoreWhitespace,
   busy,
-  showIgnoreWhitespace,
   onWrapChange,
   onIgnoreWhitespaceChange,
 }: {
   wrap: boolean
   ignoreWhitespace: boolean
   busy: boolean
-  showIgnoreWhitespace: boolean
   onWrapChange(wrap: boolean): void
   onIgnoreWhitespaceChange(ignoreWhitespace: boolean): void
 }) {
@@ -1399,19 +1404,17 @@ function DiffOptionsMenu({
                 </Menu.CheckboxItemIndicator>
                 <span>Wrap lines</span>
               </Menu.CheckboxItem>
-              {showIgnoreWhitespace && (
-                <Menu.CheckboxItem
-                  checked={ignoreWhitespace}
-                  disabled={busy}
-                  onCheckedChange={onIgnoreWhitespaceChange}
-                  className="diff-option"
-                >
-                  <Menu.CheckboxItemIndicator className="diff-option-check">
-                    <CheckIcon />
-                  </Menu.CheckboxItemIndicator>
-                  <span>Ignore whitespace</span>
-                </Menu.CheckboxItem>
-              )}
+              <Menu.CheckboxItem
+                checked={ignoreWhitespace}
+                disabled={busy}
+                onCheckedChange={onIgnoreWhitespaceChange}
+                className="diff-option"
+              >
+                <Menu.CheckboxItemIndicator className="diff-option-check">
+                  <CheckIcon />
+                </Menu.CheckboxItemIndicator>
+                <span>Ignore whitespace</span>
+              </Menu.CheckboxItem>
             </Menu.Group>
           </Menu.Popup>
         </Menu.Positioner>
@@ -1741,6 +1744,12 @@ function PullRequestViewHeader({
             {mergeBusy ? 'Merging…' : 'Squash & merge'}
           </button>
         )}
+        {details.state === 'MERGED' && (
+          <span className="pr-header-merged" role="status">
+            <MergeIcon />
+            Merged
+          </span>
+        )}
       </div>
     </header>
   )
@@ -2017,7 +2026,10 @@ function PullRequestSidebar({ details }: { details: PullRequestDetails }) {
       >
         <summary>
           <span>Checks</span>
-          <strong>{checkStatusSummary(details)}</strong>
+          <strong>
+            {details.checkStatus === 'pass' && <ChecksPassedIcon aria-hidden="true" />}
+            {checkStatusSummary(details)}
+          </strong>
           <ChevronIcon />
         </summary>
         {visibleChecks.length === 0
@@ -3869,7 +3881,11 @@ function fileHeaderIdFromEvent(event: MouseEvent): string | null {
     (target) => target instanceof HTMLElement && target.hasAttribute('data-diffs-header'),
   )
   if (!clickedHeader) return null
-  const container = path.find(
+  return fileIdFromEvent(event)
+}
+
+function fileIdFromEvent(event: MouseEvent): string | null {
+  const container = event.composedPath().find(
     (target) => target instanceof HTMLElement && target.tagName === 'DIFFS-CONTAINER',
   )
   if (!(container instanceof HTMLElement)) return null

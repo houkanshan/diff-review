@@ -163,6 +163,7 @@ export class ReviewStore {
     repositoryName: string,
     target: ReviewTarget,
     resolved: ResolvedReview,
+    ignoreWhitespace: boolean,
   ): ReviewSession {
     const id = createId('drs')
     const now = new Date().toISOString()
@@ -174,9 +175,9 @@ export class ReviewStore {
         INSERT INTO sessions (
           id, repository_root, repository_name, target_json, target_label,
           git_command, patch, resolved_json, available_commits_json,
-          selected_commit_start, selected_commit_end, revision_base_oid,
+          selected_commit_start, selected_commit_end, ignore_whitespace, revision_base_oid,
           revision_head_oid, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         id,
@@ -190,6 +191,7 @@ export class ReviewStore {
         JSON.stringify(resolved.commits),
         start,
         end,
+        Number(ignoreWhitespace),
         revision?.baseOid ?? null,
         revision?.headOid ?? null,
         now,

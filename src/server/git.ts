@@ -92,6 +92,29 @@ export async function resolveTarget(
   }
 }
 
+export async function rerenderCommitReview(
+  repositoryPath: string,
+  resolved: ResolvedReview,
+  ignoreWhitespace: boolean,
+): Promise<ResolvedReview> {
+  if (resolved.oldSnapshot.kind !== 'commit' || resolved.newSnapshot.kind !== 'commit') {
+    throw new AppError(
+      'INVALID_REVIEW_TARGET',
+      'Only reviews pinned to commit snapshots can be re-rendered',
+    )
+  }
+  const root = await resolveRepository(repositoryPath)
+  const oldCommit = await resolveCommit(root, resolved.oldSnapshot.id)
+  const newCommit = await resolveCommit(root, resolved.newSnapshot.id)
+  return {
+    ...resolved,
+    gitCommand: `git diff${ignoreWhitespace ? ' --ignore-all-space' : ''} ${shellQuote(oldCommit)} ${shellQuote(newCommit)}`,
+    patch: await gitDiff(root, [oldCommit, newCommit], ignoreWhitespace),
+    oldSnapshot: { kind: 'commit', id: oldCommit },
+    newSnapshot: { kind: 'commit', id: newCommit },
+  }
+}
+
 export async function resolveCommitSpan(
   repositoryPath: string,
   oldestCommit: string,

@@ -1203,6 +1203,17 @@ svg {
 
 .squash-merge-button svg { width: 14px; height: 14px; }
 
+.pr-header-merged {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #8c69d8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.pr-header-merged svg { width: 14px; height: 14px; }
+
 .pr-overview-stage {
   min-width: 0;
   min-height: 0;
@@ -1779,8 +1790,6 @@ body.resizing-panels * {
   position: sticky;
   top: 24px;
   min-width: 0;
-  padding-left: 24px;
-  border-left: 1px solid var(--border);
 }
 .pr-sidebar-section {
   margin: 0;
@@ -1836,9 +1845,16 @@ body.resizing-panels * {
 .pr-sidebar-checks summary::-webkit-details-marker { display: none; }
 .pr-sidebar-checks > summary > span:first-child { margin: 0; }
 .pr-sidebar-checks > summary > strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   color: var(--faint);
   font-size: 10px;
   font-weight: 650;
+}
+.pr-sidebar-checks > summary > strong svg {
+  width: 13px;
+  height: 13px;
 }
 .pr-sidebar-checks.checks-fail > summary > strong { color: var(--red); }
 .pr-sidebar-checks.checks-pending > summary > strong { color: var(--accent); }
@@ -1962,7 +1978,8 @@ body.resizing-panels * {
 
 .pr-description {
   width: 100%;
-  padding: 24px 0 0;
+  padding: 24px 0 32px;
+  border-bottom: 1px solid var(--border);
 }
 
 .pr-activity-section > h2 {
@@ -1980,7 +1997,7 @@ body.resizing-panels * {
   font-size: 13px;
 }
 
-.pr-activity-section { margin-top: 48px; }
+.pr-activity-section { margin-top: 32px; }
 
 .pr-activity {
   position: relative;
@@ -3155,7 +3172,6 @@ body.resizing-panels * {
     margin-top: 40px;
     padding: 24px 0 0;
     border-top: 1px solid var(--border);
-    border-left: 0;
   }
 }
 

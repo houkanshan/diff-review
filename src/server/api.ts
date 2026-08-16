@@ -23,6 +23,7 @@ import {
   getRepositoryInfo,
   readSnapshotFile,
   resolveCommitSpan,
+  rerenderCommitReview,
   resolvePullRequestRevision,
   resolveRepository,
   resolveTarget,
@@ -161,9 +162,15 @@ export class ApiHandler {
       const input = parseOpenPullRequestInput(await readJson(request))
       const root = await resolveRepository(input.repositoryPath)
       const details = await getPullRequestDetails(root, number)
-      const resolved = await resolvePullRequestRevision(root, details, false)
+      const ignoreWhitespace = true
+      const resolved = await resolvePullRequestRevision(root, details, ignoreWhitespace)
       const target: ReviewTarget = { kind: 'pr', number }
-      const currentSession = this.createOrReuseSession(root, target, resolved)
+      const currentSession = this.createOrReuseSession(
+        root,
+        target,
+        resolved,
+        ignoreWhitespace,
+      )
       const selectedSession = input.revisionId == null
         ? currentSession
         : this.store.getSession(input.revisionId)
@@ -279,8 +286,14 @@ export class ApiHandler {
     if (method === 'POST' && url.pathname === '/api/sessions') {
       const input = parseCreateSessionInput(await readJson(request))
       const root = await resolveRepository(input.repositoryPath)
-      const resolved = await resolveTarget(root, input.target)
-      const session = this.createOrReuseSession(root, input.target, resolved)
+      const ignoreWhitespace = true
+      const resolved = await resolveTarget(root, input.target, ignoreWhitespace)
+      const session = this.createOrReuseSession(
+        root,
+        input.target,
+        resolved,
+        ignoreWhitespace,
+      )
       this.emitSessionUpdate(session.id)
       sendJson(response, 201, session)
       return
@@ -331,6 +344,7 @@ export class ApiHandler {
           session.repositoryRoot,
           session.target,
           resolved,
+          session.ignoreWhitespace,
         )
         this.emitSessionUpdate(updated.id)
         sendJson(response, 200, updated)
@@ -386,12 +400,6 @@ export class ApiHandler {
       const id = whitespaceMatch[1] ?? ''
       const { ignoreWhitespace } = parseWhitespaceInput(await readJson(request))
       const session = this.store.getSession(id)
-      if (session.target.kind === 'pr') {
-        throw new AppError(
-          'IMMUTABLE_PULL_REQUEST_REVISION',
-          'Whitespace settings cannot change an immutable pull request revision',
-        )
-      }
       if (session.ignoreWhitespace === ignoreWhitespace) {
         sendJson(response, 200, session)
         return
@@ -400,14 +408,20 @@ export class ApiHandler {
       const isFullRange =
         session.selectedCommitStart === session.commits.at(0)?.oid &&
         session.selectedCommitEnd === session.commits.at(-1)?.oid
-      const resolved = isFullRange || session.selectedCommitStart == null || session.selectedCommitEnd == null
-        ? await resolveTarget(session.repositoryRoot, session.target, ignoreWhitespace)
-        : await resolveCommitSpan(
+      const resolved = session.target.kind === 'pr'
+        ? await rerenderCommitReview(
             session.repositoryRoot,
-            session.selectedCommitStart,
-            session.selectedCommitEnd,
+            this.store.getResolvedReview(id),
             ignoreWhitespace,
           )
+        : isFullRange || session.selectedCommitStart == null || session.selectedCommitEnd == null
+          ? await resolveTarget(session.repositoryRoot, session.target, ignoreWhitespace)
+          : await resolveCommitSpan(
+              session.repositoryRoot,
+              session.selectedCommitStart,
+              session.selectedCommitEnd,
+              ignoreWhitespace,
+            )
       const updated = this.store.updateResolvedReview(
         id,
         resolved,
@@ -659,6 +673,7 @@ export class ApiHandler {
     root: string,
     target: ReviewTarget,
     resolved: Awaited<ReturnType<typeof resolveTarget>>,
+    ignoreWhitespace: boolean,
   ): ReviewSession {
     if (
       target.kind === 'pr' &&
@@ -673,7 +688,13 @@ export class ApiHandler {
       )
       if (existing != null) return existing
     }
-    return this.store.createSession(root, path.basename(root), target, resolved)
+    return this.store.createSession(
+      root,
+      path.basename(root),
+      target,
+      resolved,
+      ignoreWhitespace,
+    )
   }
 
   private serveClient(response: ServerResponse, pathname: string): void {
