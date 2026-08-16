@@ -64,6 +64,7 @@ export type PullRequestListView = 'open' | 'additional-review' | 'merged'
 export type PullRequestState = 'OPEN' | 'CLOSED' | 'MERGED'
 export type PullRequestCheckStatus = 'none' | 'pending' | 'pass' | 'fail'
 export type PullRequestCheckRunStatus = 'pending' | 'pass' | 'fail' | 'skipped'
+export type PullRequestMergeable = 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN'
 
 export interface PullRequestCheckRun {
   name: string
@@ -78,9 +79,24 @@ export interface GitHubUser {
   avatarUrl: string | null
 }
 
+export interface GitHubReviewer extends GitHubUser {
+  kind: 'user' | 'team'
+}
+
 export interface GitHubLabel {
   name: string
   color: string
+}
+
+export interface GitHubIssueReference {
+  token: string
+  label: string
+  owner: string
+  repository: string
+  number: number
+  kind: 'issue' | 'pull-request'
+  title: string
+  url: string
 }
 
 export interface PullRequestSummary {
@@ -133,10 +149,27 @@ export type PullRequestActivity =
       createdAt: string
       updatedAt: string
       url: string | null
+      diffHunk: string
+    }
+  | {
+      kind: 'timeline'
+      id: string
+      event: string
+      author: GitHubUser | null
+      createdAt: string
+      label: string | null
+      subject: string | null
+      commitId: string | null
+      previousTitle: string | null
+      currentTitle: string | null
     }
 
 export interface PullRequestDetails extends PullRequestSummary {
   body: string
+  mergedBy: GitHubUser | null
+  mergeable: PullRequestMergeable
+  reviewers: GitHubReviewer[]
+  issueReferences: GitHubIssueReference[]
   baseRefOid: string
   headRefOid: string
   checks: PullRequestCheckRun[]
@@ -201,6 +234,10 @@ export interface CreateSessionInput {
 export interface OpenPullRequestInput {
   repositoryPath: string
   revisionId?: string | null
+}
+
+export interface UpdatePullRequestLabelInput {
+  repositoryPath: string
 }
 
 export interface AddAnnotationInput {

@@ -8,6 +8,7 @@ import type {
   PullRequestRevision,
   PullRequestSummary,
   PullRequestWorkspace,
+  UpdatePullRequestLabelInput,
   RepositoryInfo,
   ReviewSession,
   SessionAnnotation,
@@ -55,6 +56,17 @@ export function openPullRequest(
     method: 'POST',
     body: JSON.stringify(input),
   })
+}
+
+export function removePullRequestLabel(
+  number: number,
+  label: string,
+  input: UpdatePullRequestLabelInput,
+): Promise<void> {
+  return request(
+    `/api/pull-requests/${number}/labels/${encodeURIComponent(label)}`,
+    { method: 'DELETE', body: JSON.stringify(input) },
+  )
 }
 
 export function getPullRequestRevisions(

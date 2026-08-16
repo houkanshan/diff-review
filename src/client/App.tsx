@@ -1,5 +1,6 @@
 import {
   CodeView,
+  FileDiff,
   type CodeViewHandle,
   type CodeViewItem,
   type CodeViewReactOptions,
@@ -19,22 +20,32 @@ import { Tooltip } from '@base-ui/react/tooltip'
 import type { GitStatusEntry } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
 import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useHotkey } from '@tanstack/react-hotkeys'
 import {
   MessageSquarePlus as AddCommentIcon,
   Archive as ArchiveIcon,
   GitBranch as BranchIcon,
+  Flag as FlagIcon,
   GitMerge as MergeIcon,
+  GitPullRequest as PullRequestIcon,
   Check as CheckIcon,
   ChevronDown as ChevronIcon,
+  CircleDot as IssueIcon,
   X as CloseIcon,
   MessageSquare as CommentIcon,
   GitCommitHorizontal as CommitIcon,
   Copy as CopyIcon,
   Pencil as EditIcon,
   RefreshCw as RefreshIcon,
+  Lock as LockIcon,
   FolderGit2 as RepositoryIcon,
   RotateCcw as RestoreIcon,
+  Rocket as DeployIcon,
+  Tag as TagIcon,
   SunMoon as ThemeIcon,
+  Unlock as UnlockIcon,
+  UserMinus as UserMinusIcon,
+  UserPlus as UserPlusIcon,
   TextWrap as WrapIcon,
   CircleCheck,
 } from 'lucide-react'
@@ -42,6 +53,7 @@ import Markdown from 'react-markdown'
 import rehypeRaw from 'rehype-raw'
 import rehypeSanitize from 'rehype-sanitize'
 import remarkGfm from 'remark-gfm'
+import remarkBreaks from 'remark-breaks'
 import {
   useCallback,
   useEffect,
@@ -56,13 +68,17 @@ import {
   isValidElement,
 } from 'react'
 
+import { remarkIssueReferences } from '../shared/markdown'
 import type {
   DiffSide,
+  GitHubIssueReference,
   GitHubUser,
   PiReviewRun,
   PiReviewStatus,
   PullRequestActivity,
   PullRequestDetails,
+  PullRequestCheckRun,
+  PullRequestCheckRunStatus,
   PullRequestListView,
   PullRequestRevision,
   PullRequestSummary,
@@ -84,6 +100,7 @@ import {
   getSession,
   getSessions,
   openPullRequest,
+  removePullRequestLabel,
   refreshSession,
   selectCommits,
   setAnnotationArchived,
@@ -123,6 +140,7 @@ interface PullRequestWorkspaceContext {
   piStatus: PiReviewStatus
   onSelectRevision(sessionId: string): void
   onStartPiReview(additionalInstructions: string): Promise<void>
+  onRemoveAdditionalReviewLabel(): Promise<void>
 }
 
 interface FileChangeStats {
@@ -508,6 +526,33 @@ function PullRequestsPage({
           const nextPiStatus = await startPiReview(session.id, { additionalInstructions })
           updateWorkspace((current) => ({ ...current, piStatus: nextPiStatus }))
         },
+        onRemoveAdditionalReviewLabel: async () => {
+          await removePullRequestLabel(
+            details.number,
+            'additional-review-needed',
+            { repositoryPath: route.repositoryPath },
+          )
+          queryClient.setQueriesData<PullRequestWorkspace>(
+            { queryKey: ['pull-request-workspace', route.repositoryPath, details.number] },
+            (current) => current == null ? undefined : ({
+              ...current,
+              details: {
+                ...current.details,
+                labels: current.details.labels.filter(
+                  (label) => label.name !== 'additional-review-needed',
+                ),
+              },
+            }),
+          )
+          await Promise.all([
+            queryClient.invalidateQueries({
+              queryKey: ['pull-request-workspace', route.repositoryPath, details.number],
+            }),
+            queryClient.invalidateQueries({
+              queryKey: ['pull-requests', route.repositoryPath],
+            }),
+          ])
+        },
       }}
     />
   )
@@ -750,6 +795,34 @@ function ReviewWorkspace({
     onSessionChange(updated)
   }, [onSessionChange, session.id, setFileCollapsed])
 
+  useHotkey('V', () => {
+    const viewer = viewerRef.current?.getInstance()
+    let filePath = selection?.id ?? items.at(0)?.id
+
+    if (selection == null && viewer != null) {
+      const scrollTop = viewer.getScrollTop()
+      for (const item of items) {
+        const itemTop = viewer.getTopForItem(item.id)
+        if (itemTop == null) continue
+        if (itemTop > scrollTop) break
+        filePath = item.id
+      }
+    }
+
+    if (filePath == null) return
+    void setViewed(filePath, !viewedFiles.has(filePath)).catch((caught) => {
+      console.error(`Could not toggle viewed state for ${filePath}`, caught)
+    })
+  }, {
+    enabled: (pullRequest == null || pullRequestView === 'diff') && items.length > 0,
+    ignoreInputs: true,
+    requireReset: true,
+    meta: {
+      name: 'Toggle viewed file',
+      description: 'Toggle the current file as viewed',
+    },
+  })
+
   const addFile = useCallback(async (filePath: string) => {
     onSessionChange(await stageFile(session.id, filePath))
   }, [onSessionChange, session.id])
@@ -931,8 +1004,11 @@ function ReviewWorkspace({
         {pullRequest != null && (
           <>
             <PullRequestViewHeader
+              key={pullRequest.details.number}
               view={pullRequestView}
+              details={pullRequest.details}
               onViewChange={switchPullRequestView}
+              onRemoveAdditionalReviewLabel={pullRequest.onRemoveAdditionalReviewLabel}
             />
             <section
               ref={overviewScrollRef}
@@ -946,6 +1022,7 @@ function ReviewWorkspace({
               <PullRequestConversation
                 details={pullRequest.details}
                 oldRevision={session.id !== pullRequest.currentSessionId}
+                resolvedTheme={resolvedTheme}
                 onNavigate={navigateToPullRequestActivity}
               />
             </section>
@@ -1461,11 +1538,31 @@ function RevisionPicker({
 
 function PullRequestViewHeader({
   view,
+  details,
   onViewChange,
+  onRemoveAdditionalReviewLabel,
 }: {
   view: PullRequestViewMode
+  details: PullRequestDetails
   onViewChange(view: PullRequestViewMode): void
+  onRemoveAdditionalReviewLabel(): Promise<void>
 }) {
+  const [labelBusy, setLabelBusy] = useState(false)
+  const [labelError, setLabelError] = useState<string | null>(null)
+  const hasAdditionalReviewLabel = details.labels.some(
+    (label) => label.name === 'additional-review-needed',
+  )
+  const removeAdditionalReviewLabel = async () => {
+    setLabelBusy(true)
+    setLabelError(null)
+    try {
+      await onRemoveAdditionalReviewLabel()
+    } catch (caught) {
+      setLabelError(caught instanceof Error ? caught.message : String(caught))
+    } finally {
+      setLabelBusy(false)
+    }
+  }
   return (
     <header className="pr-workspace-header">
       <div className="pr-workspace-tabs" role="tablist" aria-label="Pull request content">
@@ -1490,14 +1587,31 @@ function PullRequestViewHeader({
           Diff
         </button>
       </div>
-      <button
-        className="squash-merge-button"
-        disabled
-        title="Merge API is not connected yet"
-      >
-        <MergeIcon />
-        Squash &amp; merge
-      </button>
+      <div className="pr-header-actions">
+        {details.state === 'OPEN' && details.mergeable === 'CONFLICTING' && (
+          <span className="merge-conflict-badge" role="status">Merge conflicts</span>
+        )}
+        {labelError != null && <span role="alert">{labelError}</span>}
+        {hasAdditionalReviewLabel && (
+          <button
+            className="remove-additional-label-button"
+            disabled={labelBusy}
+            onClick={() => void removeAdditionalReviewLabel()}
+          >
+            {labelBusy ? 'Removing…' : 'Remove addi. label'}
+          </button>
+        )}
+        {details.state !== 'MERGED' && (
+          <button
+            className="squash-merge-button"
+            disabled
+            title="Merge API is not connected yet"
+          >
+            <MergeIcon />
+            Squash &amp; merge
+          </button>
+        )}
+      </div>
     </header>
   )
 }
@@ -1505,10 +1619,12 @@ function PullRequestViewHeader({
 function PullRequestConversation({
   details,
   oldRevision,
+  resolvedTheme,
   onNavigate,
 }: {
   details: PullRequestDetails
   oldRevision: boolean
+  resolvedTheme: ResolvedTheme
   onNavigate(activity: PullRequestActivity): void
 }) {
   return (
@@ -1527,12 +1643,116 @@ function PullRequestConversation({
                 <UserAvatar user={details.author} />
                 <strong>{details.author.name ?? details.author.login}</strong>
               </span>
-              <span>#{details.number}</span>
-              <code>{details.baseRefName} ← {details.headRefName}</code>
+              <CopyableMetaText value={`#${details.number}`}>#{details.number}</CopyableMetaText>
+              <code className="pr-branch-range">
+                <CopyableMetaText value={details.baseRefName}>{details.baseRefName}</CopyableMetaText>
+                {' ← '}
+                <CopyableMetaText value={details.headRefName}>{details.headRefName}</CopyableMetaText>
+              </code>
               <a href={details.url} target="_blank" rel="noreferrer">Open on GitHub ↗</a>
             </div>
-            {details.labels.length > 0 && (
-              <div className="pr-labels">
+          </header>
+          <section className="pr-description" aria-label="Pull request description">
+            <MarkdownBody
+              body={details.body || 'No description provided.'}
+              issueReferences={details.issueReferences}
+            />
+          </section>
+          <section className="pr-activity-section" aria-labelledby="pr-activity-heading">
+            <h2 id="pr-activity-heading">Activity</h2>
+            <div className="pr-activity" aria-label="Pull request timeline">
+              <TimelineItem
+                text={<>Opened by <strong>{details.author.login}</strong></>}
+                timestamp={details.createdAt}
+              />
+              {groupTimelineActivities(details.activity).map(({ activity, count }) => (
+                <ActivityItem
+                  key={`${activity.kind}:${activity.id}`}
+                  activity={activity}
+                  count={count}
+                  issueReferences={details.issueReferences}
+                  resolvedTheme={resolvedTheme}
+                  onNavigate={onNavigate}
+                />
+              ))}
+            </div>
+          </section>
+        </div>
+        <PullRequestSidebar
+          key={`${details.number}:${details.checkStatus}`}
+          details={details}
+        />
+      </div>
+    </section>
+  )
+}
+
+function PullRequestSidebar({ details }: { details: PullRequestDetails }) {
+  const checksShouldOpen = details.checkStatus === 'fail' || details.checkStatus === 'pending'
+  const [checksOpen, setChecksOpen] = useState(checksShouldOpen)
+  const visibleChecks = details.checkStatus === 'fail'
+    ? details.checks.filter((check) => check.status === 'fail' || check.status === 'pending')
+    : details.checkStatus === 'pending'
+      ? details.checks.filter((check) => check.status === 'pending')
+      : details.checks
+  return (
+    <aside className="pr-overview-sidebar" aria-label="Pull request details">
+      <section className="pr-sidebar-section">
+        <h2>Status</h2>
+        <div className={`pr-sidebar-status state-${details.state.toLowerCase()}`}>
+          <BranchIcon />
+          <strong>{details.isDraft ? 'Draft' : titleCase(details.state)}</strong>
+        </div>
+        {details.mergedBy != null && (
+          <div className="pr-sidebar-person pr-sidebar-status-person">
+            <UserAvatar user={details.mergedBy} />
+            <span><strong>{details.mergedBy.name ?? details.mergedBy.login}</strong> merged</span>
+          </div>
+        )}
+        {details.state === 'OPEN' && details.mergeable === 'CONFLICTING' && (
+          <p className="pr-sidebar-conflict">Conflicts must be resolved before merging.</p>
+        )}
+        <div className="pr-sidebar-changes" aria-label="Pull request changes">
+          <span className="addition">+{details.additions}</span>
+          <span className="deletion">−{details.deletions}</span>
+        </div>
+      </section>
+
+      <details
+        className={`pr-sidebar-section pr-sidebar-checks checks-${details.checkStatus}`}
+        open={checksOpen}
+        onToggle={(event) => setChecksOpen(event.currentTarget.open)}
+      >
+        <summary>
+          <span>Checks</span>
+          <strong>{checkStatusSummary(details)}</strong>
+          <ChevronIcon />
+        </summary>
+        {visibleChecks.length === 0
+          ? <p className="pr-sidebar-empty">No checks reported.</p>
+          : (
+              <div className="pr-check-list">
+                {groupChecks(visibleChecks).map((group) => (
+                  <PullRequestCheckGroup
+                    key={`${group.name}:${group.status}`}
+                    name={group.name}
+                    status={group.status}
+                    checks={group.checks}
+                  />
+                ))}
+              </div>
+            )}
+      </details>
+
+      <SidebarPeople title="Reviewers" people={details.reviewers} emptyLabel="No reviewers" />
+      <SidebarPeople title="Assignees" people={details.assignees} emptyLabel="No assignees" />
+
+      <section className="pr-sidebar-section">
+        <h2>Labels</h2>
+        {details.labels.length === 0
+          ? <p className="pr-sidebar-empty">No labels</p>
+          : (
+              <div className="pr-sidebar-labels">
                 {details.labels.map((label) => (
                   <span key={label.name} style={{ '--label-color': `#${label.color}` } as CSSProperties}>
                     {label.name}
@@ -1540,57 +1760,229 @@ function PullRequestConversation({
                 ))}
               </div>
             )}
-            <div className="pr-overview-facts">
-              <span className={`state-${details.state.toLowerCase()}`}>
-                <BranchIcon />
-                {details.isDraft ? 'Draft' : titleCase(details.state)}
-              </span>
-              <span className={`checks-${details.checkStatus}`}>
-                <CircleCheck />
-                {details.checkStatus === 'pass' ? 'All checks passed' : checkStatusLabel(details.checkStatus)}
-              </span>
-              <span>
-                <i className="addition">+{details.additions}</i>
-                <i className="deletion">−{details.deletions}</i>
-              </span>
-            </div>
-          </header>
-          <section className="pr-description" aria-labelledby="pr-description-heading">
-            <h2 id="pr-description-heading">Description</h2>
-            <MarkdownBody body={details.body || 'No description provided.'} />
-          </section>
-          <section className="pr-activity-section" aria-labelledby="pr-activity-heading">
-            <h2 id="pr-activity-heading">Activity</h2>
-            <div className="pr-opened-event">
-              <BranchIcon />
-              <span>
-                Opened by <strong>{details.author.login}</strong> · {relativeTime(details.createdAt)}
-              </span>
-            </div>
-            {details.activity.length > 0 && (
-              <div className="pr-activity" aria-label="Pull request conversation">
-                {details.activity.map((activity) => (
-                  <ConversationItem
-                    key={`${activity.kind}:${activity.id}`}
-                    eyebrow={activityLabel(activity)}
-                    author={activity.author}
-                    body={activity.body || activityLabel(activity)}
-                    timestamp={activity.createdAt}
-                    target={activity.kind === 'review-comment'
-                      ? `${activity.path}${activity.line == null ? '' : `:${activity.line}`}`
-                      : undefined}
-                    onTarget={activity.kind === 'review-comment' && activity.line != null
-                      ? () => onNavigate(activity)
-                      : undefined}
-                    url={activity.url}
-                  />
-                ))}
-              </div>
-            )}
-          </section>
-        </div>
+      </section>
+    </aside>
+  )
+}
+
+function PullRequestCheckGroup({
+  name,
+  status,
+  checks,
+}: {
+  name: string
+  status: PullRequestCheckRunStatus
+  checks: PullRequestCheckRun[]
+}) {
+  const [open, setOpen] = useState(status === 'fail' || status === 'pending')
+  return (
+    <details
+      className={`pr-check-group checks-${status}`}
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary>
+        <span className={`pr-check-dot ${status}`} aria-hidden="true" />
+        <strong>{name}</strong>
+        <span>{checkRunStatusSummary(checks)}</span>
+        <ChevronIcon />
+      </summary>
+      <div className="pr-check-group-items">
+        {checks.map((check, index) => {
+          const content = (
+            <>
+              <span className={`pr-check-dot ${check.status}`} aria-hidden="true" />
+              <strong>{check.name}</strong>
+            </>
+          )
+          return check.url == null
+            ? <div className="pr-check-item" key={`${check.name}:${index}`}>{content}</div>
+            : (
+                <a
+                  className="pr-check-item"
+                  href={check.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  key={`${check.name}:${index}`}
+                >
+                  {content}
+                </a>
+              )
+        })}
       </div>
+    </details>
+  )
+}
+
+function groupChecks(checks: PullRequestCheckRun[]): Array<{
+  name: string
+  status: PullRequestCheckRunStatus
+  checks: PullRequestCheckRun[]
+}> {
+  const groups = new Map<string, PullRequestCheckRun[]>()
+  for (const check of checks) {
+    const name = check.workflowName ?? 'Other checks'
+    const group = groups.get(name) ?? []
+    group.push(check)
+    groups.set(name, group)
+  }
+  return Array.from(groups, ([name, groupedChecks]) => ({
+    name,
+    status: aggregateCheckRunStatus(groupedChecks),
+    checks: groupedChecks,
+  }))
+}
+
+function aggregateCheckRunStatus(checks: PullRequestCheckRun[]): PullRequestCheckRunStatus {
+  if (checks.some((check) => check.status === 'fail')) return 'fail'
+  if (checks.some((check) => check.status === 'pending')) return 'pending'
+  if (checks.some((check) => check.status === 'pass')) return 'pass'
+  return 'skipped'
+}
+
+function checkRunStatusSummary(checks: PullRequestCheckRun[]): string {
+  const status = aggregateCheckRunStatus(checks)
+  const label = status === 'fail' ? 'Failed' : status === 'pass' ? 'Passed' : titleCase(status)
+  return `${label} · ${checks.length}`
+}
+
+function SidebarPeople({
+  title,
+  people,
+  emptyLabel,
+}: {
+  title: string
+  people: GitHubUser[]
+  emptyLabel: string
+}) {
+  return (
+    <section className="pr-sidebar-section">
+      <h2>{title}</h2>
+      {people.length === 0
+        ? <p className="pr-sidebar-empty">{emptyLabel}</p>
+        : (
+            <div className="pr-sidebar-people">
+              {people.map((person) => (
+                <div className="pr-sidebar-person" key={person.login}>
+                  <UserAvatar user={person} />
+                  <span>
+                    <strong>{person.name ?? person.login}</strong>
+                    {person.name != null && <small>{person.login}</small>}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
     </section>
+  )
+}
+
+function checkStatusSummary(details: PullRequestDetails): string {
+  if (details.checkStatus === 'fail') {
+    const failed = details.checks.filter((check) => check.status === 'fail').length
+    const pending = details.checks.filter((check) => check.status === 'pending').length
+    return pending === 0 ? `${failed} failed` : `${failed} failed · ${pending} pending`
+  }
+  if (details.checkStatus === 'pending') {
+    const pending = details.checks.filter((check) => check.status === 'pending').length
+    return `${pending} pending`
+  }
+  if (details.checkStatus === 'pass') return 'All passed'
+  return 'None'
+}
+
+function ActivityItem({
+  activity,
+  count,
+  issueReferences,
+  resolvedTheme,
+  onNavigate,
+}: {
+  activity: PullRequestActivity
+  count: number
+  issueReferences: GitHubIssueReference[]
+  resolvedTheme: ResolvedTheme
+  onNavigate(activity: PullRequestActivity): void
+}) {
+  if (activity.kind === 'timeline') {
+    return (
+      <TimelineItem
+        text={timelineActivityText(activity)}
+        timestamp={activity.createdAt}
+        icon={timelineActivityIcon(activity)}
+        count={count}
+      />
+    )
+  }
+  if (activity.kind === 'review' && !activity.body.trim()) {
+    return (
+      <TimelineItem
+        text={<><strong>{activity.author.login}</strong> {reviewTimelineText(activity.state)}</>}
+        timestamp={activity.createdAt}
+        icon={<CommentIcon />}
+      />
+    )
+  }
+  return (
+    <ConversationItem
+      eyebrow={activityLabel(activity)}
+      author={activity.author}
+      body={activity.body}
+      timestamp={activity.createdAt}
+      target={activity.kind === 'review-comment'
+        ? `${activity.path}${activity.line == null ? '' : `:${activity.line}`}`
+        : undefined}
+      diffHunk={activity.kind === 'review-comment' ? activity.diffHunk : undefined}
+      diffPath={activity.kind === 'review-comment' ? activity.path : undefined}
+      resolvedTheme={resolvedTheme}
+      onTarget={activity.kind === 'review-comment' && activity.line != null
+        ? () => onNavigate(activity)
+        : undefined}
+      url={activity.url}
+      issueReferences={issueReferences}
+    />
+  )
+}
+
+function TimelineItem({
+  text,
+  timestamp,
+  count = 1,
+  icon = <BranchIcon />,
+}: {
+  text: ReactNode
+  timestamp: string
+  count?: number
+  icon?: ReactNode
+}) {
+  return (
+    <div className="pr-timeline-item">
+      {icon}
+      <span className="pr-timeline-copy">
+        {text}
+        {count > 1 && ` × ${count}`}
+        <time title={formatTimestamp(timestamp)}>{relativeTime(timestamp)}</time>
+      </span>
+    </div>
+  )
+}
+
+function CopyableMetaText({ value, children }: { value: string; children: ReactNode }) {
+  const [copied, setCopied] = useState(false)
+
+  return (
+    <button
+      className="pr-copyable-meta"
+      type="button"
+      title={copied ? 'Copied' : `Copy ${value}`}
+      onClick={async () => {
+        await navigator.clipboard.writeText(value)
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 1200)
+      }}
+    >
+      {children}
+    </button>
   )
 }
 
@@ -1601,7 +1993,11 @@ function ConversationItem({
   timestamp,
   target,
   onTarget,
+  diffHunk,
+  diffPath,
+  resolvedTheme,
   url,
+  issueReferences,
 }: {
   eyebrow: string
   author: GitHubUser
@@ -1609,35 +2005,128 @@ function ConversationItem({
   timestamp: string
   target?: string
   onTarget?: () => void
+  diffHunk?: string
+  diffPath?: string
+  resolvedTheme: ResolvedTheme
   url?: string | null
+  issueReferences: GitHubIssueReference[]
 }) {
   return (
     <article className="conversation-item">
-      <UserAvatar user={author} />
-      <div className="conversation-item-body">
-        <header>
+      <header className="conversation-item-header">
+        <UserAvatar user={author} />
+        <div className="conversation-item-heading">
           <div><strong>{author.login}</strong><span>{eyebrow}</span></div>
           <div className="conversation-item-meta">
             <time title={formatTimestamp(timestamp)}>{relativeTime(timestamp)}</time>
             {url != null && <a href={url} target="_blank" rel="noreferrer">GitHub ↗</a>}
           </div>
-        </header>
-        {target != null && (onTarget == null
-          ? <div className="conversation-target"><code>{target}</code></div>
-          : <button className="conversation-target" onClick={onTarget}><code>{target}</code></button>)}
-        <MarkdownBody body={body} />
-      </div>
+        </div>
+      </header>
+      {target != null && (
+        <div className="conversation-target">
+          <ReviewCommentDiff
+            target={target}
+            filePath={diffPath}
+            diffHunk={diffHunk}
+            resolvedTheme={resolvedTheme}
+            onTarget={onTarget}
+          />
+        </div>
+      )}
+      <MarkdownBody body={body} issueReferences={issueReferences} />
     </article>
   )
 }
 
-function MarkdownBody({ body }: { body: string }) {
+function ReviewCommentDiff({
+  target,
+  filePath,
+  diffHunk,
+  resolvedTheme,
+  onTarget,
+}: {
+  target: string
+  filePath?: string
+  diffHunk?: string
+  resolvedTheme: ResolvedTheme
+  onTarget?: () => void
+}) {
+  const fileDiff = useMemo(
+    () => filePath == null || diffHunk == null ? null : parseReviewCommentDiff(filePath, diffHunk),
+    [diffHunk, filePath],
+  )
+  return (
+    <>
+      {onTarget == null
+        ? <code className="conversation-diff-path">{target}</code>
+        : (
+            <button
+              className="conversation-diff-path conversation-diff-link"
+              type="button"
+              onClick={onTarget}
+              aria-label={`Open ${target} in the Diff tab`}
+            >
+              {target}
+            </button>
+          )}
+      {fileDiff != null && (
+        <FileDiff
+          className="conversation-file-diff"
+          fileDiff={fileDiff}
+          disableWorkerPool
+          options={{
+            theme: { dark: 'pierre-dark', light: 'pierre-light' },
+            themeType: resolvedTheme,
+            diffStyle: 'unified',
+            diffIndicators: 'bars',
+            overflow: 'scroll',
+            disableFileHeader: true,
+            hunkSeparators: 'line-info-basic',
+            lineDiffType: 'word-alt',
+          }}
+        />
+      )}
+    </>
+  )
+}
+
+function parseReviewCommentDiff(filePath: string, diffHunk: string): FileDiffMetadata | null {
+  if (!diffHunk.trim()) return null
+  const oldPath = JSON.stringify(`a/${filePath}`)
+  const newPath = JSON.stringify(`b/${filePath}`)
+  const patch = [
+    `diff --git ${oldPath} ${newPath}`,
+    `--- ${oldPath}`,
+    `+++ ${newPath}`,
+    diffHunk,
+    '',
+  ].join('\n')
+  try {
+    return parsePatchFiles(patch, `review-comment:${filePath}`, true).at(0)?.files.at(0) ?? null
+  } catch (caught) {
+    console.error(`Could not parse review comment diff for ${filePath}`, caught)
+    return null
+  }
+}
+
+function MarkdownBody({
+  body,
+  issueReferences,
+}: {
+  body: string
+  issueReferences: GitHubIssueReference[]
+}) {
   return (
     <div className="markdown-body">
       <Markdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkBreaks, [remarkIssueReferences, { references: issueReferences }]]}
         rehypePlugins={[rehypeRaw, rehypeSanitize]}
-        components={{ a: MarkdownLink, img: MarkdownImage, pre: MarkdownPre }}
+        components={{
+          a: (props) => <MarkdownLink {...props} issueReferences={issueReferences} />,
+          img: MarkdownImage,
+          pre: MarkdownPre,
+        }}
       >
         {body}
       </Markdown>
@@ -1662,10 +2151,30 @@ function MarkdownImage({ src, ...props }: ComponentPropsWithoutRef<'img'> & { no
 function MarkdownLink({
   href,
   children,
+  node: _node,
+  issueReferences = [],
   ...props
-}: ComponentPropsWithoutRef<'a'> & { node?: unknown }) {
+}: ComponentPropsWithoutRef<'a'> & {
+  node?: unknown
+  issueReferences?: GitHubIssueReference[]
+}) {
   if (href != null && children === href && isGitHubAttachmentUrl(href)) {
     return <video src={githubAttachmentUrl(href)} controls preload="metadata" />
+  }
+  const reference = issueReferences.find((item) => item.url === href)
+  if (reference != null) {
+    return (
+      <a
+        {...props}
+        className="markdown-issue-reference"
+        href={href}
+        target="_blank"
+        rel="noreferrer"
+      >
+        {reference.kind === 'pull-request' ? <PullRequestIcon /> : <IssueIcon />}
+        {children}
+      </a>
+    )
   }
   return <a {...props} href={href}>{children}</a>
 }
@@ -1692,6 +2201,49 @@ function loadMermaid() {
   return mermaidPromise
 }
 
+type SyntaxHighlight =
+  | { source: string; language: string; html: string }
+  | { source: string; language: string; failed: true }
+
+let shikiPromise: Promise<typeof import('shiki')> | undefined
+
+function loadShiki() {
+  shikiPromise ??= import('shiki')
+  return shikiPromise
+}
+
+function SyntaxHighlightedCode({ source, language }: { source: string; language: string }) {
+  const [highlight, setHighlight] = useState<SyntaxHighlight | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setHighlight(null)
+    loadShiki()
+      .then(({ codeToHtml }) => codeToHtml(source, {
+        lang: language,
+        themes: { light: 'github-light', dark: 'github-dark' },
+        defaultColor: false,
+      }))
+      .then((html) => {
+        if (!cancelled) setHighlight({ source, language, html })
+      })
+      .catch(() => {
+        if (!cancelled) setHighlight({ source, language, failed: true })
+      })
+    return () => { cancelled = true }
+  }, [language, source])
+
+  if (
+    highlight == null ||
+    highlight.source !== source ||
+    highlight.language !== language ||
+    'failed' in highlight
+  ) {
+    return <pre><code className={`language-${language}`}>{source}</code></pre>
+  }
+  return <div className="markdown-highlighted-code" dangerouslySetInnerHTML={{ __html: highlight.html }} />
+}
+
 function MarkdownPre({
   children,
   node: _node,
@@ -1701,9 +2253,18 @@ function MarkdownPre({
     ? children
     : null
   const languages = child?.props.className?.split(' ') ?? []
+  const language = languages.find((value) => value.startsWith('language-'))?.slice('language-'.length)
 
-  if (child != null && languages.includes('language-mermaid')) {
+  if (child != null && language === 'mermaid') {
     return <MermaidDiagram source={String(child.props.children).replace(/\n$/, '')} />
+  }
+  if (child != null && language != null) {
+    return (
+      <SyntaxHighlightedCode
+        source={String(child.props.children).replace(/\n$/, '')}
+        language={language}
+      />
+    )
   }
 
   return <pre {...props}>{children}</pre>
@@ -3062,7 +3623,135 @@ function checkStatusLabel(status: PullRequestSummary['checkStatus']): string {
 function activityLabel(activity: PullRequestActivity): string {
   if (activity.kind === 'comment') return 'Commented'
   if (activity.kind === 'review-comment') return 'Review comment'
-  return titleCase(activity.state.replaceAll('_', ' '))
+  if (activity.kind === 'review') return titleCase(activity.state.replaceAll('_', ' '))
+  return titleCase(activity.event.replaceAll('_', ' '))
+}
+
+type TimelineActivity = Extract<PullRequestActivity, { kind: 'timeline' }>
+
+type GroupedPullRequestActivity = {
+  activity: PullRequestActivity
+  count: number
+}
+
+function groupTimelineActivities(activities: PullRequestActivity[]): GroupedPullRequestActivity[] {
+  return activities.reduce<GroupedPullRequestActivity[]>((groups, activity) => {
+    const previous = groups.at(-1)
+    if (
+      activity.kind === 'timeline' &&
+      previous?.activity.kind === 'timeline' &&
+      timelineGroupKey(previous.activity) === timelineGroupKey(activity)
+    ) {
+      previous.count += 1
+      return groups
+    }
+    groups.push({ activity, count: 1 })
+    return groups
+  }, [])
+}
+
+function timelineGroupKey(activity: TimelineActivity): string {
+  return JSON.stringify({
+    event: activity.event,
+    author: activity.author?.login ?? null,
+    label: activity.label,
+    subject: activity.subject,
+    commitId: activity.commitId,
+    previousTitle: activity.previousTitle,
+    currentTitle: activity.currentTitle,
+  })
+}
+
+function timelineActivityIcon(activity: TimelineActivity): ReactNode {
+  switch (activity.event) {
+    case 'labeled':
+    case 'unlabeled':
+      return <TagIcon />
+    case 'committed':
+      return <CommitIcon />
+    case 'merged':
+      return <MergeIcon />
+    case 'closed':
+      return <CloseIcon />
+    case 'reopened':
+    case 'head_ref_restored':
+      return <RestoreIcon />
+    case 'ready_for_review':
+      return <CircleCheck />
+    case 'convert_to_draft':
+    case 'renamed':
+      return <EditIcon />
+    case 'review_requested':
+    case 'assigned':
+      return <UserPlusIcon />
+    case 'review_request_removed':
+    case 'unassigned':
+      return <UserMinusIcon />
+    case 'deployed':
+    case 'deployment_environment_changed':
+      return <DeployIcon />
+    case 'milestoned':
+    case 'demilestoned':
+      return <FlagIcon />
+    case 'locked':
+      return <LockIcon />
+    case 'unlocked':
+      return <UnlockIcon />
+    case 'head_ref_deleted':
+      return <ArchiveIcon />
+    case 'head_ref_force_pushed':
+      return <RefreshIcon />
+    default:
+      return <PullRequestIcon />
+  }
+}
+
+function timelineActivityText(activity: TimelineActivity): ReactNode {
+  const actor = activity.author?.login
+  const prefix = actor == null ? null : <strong>{actor}</strong>
+  switch (activity.event) {
+    case 'labeled':
+      return <>{prefix} added label <code>{activity.label ?? 'unknown'}</code></>
+    case 'unlabeled':
+      return <>{prefix} removed label <code>{activity.label ?? 'unknown'}</code></>
+    case 'committed':
+      return <>{prefix} committed <code>{activity.commitId?.slice(0, 7) ?? 'changes'}</code>{activity.subject == null ? null : ` · ${activity.subject}`}</>
+    case 'merged':
+      return <>{prefix} merged this pull request</>
+    case 'closed':
+      return <>{prefix} closed this pull request</>
+    case 'reopened':
+      return <>{prefix} reopened this pull request</>
+    case 'ready_for_review':
+      return <>{prefix} marked this pull request ready for review</>
+    case 'convert_to_draft':
+      return <>{prefix} converted this pull request to draft</>
+    case 'review_requested':
+      return <>{prefix} requested a review from <strong>{activity.subject ?? 'a reviewer'}</strong></>
+    case 'review_request_removed':
+      return <>{prefix} removed the review request for <strong>{activity.subject ?? 'a reviewer'}</strong></>
+    case 'assigned':
+      return <>{prefix} assigned <strong>{activity.subject ?? 'a contributor'}</strong></>
+    case 'unassigned':
+      return <>{prefix} unassigned <strong>{activity.subject ?? 'a contributor'}</strong></>
+    case 'renamed':
+      return <>{prefix} renamed <code>{activity.previousTitle ?? 'the pull request'}</code> to <code>{activity.currentTitle ?? 'a new title'}</code></>
+    default:
+      return <>{prefix} {activity.event.replaceAll('_', ' ')}</>
+  }
+}
+
+function reviewTimelineText(state: string): string {
+  switch (state.toUpperCase()) {
+    case 'APPROVED':
+      return 'approved these changes'
+    case 'CHANGES_REQUESTED':
+      return 'requested changes'
+    case 'DISMISSED':
+      return 'had a review dismissed'
+    default:
+      return 'reviewed these changes'
+  }
 }
 
 function piExplanationButtonLabel(status: PiReviewStatus): string {

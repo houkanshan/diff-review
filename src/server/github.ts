@@ -3,15 +3,22 @@ import { spawn } from 'node:child_process'
 import type {
   DiffSide,
   GitHubLabel,
+  GitHubIssueReference,
+  GitHubReviewer,
   GitHubUser,
   PullRequestActivity,
   PullRequestCheckRun,
   PullRequestCheckStatus,
   PullRequestDetails,
+  PullRequestMergeable,
   PullRequestListView,
   PullRequestState,
   PullRequestSummary,
 } from '../shared/types.js'
+import {
+  extractIssueReferenceTargets,
+  type GitHubIssueReferenceTarget,
+} from '../shared/markdown.js'
 import { AppError, errorMessage } from './errors.js'
 
 export interface PullRequestRevisionDetails {
@@ -49,9 +56,20 @@ const DETAILS_FIELDS = [
   'headRefOid',
   'comments',
   'reviews',
+  'mergeable',
+  'reviewRequests',
+  'mergedBy',
 ].join(',')
 
 const MAX_OUTPUT_BYTES = 128 * 1024 * 1024
+type ResolvedIssueReference = Omit<GitHubIssueReference, 'token' | 'label'>
+type ResolvedIssueReferenceTarget = GitHubIssueReferenceTarget & { owner: string; repository: string }
+
+const issueReferenceCache = new Map<string, Promise<ResolvedIssueReference | null>>()
+
+function issueReferenceKey(reference: { owner: string; repository: string; number: number }): string {
+  return `${reference.owner.toLowerCase()}/${reference.repository.toLowerCase()}#${reference.number}`
+}
 
 export async function listPullRequests(
   root: string,
@@ -80,7 +98,7 @@ export async function getPullRequestDetails(
   number: number,
 ): Promise<PullRequestDetails> {
   validatePullRequestNumber(number)
-  const [detailsOutput, reviewCommentsOutput] = await Promise.all([
+  const [detailsOutput, reviewCommentsOutput, timelineOutput] = await Promise.all([
     runGitHub(['pr', 'view', String(number), '--json', DETAILS_FIELDS], root),
     runGitHub(
       [
@@ -91,24 +109,165 @@ export async function getPullRequestDetails(
       ],
       root,
     ),
+    runGitHub(
+      [
+        'api',
+        `repos/{owner}/{repo}/issues/${number}/timeline?per_page=100&exclude=commented%2Creviewed`,
+        '--paginate',
+        '--slurp',
+      ],
+      root,
+    ),
   ])
   const raw = expectObject(parseJson(detailsOutput, `GitHub PR #${number}`))
   const summary = parsePullRequestSummary(raw)
+  const body = optionalString(raw.body) ?? ''
   const activity = [
     ...expectArray(raw.comments).map(parseConversationComment),
     ...expectArray(raw.reviews).map(parseReview),
     ...parsePaginatedArray(
       parseJson(reviewCommentsOutput, `GitHub PR #${number} review comments`),
     ).map(parseReviewComment),
+    ...parsePullRequestTimelineEvents(
+      parseJson(timelineOutput, `GitHub PR #${number} timeline`),
+    ),
   ].sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+  const issueReferences = await resolveIssueReferences(
+    root,
+    summary.url,
+    extractIssueReferenceTargets([
+      body,
+      ...activity.flatMap((item) => item.kind === 'timeline' ? [] : [item.body]),
+    ]),
+  ).catch(() => [])
 
   return {
     ...summary,
-    body: optionalString(raw.body) ?? '',
+    body,
+    mergedBy: parseOptionalUser(raw.mergedBy),
+    mergeable: parsePullRequestMergeable(raw.mergeable),
+    reviewers: parsePullRequestReviewers(raw.reviewRequests, raw.reviews),
+    issueReferences,
     baseRefOid: expectString(raw.baseRefOid, 'baseRefOid'),
     headRefOid: expectString(raw.headRefOid, 'headRefOid'),
     checks: parsePullRequestChecks(raw.statusCheckRollup),
     activity,
+  }
+}
+
+async function resolveIssueReferences(
+  root: string,
+  repositoryUrl: string,
+  targets: GitHubIssueReferenceTarget[],
+): Promise<GitHubIssueReference[]> {
+  const currentRepository = parseGitHubRepositoryUrl(repositoryUrl)
+  const resolvedTargets = targets.map((target): ResolvedIssueReferenceTarget => ({
+    ...target,
+    owner: target.owner ?? currentRepository.owner,
+    repository: target.repository ?? currentRepository.name,
+  }))
+  const uniqueTargets = [...new Map(
+    resolvedTargets.map((target) => [issueReferenceKey(target), target]),
+  ).values()]
+  const missing = uniqueTargets.filter((target) => !issueReferenceCache.has(issueReferenceKey(target)))
+  if (missing.length > 0) {
+    const batch = fetchIssueReferenceBatch(root, missing)
+    const cachedBatch = new Map<string, Promise<ResolvedIssueReference | null>>()
+    for (const target of missing) {
+      const key = issueReferenceKey(target)
+      const reference = batch.then((references) => references.get(key) ?? null)
+      cachedBatch.set(key, reference)
+      issueReferenceCache.set(key, reference)
+    }
+    void batch.catch(() => {
+      for (const [key, reference] of cachedBatch) {
+        if (issueReferenceCache.get(key) === reference) issueReferenceCache.delete(key)
+      }
+    })
+  }
+  const references = await Promise.all(resolvedTargets.map(async (target) => {
+    const reference = await issueReferenceCache.get(issueReferenceKey(target))!
+    if (reference == null) return null
+    const isCurrentRepository =
+      target.owner.toLowerCase() === currentRepository.owner.toLowerCase() &&
+      target.repository.toLowerCase() === currentRepository.name.toLowerCase()
+    return {
+      ...reference,
+      token: target.token,
+      label: isCurrentRepository
+        ? `#${target.number}`
+        : `${target.owner}/${target.repository}#${target.number}`,
+    }
+  }))
+  return references.filter((reference): reference is GitHubIssueReference => reference != null)
+}
+
+async function fetchIssueReferenceBatch(
+  root: string,
+  targets: ResolvedIssueReferenceTarget[],
+): Promise<Map<string, ResolvedIssueReference>> {
+  const selections = targets.map((target, index) =>
+    `ref${index}: search(query: ${JSON.stringify(`repo:${target.owner}/${target.repository} ${target.number}`)}, type: ISSUE, first: 10) { ` +
+    'nodes { ... on Issue { __typename number title url } ... on PullRequest { __typename number title url } } }',
+  ).join('\n')
+  const query = `query { ${selections} }`
+  const output = await runGitHub(['api', 'graphql', '-f', `query=${query}`], root)
+  const response = expectObject(parseJson(output, 'GitHub issue references'))
+  const rawResults = expectObject(response.data)
+  const references = new Map<string, ResolvedIssueReference>()
+  for (const [index, target] of targets.entries()) {
+    const rawSearch = expectObject(rawResults[`ref${index}`])
+    const rawReference = expectArray(rawSearch.nodes)
+      .map(optionalObject)
+      .find((candidate) => optionalPositiveInteger(candidate?.number) === target.number)
+    const title = optionalString(rawReference?.title)
+    const url = optionalString(rawReference?.url)
+    const typeName = optionalString(rawReference?.__typename)
+    if (title == null || url == null || (typeName !== 'Issue' && typeName !== 'PullRequest')) continue
+    references.set(
+      issueReferenceKey(target),
+      {
+        owner: target.owner,
+        repository: target.repository,
+        number: target.number,
+        kind: typeName === 'PullRequest' ? 'pull-request' : 'issue',
+        title,
+        url,
+      },
+    )
+  }
+  return references
+}
+
+function parseGitHubRepositoryUrl(value: string): { owner: string; name: string } {
+  const segments = new URL(value).pathname.split('/').filter(Boolean)
+  if (segments.length < 2) throw invalidGitHubResponse(`Invalid pull request URL: ${value}`)
+  return { owner: segments[0], name: segments[1] }
+}
+
+export async function removePullRequestLabel(
+  root: string,
+  number: number,
+  label: string,
+): Promise<void> {
+  validatePullRequestNumber(number)
+  if (!label.trim()) throw new AppError('INVALID_PULL_REQUEST_LABEL', 'Label must not be empty')
+  try {
+    await runGitHub(
+      [
+        'api',
+        '--method',
+        'DELETE',
+        `repos/{owner}/{repo}/issues/${number}/labels/${encodeURIComponent(label)}`,
+      ],
+      root,
+    )
+  } catch (error) {
+    const labelWasAlreadyAbsent =
+      error instanceof AppError &&
+      error.code === 'GITHUB_COMMAND_FAILED' &&
+      /label.*(?:does not exist|not found)|(?:does not exist|not found).*label/i.test(error.message)
+    if (!labelWasAlreadyAbsent) throw error
   }
 }
 
@@ -143,8 +302,43 @@ export async function getPullRequestRevisionDetails(
   }
 }
 
+export function parsePullRequestMergeable(value: unknown): PullRequestMergeable {
+  const mergeable = expectString(value, 'mergeable').toUpperCase()
+  if (mergeable !== 'MERGEABLE' && mergeable !== 'CONFLICTING' && mergeable !== 'UNKNOWN') {
+    throw invalidGitHubResponse(`Unknown pull request mergeable state: ${mergeable}`)
+  }
+  return mergeable
+}
+
+export function parsePullRequestReviewers(
+  requestsValue: unknown,
+  reviewsValue: unknown = [],
+): GitHubReviewer[] {
+  const requested = expectArray(requestsValue).map((reviewerValue): GitHubReviewer => {
+    const reviewer = expectObject(reviewerValue)
+    const kind = expectString(reviewer.__typename, 'reviewRequests.__typename')
+    if (kind === 'User') return { ...parseUser(reviewer), kind: 'user' }
+    if (kind === 'Team') {
+      return {
+        kind: 'team',
+        login: expectString(reviewer.slug, 'reviewRequests.slug'),
+        name: expectString(reviewer.name, 'reviewRequests.name'),
+        avatarUrl: null,
+      }
+    }
+    throw invalidGitHubResponse(`Unknown review request type: ${kind}`)
+  })
+  const completed = expectArray(reviewsValue).map((reviewValue): GitHubReviewer => {
+    const review = expectObject(reviewValue)
+    return { ...parseUser(review.author), kind: 'user' }
+  })
+  return [...new Map(
+    [...requested, ...completed].map((reviewer) => [reviewer.login.toLowerCase(), reviewer]),
+  ).values()]
+}
+
 export function aggregateCheckStatus(value: unknown): PullRequestCheckStatus {
-  const checks = expectArray(value)
+  const checks = value == null ? [] : expectArray(value)
   if (checks.length === 0) return 'none'
 
   let pending = false
@@ -169,7 +363,7 @@ export function aggregateCheckStatus(value: unknown): PullRequestCheckStatus {
 }
 
 export function parsePullRequestChecks(value: unknown): PullRequestCheckRun[] {
-  return expectArray(value).map((checkValue) => {
+  return (value == null ? [] : expectArray(value)).map((checkValue) => {
     const check = expectObject(checkValue)
     const state = optionalString(check.state)?.toUpperCase()
     const status = optionalString(check.status)?.toUpperCase()
@@ -264,7 +458,7 @@ function parseReview(value: unknown): PullRequestActivity {
   }
 }
 
-function parseReviewComment(value: unknown): PullRequestActivity {
+export function parseReviewComment(value: unknown): PullRequestActivity {
   const raw = expectObject(value)
   const line = optionalPositiveInteger(raw.line) ?? optionalPositiveInteger(raw.original_line)
   const rawSide = optionalString(raw.side)?.toUpperCase()
@@ -281,7 +475,50 @@ function parseReviewComment(value: unknown): PullRequestActivity {
     createdAt: expectString(raw.created_at, 'reviewComment.created_at'),
     updatedAt: expectString(raw.updated_at, 'reviewComment.updated_at'),
     url: optionalString(raw.html_url),
+    diffHunk: optionalString(raw.diff_hunk) ?? '',
   }
+}
+
+export function parsePullRequestTimelineEvents(value: unknown): PullRequestActivity[] {
+  return parsePaginatedArray(value).flatMap((entry, index) => {
+    const raw = expectObject(entry)
+    const event = optionalString(raw.event)
+    if (event == null || event === 'commented' || event === 'reviewed') return []
+    const createdAt = optionalString(raw.created_at)
+      ?? optionalString(raw.submitted_at)
+      ?? optionalString(optionalObject(raw.author)?.date)
+      ?? optionalString(optionalObject(raw.committer)?.date)
+    if (createdAt == null) return []
+    const label = optionalString(optionalObject(raw.label)?.name)
+    const requestedReviewer = optionalObject(raw.requested_reviewer)
+    const requestedTeam = optionalObject(raw.requested_team)
+    const assignee = optionalObject(raw.assignee)
+    const milestone = optionalObject(raw.milestone)
+    const sourceIssue = optionalObject(optionalObject(raw.source)?.issue)
+    const rename = optionalObject(raw.rename)
+    const subject = optionalString(requestedReviewer?.login)
+      ?? optionalString(requestedTeam?.name)
+      ?? optionalString(assignee?.login)
+      ?? optionalString(milestone?.title)
+      ?? optionalString(sourceIssue?.title)
+      ?? optionalString(raw.deployment_environment)
+      ?? optionalString(raw.ref)
+      ?? optionalString(raw.message)?.split('\n', 1)[0]
+      ?? null
+    const id = String(raw.id ?? raw.node_id ?? raw.sha ?? `${event}:${createdAt}:${index}`)
+    return [{
+      kind: 'timeline' as const,
+      id,
+      event,
+      author: parseOptionalUser(raw.actor) ?? parseOptionalUser(raw.user),
+      createdAt,
+      label,
+      subject,
+      commitId: optionalString(raw.sha) ?? optionalString(raw.commit_id),
+      previousTitle: optionalString(rename?.from),
+      currentTitle: optionalString(rename?.to),
+    }]
+  })
 }
 
 function parseUser(value: unknown): GitHubUser {
@@ -295,6 +532,11 @@ function parseUser(value: unknown): GitHubUser {
       optionalString(raw.avatar_url) ??
       `https://github.com/${encodeURIComponent(login)}.png?size=64`,
   }
+}
+
+function parseOptionalUser(value: unknown): GitHubUser | null {
+  const raw = optionalObject(value)
+  return raw != null && optionalString(raw.login) != null ? parseUser(raw) : null
 }
 
 function parseLabel(value: unknown): GitHubLabel {
@@ -324,6 +566,12 @@ function expectObject(value: unknown): Record<string, unknown> {
     throw invalidGitHubResponse('Expected a JSON object')
   }
   return value as Record<string, unknown>
+}
+
+function optionalObject(value: unknown): Record<string, unknown> | null {
+  return value != null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
 }
 
 function expectArray(value: unknown): unknown[] {

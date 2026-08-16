@@ -8,6 +8,7 @@ import type {
   ApiErrorShape,
   CreateSessionInput,
   OpenPullRequestInput,
+  UpdatePullRequestLabelInput,
   PullRequestListView,
   PullRequestWorkspace,
   ReviewSession,
@@ -26,7 +27,12 @@ import {
   validateAnnotationTarget,
   validateReviewFilePath,
 } from './git.js'
-import { getGitHubToken, getPullRequestDetails, listPullRequests } from './github.js'
+import {
+  getGitHubToken,
+  getPullRequestDetails,
+  listPullRequests,
+  removePullRequestLabel,
+} from './github.js'
 import { PiReviewRunner } from './pi.js'
 import { ReviewStore } from './store.js'
 
@@ -105,6 +111,9 @@ export class ApiHandler {
     const pullRequestRevisionsMatch = /^\/api\/pull-requests\/(\d+)\/revisions$/.exec(
       url.pathname,
     )
+    const pullRequestLabelMatch = /^\/api\/pull-requests\/(\d+)\/labels\/([^/]+)$/.exec(
+      url.pathname,
+    )
 
     if (method === 'GET' && url.pathname === '/api/avatar') {
       await this.serveAvatar(response, requiredQuery(url, 'url'))
@@ -164,6 +173,16 @@ export class ApiHandler {
       }
       this.emitSessionUpdate(currentSession.id)
       sendJson(response, 200, workspace)
+      return
+    }
+
+    if (method === 'DELETE' && pullRequestLabelMatch != null) {
+      const number = Number(pullRequestLabelMatch[1])
+      const label = decodeURIComponent(pullRequestLabelMatch[2])
+      const input = parseUpdatePullRequestLabelInput(await readJson(request))
+      const root = await resolveRepository(input.repositoryPath)
+      await removePullRequestLabel(root, number, label)
+      response.writeHead(204).end()
       return
     }
 
@@ -631,6 +650,11 @@ function parseOpenPullRequestInput(value: unknown): OpenPullRequestInput {
     repositoryPath: expectString(object.repositoryPath, 'repositoryPath'),
     revisionId: revisionId as string | null | undefined,
   }
+}
+
+function parseUpdatePullRequestLabelInput(value: unknown): UpdatePullRequestLabelInput {
+  const object = expectObject(value)
+  return { repositoryPath: expectString(object.repositoryPath, 'repositoryPath') }
 }
 
 function parseStartPiReviewInput(value: unknown): StartPiReviewInput {
