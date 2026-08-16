@@ -19,6 +19,25 @@ import { Tooltip } from '@base-ui/react/tooltip'
 import type { GitStatusEntry } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
 import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  MessageSquarePlus as AddCommentIcon,
+  Archive as ArchiveIcon,
+  GitBranch as BranchIcon,
+  GitMerge as MergeIcon,
+  Check as CheckIcon,
+  ChevronDown as ChevronIcon,
+  X as CloseIcon,
+  MessageSquare as CommentIcon,
+  GitCommitHorizontal as CommitIcon,
+  Copy as CopyIcon,
+  Pencil as EditIcon,
+  RefreshCw as RefreshIcon,
+  FolderGit2 as RepositoryIcon,
+  RotateCcw as RestoreIcon,
+  SunMoon as ThemeIcon,
+  TextWrap as WrapIcon,
+  CircleCheck,
+} from 'lucide-react'
 import Markdown from 'react-markdown'
 import rehypeRaw from 'rehype-raw'
 import rehypeSanitize from 'rehype-sanitize'
@@ -75,26 +94,10 @@ import {
   updateGlobalComment,
 } from './api'
 import { applyImportance } from './importance'
-import {
-  AddCommentIcon,
-  ArchiveIcon,
-  BranchIcon,
-  CheckIcon,
-  ChevronIcon,
-  CloseIcon,
-  CommentIcon,
-  CommitIcon,
-  CopyIcon,
-  EditIcon,
-  RefreshIcon,
-  RepositoryIcon,
-  RestoreIcon,
-  ThemeIcon,
-  WrapIcon,
-} from './icons'
 
 type DiffLayout = 'unified' | 'split'
 type DiffOverflow = 'wrap' | 'scroll'
+type PullRequestViewMode = 'overview' | 'diff'
 type ThemePreference = 'system' | 'light' | 'dark'
 type ResolvedTheme = 'light' | 'dark'
 type ReviewLineAnnotation =
@@ -118,7 +121,7 @@ interface PullRequestWorkspaceContext {
   list: ReactNode
   piStatus: PiReviewStatus
   onSelectRevision(sessionId: string): void
-  onStartPiReview(): Promise<void>
+  onStartPiReview(additionalInstructions: string): Promise<void>
 }
 
 interface FileChangeStats {
@@ -500,8 +503,8 @@ function PullRequestsPage({
         list: rail,
         piStatus,
         onSelectRevision: (id) => onOpenPullRequests(route.repositoryPath, number, id),
-        onStartPiReview: async () => {
-          const nextPiStatus = await startPiReview(session.id)
+        onStartPiReview: async (additionalInstructions) => {
+          const nextPiStatus = await startPiReview(session.id, { additionalInstructions })
           updateWorkspace((current) => ({ ...current, piStatus: nextPiStatus }))
         },
       }}
@@ -535,6 +538,13 @@ function ReviewWorkspace({
   const viewerRef = useRef<CodeViewHandle<ReviewLineAnnotation>>(null)
   const [layout, setLayout] = useState<DiffLayout>('unified')
   const [overflow, setOverflow] = useState<DiffOverflow>('wrap')
+  const [pullRequestView, setPullRequestView] = useState<PullRequestViewMode>('overview')
+  const overviewScrollRef = useRef<HTMLElement>(null)
+  const diffWorkspaceRef = useRef<HTMLDivElement>(null)
+  const pullRequestScrollPositions = useRef<Record<PullRequestViewMode, number>>({
+    overview: 0,
+    diff: 0,
+  })
   const [selection, setSelection] = useState<CodeViewLineSelection | null>(null)
   const [composerSelection, setComposerSelection] = useState<CodeViewLineSelection | null>(null)
   const [selectionRevision, setSelectionRevision] = useState(0)
@@ -571,6 +581,16 @@ function ReviewWorkspace({
 
   useEffect(() => {
     setCollapsedFiles(new Set(session.viewedFiles))
+  }, [session.id])
+
+  useEffect(() => {
+    setPullRequestView('overview')
+    pullRequestScrollPositions.current = { overview: 0, diff: 0 }
+    window.requestAnimationFrame(() => {
+      if (overviewScrollRef.current != null) overviewScrollRef.current.scrollTop = 0
+      const diffScroller = diffWorkspaceRef.current?.querySelector<HTMLElement>('.diff-view')
+      if (diffScroller != null) diffScroller.scrollTop = 0
+    })
   }, [session.id])
 
   const parsedFiles = useMemo(() => {
@@ -773,6 +793,43 @@ function ReviewWorkspace({
     })
   }, [setFileCollapsed])
 
+  const switchPullRequestView = useCallback((next: PullRequestViewMode) => {
+    if (next === pullRequestView) return
+    const currentScroller = pullRequestView === 'overview'
+      ? overviewScrollRef.current
+      : diffWorkspaceRef.current?.querySelector<HTMLElement>('.diff-view')
+    pullRequestScrollPositions.current[pullRequestView] = currentScroller?.scrollTop ?? 0
+    setPullRequestView(next)
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const nextScroller = next === 'overview'
+          ? overviewScrollRef.current
+          : diffWorkspaceRef.current?.querySelector<HTMLElement>('.diff-view')
+        if (nextScroller != null) {
+          nextScroller.scrollTop = pullRequestScrollPositions.current[next]
+        }
+      })
+    })
+  }, [pullRequestView])
+
+  const navigateToPullRequestActivity = useCallback((activity: PullRequestActivity) => {
+    if (activity.kind !== 'review-comment' || activity.line == null) return
+    const lineNumber = activity.line
+    switchPullRequestView('diff')
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        viewerRef.current?.scrollTo({
+          type: 'line',
+          id: activity.path,
+          lineNumber,
+          side: activity.side === 'old' ? 'deletions' : 'additions',
+          align: 'start',
+          behavior: 'smooth-auto',
+        })
+      })
+    })
+  }, [switchPullRequestView])
+
   const workspaceStyle = {
     '--left-panel-width': `${leftPanelWidth}px`,
     '--right-panel-width': `${rightPanelWidth}px`,
@@ -818,30 +875,34 @@ function ReviewWorkspace({
           <CommitPicker session={session} onSessionChange={onSessionChange} />
         )}
         <div className="topbar-spacer" />
-        <ToggleGroup
-          className="layout-switch"
-          aria-label="Diff layout"
-          value={[layout]}
-          onValueChange={(value) => {
-            const next = value.at(0)
-            if (next === 'unified' || next === 'split') setLayout(next)
-          }}
-        >
-          <Toggle value="unified">
-            Stack
-          </Toggle>
-          <Toggle value="split">
-            Split
-          </Toggle>
-        </ToggleGroup>
-        <DiffOptionsMenu
-          wrap={overflow === 'wrap'}
-          ignoreWhitespace={session.ignoreWhitespace}
-          busy={busy}
-          showIgnoreWhitespace={pullRequest == null}
-          onWrapChange={(wrap) => setOverflow(wrap ? 'wrap' : 'scroll')}
-          onIgnoreWhitespaceChange={updateIgnoreWhitespace}
-        />
+        {(pullRequest == null || pullRequestView === 'diff') && (
+          <>
+            <ToggleGroup
+              className="layout-switch"
+              aria-label="Diff layout"
+              value={[layout]}
+              onValueChange={(value) => {
+                const next = value.at(0)
+                if (next === 'unified' || next === 'split') setLayout(next)
+              }}
+            >
+              <Toggle value="unified">
+                Stack
+              </Toggle>
+              <Toggle value="split">
+                Split
+              </Toggle>
+            </ToggleGroup>
+            <DiffOptionsMenu
+              wrap={overflow === 'wrap'}
+              ignoreWhitespace={session.ignoreWhitespace}
+              busy={busy}
+              showIgnoreWhitespace={pullRequest == null}
+              onWrapChange={(wrap) => setOverflow(wrap ? 'wrap' : 'scroll')}
+              onIgnoreWhitespaceChange={updateIgnoreWhitespace}
+            />
+          </>
+        )}
         <ThemePicker value={themePreference} onChange={onThemeChange} />
         <button className="icon-button" onClick={refresh} aria-label="Refresh diff" disabled={busy}>
           <RefreshIcon className={busy ? 'spinning' : ''} />
@@ -852,74 +913,90 @@ function ReviewWorkspace({
             {copied ? 'Copied' : 'Agent instruction'}
           </button>
         ) : (
-          <button
-            className="agent-button"
-            disabled={pullRequest.piStatus.state === 'running'}
-            title={pullRequest.piStatus.state === 'failed' ? pullRequest.piStatus.error : undefined}
-            onClick={() => void pullRequest.onStartPiReview()}
-          >
-            <span className={pullRequest.piStatus.state === 'running' ? 'pi-pulse' : ''}>π</span>
-            {piReviewButtonLabel(pullRequest.piStatus)}
-          </button>
+          <PiExplanationControl
+            status={pullRequest.piStatus}
+            onStart={pullRequest.onStartPiReview}
+          />
         )}
       </header>
 
-      <div className={`workspace${pullRequest == null ? '' : ' pr-workspace'}`} style={workspaceStyle}>
+      <div
+        className={`workspace${pullRequest == null
+          ? ''
+          : ` pr-workspace pr-${pullRequestView}-mode`}`}
+        style={workspaceStyle}
+      >
         {pullRequest?.list}
-        <FileRail
-          files={parsedFiles}
-          resolvedTheme={resolvedTheme}
-          onSelect={selectFile}
-        />
-        <PanelResizeHandle
-          label="Resize file panel"
-          side="left"
-          size={leftPanelWidth}
-          min={160}
-          max={440}
-          onChange={(width) => {
-            setLeftPanelWidth(width)
-            storePanelWidth('left', width)
-          }}
-        />
-        <section
-          className="diff-stage"
-          onClick={(event) => {
-            const fileId = fileHeaderIdFromEvent(event.nativeEvent)
-            if (fileId != null) {
-              setFileCollapsed(fileId, !collapsedFiles.has(fileId))
-            }
-          }}
+        {pullRequest != null && (
+          <>
+            <PullRequestViewHeader
+              view={pullRequestView}
+              onViewChange={switchPullRequestView}
+            />
+            <section
+              ref={overviewScrollRef}
+              id="pull-request-overview"
+              className={`pr-overview-stage${pullRequestView === 'overview' ? '' : ' is-hidden'}`}
+              role="tabpanel"
+              aria-labelledby="pull-request-overview-tab"
+              aria-hidden={pullRequestView !== 'overview'}
+            >
+              {error != null && <div className="error-banner">{error}</div>}
+              <PullRequestConversation
+                details={pullRequest.details}
+                oldRevision={session.id !== pullRequest.currentSessionId}
+                onNavigate={navigateToPullRequestActivity}
+              />
+            </section>
+          </>
+        )}
+        <div
+          ref={diffWorkspaceRef}
+          id={pullRequest == null ? undefined : 'pull-request-diff'}
+          className={`review-workspace-body${
+            pullRequest != null && pullRequestView !== 'diff' ? ' is-hidden' : ''
+          }`}
+          role={pullRequest == null ? undefined : 'tabpanel'}
+          aria-labelledby={pullRequest == null ? undefined : 'pull-request-diff-tab'}
+          aria-hidden={pullRequest == null ? undefined : pullRequestView !== 'diff'}
         >
-          {error != null && <div className="error-banner">{error}</div>}
-          {items.length === 0 ? (
-            <EmptyDiff onRefresh={refresh} />
-          ) : (
-            <CodeView<ReviewLineAnnotation>
-              ref={viewerRef}
-              key={`${session.id}:${layout}:${resolvedTheme}`}
-              className="diff-view"
-              items={items}
-              options={diffOptions}
-              selectedLines={selection}
-              onSelectedLinesChange={handleSelection}
-              renderCodeViewHeader={pullRequest == null ? undefined : () => (
-                <PullRequestConversation
-                  details={pullRequest.details}
-                  oldRevision={session.id !== pullRequest.currentSessionId}
-                  onNavigate={(activity) => {
-                    if (activity.kind !== 'review-comment' || activity.line == null) return
-                    viewerRef.current?.scrollTo({
-                      type: 'line',
-                      id: activity.path,
-                      lineNumber: activity.line,
-                      side: activity.side === 'old' ? 'deletions' : 'additions',
-                      align: 'start',
-                      behavior: 'smooth-auto',
-                    })
-                  }}
-                />
-              )}
+          <FileRail
+            files={parsedFiles}
+            resolvedTheme={resolvedTheme}
+            onSelect={selectFile}
+          />
+          <PanelResizeHandle
+            label="Resize file panel"
+            side="left"
+            size={leftPanelWidth}
+            min={160}
+            max={440}
+            onChange={(width) => {
+              setLeftPanelWidth(width)
+              storePanelWidth('left', width)
+            }}
+          />
+          <section
+            className="diff-stage"
+            onClick={(event) => {
+              const fileId = fileHeaderIdFromEvent(event.nativeEvent)
+              if (fileId != null) {
+                setFileCollapsed(fileId, !collapsedFiles.has(fileId))
+              }
+            }}
+          >
+            {error != null && <div className="error-banner">{error}</div>}
+            {items.length === 0 ? (
+              <EmptyDiff onRefresh={refresh} />
+            ) : (
+              <CodeView<ReviewLineAnnotation>
+                ref={viewerRef}
+                key={`${session.id}:${layout}:${resolvedTheme}`}
+                className="diff-view"
+                items={items}
+                options={diffOptions}
+                selectedLines={selection}
+                onSelectedLinesChange={handleSelection}
               renderHeaderMetadata={(item) => (
                 <div
                   className="file-header-controls"
@@ -946,64 +1023,65 @@ function ReviewWorkspace({
                   />
                 </div>
               )}
-              renderAnnotation={(annotation) => {
-                const metadata = annotation.metadata
-                return metadata.kind === 'composer' ? (
-                  <InlineComposer
-                    comment={comment}
-                    error={commentError}
-                    busy={commentBusy}
-                    onCommentChange={setComment}
-                    onCancel={() => {
-                      setComment('')
-                      setCommentError(null)
-                      setSelection(null)
-                      setComposerSelection(null)
-                      setSelectionRevision((revision) => revision + 1)
-                    }}
-                    onSubmit={submitComment}
-                  />
-                ) : (
-                  <InlineAnnotation
-                    annotation={metadata.annotation}
-                    onArchive={() => setArchived(metadata.annotation.id, true)}
-                    onUpdateComment={(comment) => editAnnotation(metadata.annotation.id, comment)}
-                  />
-                )
-              }}
-            />
-          )}
-        </section>
-        <PanelResizeHandle
-          label="Resize annotations panel"
-          side="right"
-          size={rightPanelWidth}
-          min={240}
-          max={480}
-          onChange={(width) => {
-            setRightPanelWidth(width)
-            storePanelWidth('right', width)
-          }}
-        />
-        <Inspector
-          session={session}
-          files={parsedFiles}
-          onSetArchived={setArchived}
-          onUpdateComment={editAnnotation}
-          onUpdateGlobalComment={editGlobalComment}
-          allowGlobalComment={pullRequest == null}
-          onArchiveAll={archiveAll}
-          onNavigate={(annotation) => {
-            viewerRef.current?.scrollTo({
-              type: 'line',
-              id: annotation.filePath,
-              lineNumber: annotation.endLine,
-              side: annotation.side === 'new' ? 'additions' : 'deletions',
-              align: 'start',
-              behavior: 'smooth-auto',
-            })
-          }}
-        />
+                renderAnnotation={(annotation) => {
+                  const metadata = annotation.metadata
+                  return metadata.kind === 'composer' ? (
+                    <InlineComposer
+                      comment={comment}
+                      error={commentError}
+                      busy={commentBusy}
+                      onCommentChange={setComment}
+                      onCancel={() => {
+                        setComment('')
+                        setCommentError(null)
+                        setSelection(null)
+                        setComposerSelection(null)
+                        setSelectionRevision((revision) => revision + 1)
+                      }}
+                      onSubmit={submitComment}
+                    />
+                  ) : (
+                    <InlineAnnotation
+                      annotation={metadata.annotation}
+                      onArchive={() => setArchived(metadata.annotation.id, true)}
+                      onUpdateComment={(comment) => editAnnotation(metadata.annotation.id, comment)}
+                    />
+                  )
+                }}
+              />
+            )}
+          </section>
+          <PanelResizeHandle
+            label="Resize annotations panel"
+            side="right"
+            size={rightPanelWidth}
+            min={240}
+            max={480}
+            onChange={(width) => {
+              setRightPanelWidth(width)
+              storePanelWidth('right', width)
+            }}
+          />
+          <Inspector
+            session={session}
+            files={parsedFiles}
+            onSetArchived={setArchived}
+            onUpdateComment={editAnnotation}
+            onUpdateGlobalComment={editGlobalComment}
+            allowGlobalComment={pullRequest == null}
+            onArchiveAll={archiveAll}
+            onNavigate={(annotation) => {
+              viewerRef.current?.scrollTo({
+                type: 'line',
+                id: annotation.filePath,
+                lineNumber: annotation.endLine,
+                side: annotation.side === 'new' ? 'additions' : 'deletions',
+                align: 'start',
+                behavior: 'smooth-auto',
+              })
+            }}
+          />
+        </div>
       </div>
     </main>
   )
@@ -1257,6 +1335,77 @@ function PullRequestRail({
   )
 }
 
+function PiExplanationControl({
+  status,
+  onStart,
+}: {
+  status: PiReviewStatus
+  onStart(additionalInstructions: string): Promise<void>
+}) {
+  const [open, setOpen] = useState(false)
+  const [additionalInstructions, setAdditionalInstructions] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const running = status.state === 'running'
+
+  const start = async () => {
+    setError(null)
+    try {
+      await onStart(additionalInstructions.trim())
+      setAdditionalInstructions('')
+      setOpen(false)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught))
+    }
+  }
+
+  return (
+    <Popover.Root open={open} onOpenChange={(nextOpen) => {
+      setOpen(nextOpen)
+      if (!nextOpen) setError(null)
+    }}>
+      <Popover.Trigger
+        className="agent-button"
+        disabled={running}
+        title={status.state === 'failed' ? status.error : undefined}
+      >
+        <span className={running ? 'pi-pulse' : ''}>π</span>
+        {piExplanationButtonLabel(status)}
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Positioner className="popup-positioner" sideOffset={8} align="end">
+          <Popover.Popup className="pi-explanation-menu">
+            <Popover.Title>Explain this PR with Pi</Popover.Title>
+            <Popover.Description>
+              Pi will add plain-language annotations for the purpose, behavior, risks, and tests.
+            </Popover.Description>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault()
+                void start()
+              }}
+            >
+              <label htmlFor="pi-additional-instructions">Additional instructions</label>
+              <textarea
+                id="pi-additional-instructions"
+                autoFocus
+                value={additionalInstructions}
+                onChange={(event) => setAdditionalInstructions(event.target.value)}
+                placeholder="Optional focus, context, or audience…"
+                rows={4}
+              />
+              {error != null && <div className="menu-error">{error}</div>}
+              <div className="pi-explanation-actions">
+                <button type="button" onClick={() => setOpen(false)}>Cancel</button>
+                <button type="submit">Start</button>
+              </div>
+            </form>
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
+  )
+}
+
 function RevisionPicker({
   revisions,
   selectedSessionId,
@@ -1305,6 +1454,49 @@ function RevisionPicker({
   )
 }
 
+function PullRequestViewHeader({
+  view,
+  onViewChange,
+}: {
+  view: PullRequestViewMode
+  onViewChange(view: PullRequestViewMode): void
+}) {
+  return (
+    <header className="pr-workspace-header">
+      <div className="pr-workspace-tabs" role="tablist" aria-label="Pull request content">
+        <button
+          id="pull-request-overview-tab"
+          role="tab"
+          aria-controls="pull-request-overview"
+          aria-selected={view === 'overview'}
+          className={view === 'overview' ? 'active' : ''}
+          onClick={() => onViewChange('overview')}
+        >
+          Overview
+        </button>
+        <button
+          id="pull-request-diff-tab"
+          role="tab"
+          aria-controls="pull-request-diff"
+          aria-selected={view === 'diff'}
+          className={view === 'diff' ? 'active' : ''}
+          onClick={() => onViewChange('diff')}
+        >
+          Diff
+        </button>
+      </div>
+      <button
+        className="squash-merge-button"
+        disabled
+        title="Merge API is not connected yet"
+      >
+        <MergeIcon />
+        Squash &amp; merge
+      </button>
+    </header>
+  )
+}
+
 function PullRequestConversation({
   details,
   oldRevision,
@@ -1321,60 +1513,83 @@ function PullRequestConversation({
           You are viewing an older code revision. The GitHub conversation below is current.
         </div>
       )}
-      <header className="pr-conversation-header">
-        <div className="pr-conversation-kicker">
-          <span className={`pr-state ${details.isDraft ? 'draft' : details.state.toLowerCase()}`}>
-            {details.isDraft ? 'Draft' : titleCase(details.state)}
-          </span>
-          <span className={`check-state ${details.checkStatus}`}>
-            <i />{checkStatusLabel(details.checkStatus)}
-          </span>
-          <code>#{details.number}</code>
-        </div>
-        <h1>{details.title}</h1>
-        <div className="pr-conversation-meta">
-          <span>{details.author.name ?? details.author.login}</span>
-          <span>{details.baseRefName} ← {details.headRefName}</span>
-          <span className="addition">+{details.additions}</span>
-          <span className="deletion">−{details.deletions}</span>
-          <a href={details.url} target="_blank" rel="noreferrer">Open on GitHub ↗</a>
-        </div>
-        {details.labels.length > 0 && (
-          <div className="pr-labels">
-            {details.labels.map((label) => (
-              <span key={label.name} style={{ '--label-color': `#${label.color}` } as CSSProperties}>
-                {label.name}
+      <div className="pr-overview-grid">
+        <div className="pr-overview-main">
+          <header className="pr-conversation-header">
+            <h1>{details.title}</h1>
+            <div className="pr-conversation-meta">
+              <span className="pr-author">
+                <UserAvatar user={details.author} />
+                <strong>{details.author.name ?? details.author.login}</strong>
               </span>
-            ))}
-          </div>
-        )}
-      </header>
-      <ConversationCard
-        eyebrow="Description"
-        author={details.author}
-        body={details.body || 'No description provided.'}
-        timestamp={details.createdAt}
-      />
-      {details.activity.map((activity) => (
-        <ConversationCard
-          key={`${activity.kind}:${activity.id}`}
-          eyebrow={activityLabel(activity)}
-          author={activity.author}
-          body={activity.body || activityLabel(activity)}
-          timestamp={activity.createdAt}
-          target={activity.kind === 'review-comment'
-            ? `${activity.path}${activity.line == null ? '' : `:${activity.line}`}`
-            : undefined}
-          onTarget={activity.kind === 'review-comment' ? () => onNavigate(activity) : undefined}
-          url={activity.url}
-        />
-      ))}
-      <div className="diff-divider"><span>Files changed</span></div>
+              <span>#{details.number}</span>
+              <code>{details.baseRefName} ← {details.headRefName}</code>
+              <a href={details.url} target="_blank" rel="noreferrer">Open on GitHub ↗</a>
+            </div>
+            {details.labels.length > 0 && (
+              <div className="pr-labels">
+                {details.labels.map((label) => (
+                  <span key={label.name} style={{ '--label-color': `#${label.color}` } as CSSProperties}>
+                    {label.name}
+                  </span>
+                ))}
+              </div>
+            )}
+            <div className="pr-overview-facts">
+              <span className={`state-${details.state.toLowerCase()}`}>
+                <BranchIcon />
+                {details.isDraft ? 'Draft' : titleCase(details.state)}
+              </span>
+              <span className={`checks-${details.checkStatus}`}>
+                <CircleCheck />
+                {details.checkStatus === 'pass' ? 'All checks passed' : checkStatusLabel(details.checkStatus)}
+              </span>
+              <span>
+                <i className="addition">+{details.additions}</i>
+                <i className="deletion">−{details.deletions}</i>
+              </span>
+            </div>
+          </header>
+          <section className="pr-description" aria-labelledby="pr-description-heading">
+            <h2 id="pr-description-heading">Description</h2>
+            <MarkdownBody body={details.body || 'No description provided.'} />
+          </section>
+          <section className="pr-activity-section" aria-labelledby="pr-activity-heading">
+            <h2 id="pr-activity-heading">Activity</h2>
+            <div className="pr-opened-event">
+              <BranchIcon />
+              <span>
+                Opened by <strong>{details.author.login}</strong> · {relativeTime(details.createdAt)}
+              </span>
+            </div>
+            {details.activity.length > 0 && (
+              <div className="pr-activity" aria-label="Pull request conversation">
+                {details.activity.map((activity) => (
+                  <ConversationItem
+                    key={`${activity.kind}:${activity.id}`}
+                    eyebrow={activityLabel(activity)}
+                    author={activity.author}
+                    body={activity.body || activityLabel(activity)}
+                    timestamp={activity.createdAt}
+                    target={activity.kind === 'review-comment'
+                      ? `${activity.path}${activity.line == null ? '' : `:${activity.line}`}`
+                      : undefined}
+                    onTarget={activity.kind === 'review-comment' && activity.line != null
+                      ? () => onNavigate(activity)
+                      : undefined}
+                    url={activity.url}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+      </div>
     </section>
   )
 }
 
-function ConversationCard({
+function ConversationItem({
   eyebrow,
   author,
   body,
@@ -1392,34 +1607,75 @@ function ConversationCard({
   url?: string | null
 }) {
   return (
-    <article className="conversation-card">
+    <article className="conversation-item">
       <UserAvatar user={author} />
-      <div className="conversation-card-body">
+      <div className="conversation-item-body">
         <header>
           <div><strong>{author.login}</strong><span>{eyebrow}</span></div>
-          <time title={formatTimestamp(timestamp)}>{relativeTime(timestamp)}</time>
+          <div className="conversation-item-meta">
+            <time title={formatTimestamp(timestamp)}>{relativeTime(timestamp)}</time>
+            {url != null && <a href={url} target="_blank" rel="noreferrer">GitHub ↗</a>}
+          </div>
         </header>
-        {target != null && (
-          <button className="conversation-target" onClick={onTarget}><code>{target}</code></button>
-        )}
-        <div className="markdown-body">
-          <Markdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[rehypeRaw, rehypeSanitize]}
-            components={{ pre: MarkdownPre }}
-          >
-            {body}
-          </Markdown>
-        </div>
-        {url != null && <a href={url} target="_blank" rel="noreferrer">View on GitHub ↗</a>}
+        {target != null && (onTarget == null
+          ? <div className="conversation-target"><code>{target}</code></div>
+          : <button className="conversation-target" onClick={onTarget}><code>{target}</code></button>)}
+        <MarkdownBody body={body} />
       </div>
     </article>
+  )
+}
+
+function MarkdownBody({ body }: { body: string }) {
+  return (
+    <div className="markdown-body">
+      <Markdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeRaw, rehypeSanitize]}
+        components={{ a: MarkdownLink, img: MarkdownImage, pre: MarkdownPre }}
+      >
+        {body}
+      </Markdown>
+    </div>
   )
 }
 
 type MermaidRender =
   | { source: string; svg: string }
   | { source: string; error: string }
+
+function MarkdownImage({ src, ...props }: ComponentPropsWithoutRef<'img'> & { node?: unknown }) {
+  return (
+    <img
+      {...props}
+      src={src == null ? undefined : githubAttachmentUrl(src)}
+      loading="lazy"
+    />
+  )
+}
+
+function MarkdownLink({
+  href,
+  children,
+  ...props
+}: ComponentPropsWithoutRef<'a'> & { node?: unknown }) {
+  if (href != null && children === href && isGitHubAttachmentUrl(href)) {
+    return <video src={githubAttachmentUrl(href)} controls preload="metadata" />
+  }
+  return <a {...props} href={href}>{children}</a>
+}
+
+function githubAttachmentUrl(source: string): string {
+  return isGitHubAttachmentUrl(source)
+    ? `/api/github-attachment?url=${encodeURIComponent(source)}`
+    : source
+}
+
+function isGitHubAttachmentUrl(source: string): boolean {
+  return source.startsWith('https://github.com/user-attachments/') ||
+    source.startsWith('https://private-user-images.githubusercontent.com/') ||
+    source.startsWith('https://user-images.githubusercontent.com/')
+}
 
 let mermaidPromise: Promise<typeof import('mermaid').default> | undefined
 
@@ -2724,16 +2980,16 @@ function activityLabel(activity: PullRequestActivity): string {
   return titleCase(activity.state.replaceAll('_', ' '))
 }
 
-function piReviewButtonLabel(status: PiReviewStatus): string {
+function piExplanationButtonLabel(status: PiReviewStatus): string {
   switch (status.state) {
     case 'idle':
-      return 'Review with Pi'
+      return 'Explain with Pi'
     case 'running':
-      return 'Pi reviewing…'
+      return 'Pi explaining…'
     case 'completed':
-      return 'Run Pi again'
+      return 'Explain again'
     case 'failed':
-      return 'Retry Pi review'
+      return 'Retry explanation'
   }
 }
 

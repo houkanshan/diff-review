@@ -240,13 +240,15 @@ printf '%s\n' "$@"
     const runner = new PiReviewRunner(store, (sessionId) => updates.push(sessionId))
 
     try {
-      expect(runner.start(session.id).state).toBe('running')
+      expect(runner.start(session.id, 'Emphasize how the data model changed.').state).toBe('running')
       expect(runner.start(session.id).state).toBe('running')
       await waitFor(() => updates.length >= 2)
       const lines = readFileSync(output, 'utf8').split('\n')
       const worktree = lines[0] ?? ''
       expect(lines[1]).toBe(session.revisionHeadOid)
       expect(lines.join('\n')).toContain(`diff-review annotate ${session.id}`)
+      expect(lines.join('\n')).toContain('Explain PR #42 in plain language')
+      expect(lines.join('\n')).toContain('Emphasize how the data model changed.')
       expect(runner.getStatus(session.id).state).toBe('completed')
       expect(existsSync(worktree)).toBe(false)
     } finally {

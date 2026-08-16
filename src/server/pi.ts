@@ -20,7 +20,7 @@ export class PiReviewRunner {
     return this.statuses.get(sessionId) ?? { state: 'idle' }
   }
 
-  start(sessionId: string): PiReviewStatus {
+  start(sessionId: string, additionalInstructions = ''): PiReviewStatus {
     const session = this.store.getSession(sessionId)
     if (
       session.target.kind !== 'pr' ||
@@ -42,6 +42,7 @@ export class PiReviewRunner {
       session.revisionBaseOid,
       session.revisionHeadOid,
       status.startedAt,
+      additionalInstructions,
     )
     return status
   }
@@ -53,6 +54,7 @@ export class PiReviewRunner {
     baseOid: string,
     headOid: string,
     startedAt: string,
+    additionalInstructions: string,
   ): Promise<void> {
     let worktree: string | null = null
     try {
@@ -68,7 +70,13 @@ export class PiReviewRunner {
           '--approve',
           '--tools',
           'read,bash,grep,find,ls',
-          buildReviewPrompt(sessionId, pullRequestNumber, baseOid, headOid),
+          buildReviewPrompt(
+            sessionId,
+            pullRequestNumber,
+            baseOid,
+            headOid,
+            additionalInstructions,
+          ),
         ],
         { cwd: worktree },
       )
@@ -102,16 +110,20 @@ function buildReviewPrompt(
   pullRequestNumber: number,
   baseOid: string,
   headOid: string,
+  additionalInstructions: string,
 ): string {
-  return `Review PR #${pullRequestNumber} for correctness, regressions, edge cases, and maintainability.
+  const userInstructions = additionalInstructions
+    ? `\n\nAdditional instructions from the user:\n${additionalInstructions}`
+    : ''
+  return `Explain PR #${pullRequestNumber} in plain language by annotating its diff. Focus on the purpose of the change, important behavior changes, risks, and tests. Do not perform a code review or limit annotations to defects.
 
-This detached worktree is the exact PR head ${headOid}. Review only the immutable change shown by:
+This detached worktree is the exact PR head ${headOid}. Explain only the immutable change shown by:
   git diff ${baseOid} ${headOid} --
 
 Do not edit files, commit, push, or publish anything to GitHub. Add concise findings directly to Diff Review with:
-  diff-review annotate ${sessionId} --file <path> (--new-line <line[-end]> | --old-line <line[-end]>) --comment <finding> [--importance <0..1>]
+  diff-review annotate ${sessionId} --file <path> (--new-line <line[-end]> | --old-line <line[-end]>) --comment <explanation> [--importance <0..1>]
 
-Use new-side line numbers for added/current code and old-side line numbers for deleted code. Add annotations only for useful findings or rationale; do not produce a separate overall summary.`
+Annotate only changed lines. Use new-side line numbers for added/current code and old-side line numbers for deleted code. Add at least one annotation per changed file unless that file's change is obvious. Keep annotations in a reviewable order and do not produce a separate overall summary.${userInstructions}`
 }
 
 async function runProcess(

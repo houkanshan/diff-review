@@ -63,6 +63,14 @@ export interface RepositoryInfo {
 export type PullRequestListView = 'open' | 'additional-review' | 'merged'
 export type PullRequestState = 'OPEN' | 'CLOSED' | 'MERGED'
 export type PullRequestCheckStatus = 'none' | 'pending' | 'pass' | 'fail'
+export type PullRequestCheckRunStatus = 'pending' | 'pass' | 'fail' | 'skipped'
+
+export interface PullRequestCheckRun {
+  name: string
+  workflowName: string | null
+  status: PullRequestCheckRunStatus
+  url: string | null
+}
 
 export interface GitHubUser {
   login: string
@@ -131,6 +139,7 @@ export interface PullRequestDetails extends PullRequestSummary {
   body: string
   baseRefOid: string
   headRefOid: string
+  checks: PullRequestCheckRun[]
   activity: PullRequestActivity[]
 }
 
@@ -155,6 +164,10 @@ export type PiReviewStatus =
   | { state: 'running'; startedAt: string }
   | { state: 'completed'; startedAt: string; completedAt: string }
   | { state: 'failed'; startedAt: string; completedAt: string; error: string }
+
+export interface StartPiReviewInput {
+  additionalInstructions: string
+}
 
 export interface CreateSessionInput {
   repositoryPath: string

@@ -5,6 +5,7 @@ import type {
   GitHubLabel,
   GitHubUser,
   PullRequestActivity,
+  PullRequestCheckRun,
   PullRequestCheckStatus,
   PullRequestDetails,
   PullRequestListView,
@@ -106,8 +107,13 @@ export async function getPullRequestDetails(
     body: optionalString(raw.body) ?? '',
     baseRefOid: expectString(raw.baseRefOid, 'baseRefOid'),
     headRefOid: expectString(raw.headRefOid, 'headRefOid'),
+    checks: parsePullRequestChecks(raw.statusCheckRollup),
     activity,
   }
+}
+
+export async function getGitHubToken(): Promise<string> {
+  return (await runGitHub(['auth', 'token', '--hostname', 'github.com'], process.cwd())).trim()
 }
 
 export async function getPullRequestRevisionDetails(
@@ -160,6 +166,36 @@ export function aggregateCheckStatus(value: unknown): PullRequestCheckStatus {
     else if (!['SUCCESS', 'SKIPPED', 'NEUTRAL'].includes(conclusion)) return 'fail'
   }
   return pending ? 'pending' : 'pass'
+}
+
+export function parsePullRequestChecks(value: unknown): PullRequestCheckRun[] {
+  return expectArray(value).map((checkValue) => {
+    const check = expectObject(checkValue)
+    const state = optionalString(check.state)?.toUpperCase()
+    const status = optionalString(check.status)?.toUpperCase()
+    const conclusion = optionalString(check.conclusion)?.toUpperCase()
+    const name = optionalString(check.name) ?? optionalString(check.context) ?? 'Unnamed check'
+
+    return {
+      name,
+      workflowName: optionalString(check.workflowName),
+      status:
+        state != null
+          ? state === 'SUCCESS'
+            ? 'pass'
+            : state === 'PENDING' || state === 'EXPECTED'
+              ? 'pending'
+              : 'fail'
+          : status !== 'COMPLETED' || conclusion == null
+            ? 'pending'
+            : conclusion === 'SKIPPED'
+              ? 'skipped'
+              : conclusion === 'SUCCESS' || conclusion === 'NEUTRAL'
+                ? 'pass'
+                : 'fail',
+      url: optionalString(check.detailsUrl) ?? optionalString(check.targetUrl),
+    }
+  })
 }
 
 function pullRequestListFilter(

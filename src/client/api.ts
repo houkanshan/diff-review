@@ -11,6 +11,7 @@ import type {
   RepositoryInfo,
   ReviewSession,
   SessionAnnotation,
+  StartPiReviewInput,
 } from '../shared/types'
 
 export class ClientError extends Error {
@@ -80,8 +81,11 @@ export function getPiReviewStatus(id: string): Promise<PiReviewStatus> {
   return request(`/api/sessions/${encodeURIComponent(id)}/pi-review`)
 }
 
-export function startPiReview(id: string): Promise<PiReviewStatus> {
-  return request(`/api/sessions/${encodeURIComponent(id)}/pi-review`, { method: 'POST' })
+export function startPiReview(id: string, input: StartPiReviewInput): Promise<PiReviewStatus> {
+  return request(`/api/sessions/${encodeURIComponent(id)}/pi-review`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
 }
 
 export function selectCommits(

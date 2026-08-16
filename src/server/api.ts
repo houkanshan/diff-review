@@ -12,6 +12,7 @@ import type {
   PullRequestWorkspace,
   ReviewSession,
   ReviewTarget,
+  StartPiReviewInput,
 } from '../shared/types.js'
 import { AppError, errorMessage } from './errors.js'
 import {
@@ -25,21 +26,23 @@ import {
   validateAnnotationTarget,
   validateReviewFilePath,
 } from './git.js'
-import { getPullRequestDetails, listPullRequests } from './github.js'
+import { getGitHubToken, getPullRequestDetails, listPullRequests } from './github.js'
 import { PiReviewRunner } from './pi.js'
 import { ReviewStore } from './store.js'
 
 const JSON_BODY_LIMIT = 2 * 1024 * 1024
 const AVATAR_BODY_LIMIT = 5 * 1024 * 1024
+const GITHUB_ATTACHMENT_BODY_LIMIT = 100 * 1024 * 1024
 
-interface CachedAvatar {
+interface CachedMedia {
   body: Uint8Array
   contentType: string
 }
 
 export class ApiHandler {
   private readonly events = new EventEmitter()
-  private readonly avatars = new Map<string, Promise<CachedAvatar>>()
+  private readonly avatars = new Map<string, Promise<CachedMedia>>()
+  private readonly githubAttachments = new Map<string, Promise<CachedMedia>>()
   private readonly piReviews: PiReviewRunner
 
   constructor(
@@ -99,6 +102,11 @@ export class ApiHandler {
 
     if (method === 'GET' && url.pathname === '/api/avatar') {
       await this.serveAvatar(response, requiredQuery(url, 'url'))
+      return
+    }
+
+    if (method === 'GET' && url.pathname === '/api/github-attachment') {
+      await this.serveGitHubAttachment(response, requiredQuery(url, 'url'))
       return
     }
 
@@ -191,7 +199,12 @@ export class ApiHandler {
     }
 
     if (method === 'POST' && piReviewMatch != null) {
-      sendJson(response, 202, this.piReviews.start(piReviewMatch[1] ?? ''))
+      const input = parseStartPiReviewInput(await readJson(request))
+      sendJson(
+        response,
+        202,
+        this.piReviews.start(piReviewMatch[1] ?? '', input.additionalInstructions),
+      )
       return
     }
 
@@ -497,6 +510,23 @@ export class ApiHandler {
     response.end(cached.body)
   }
 
+  private async serveGitHubAttachment(response: ServerResponse, source: string): Promise<void> {
+    const sourceUrl = parseGitHubAttachmentUrl(source)
+    let attachment = this.githubAttachments.get(source)
+    if (attachment == null) {
+      attachment = fetchGitHubAttachment(sourceUrl)
+      this.githubAttachments.set(source, attachment)
+      void attachment.catch(() => this.githubAttachments.delete(source))
+    }
+    const cached = await attachment
+    response.writeHead(200, {
+      'Content-Type': cached.contentType,
+      'Content-Length': cached.body.byteLength,
+      'Cache-Control': 'private, max-age=604800, immutable',
+    })
+    response.end(cached.body)
+  }
+
   private createOrReuseSession(
     root: string,
     target: ReviewTarget,
@@ -583,6 +613,14 @@ function parseOpenPullRequestInput(value: unknown): OpenPullRequestInput {
     repositoryPath: expectString(object.repositoryPath, 'repositoryPath'),
     revisionId: revisionId as string | null | undefined,
   }
+}
+
+function parseStartPiReviewInput(value: unknown): StartPiReviewInput {
+  const object = expectObject(value)
+  if (typeof object.additionalInstructions !== 'string') {
+    throw new AppError('INVALID_INPUT', 'additionalInstructions must be a string')
+  }
+  return { additionalInstructions: object.additionalInstructions.trim() }
 }
 
 function parseTarget(value: unknown): ReviewTarget {
@@ -747,7 +785,7 @@ function sendJson(response: ServerResponse, status: number, body: unknown): void
   response.end(JSON.stringify(body))
 }
 
-async function fetchAvatar(url: URL): Promise<CachedAvatar> {
+async function fetchAvatar(url: URL): Promise<CachedMedia> {
   const response = await fetch(url, { redirect: 'follow' })
   if (!response.ok) {
     throw new AppError('AVATAR_FETCH_FAILED', `Avatar request failed with ${response.status}`, 502)
@@ -763,6 +801,88 @@ async function fetchAvatar(url: URL): Promise<CachedAvatar> {
   const body = new Uint8Array(await response.arrayBuffer())
   if (body.byteLength > AVATAR_BODY_LIMIT) {
     throw new AppError('AVATAR_TOO_LARGE', 'Avatar exceeds 5 MiB', 502)
+  }
+  return { body, contentType }
+}
+
+export function parseGitHubAttachmentUrl(source: string): URL {
+  let url: URL
+  try {
+    url = new URL(source)
+  } catch {
+    throw new AppError('INVALID_GITHUB_ATTACHMENT_URL', 'GitHub attachment URL is invalid')
+  }
+  const allowed =
+    url.protocol === 'https:' &&
+    ((url.hostname === 'github.com' && url.pathname.startsWith('/user-attachments/')) ||
+      url.hostname === 'private-user-images.githubusercontent.com' ||
+      url.hostname === 'user-images.githubusercontent.com')
+  if (!allowed) {
+    throw new AppError('INVALID_GITHUB_ATTACHMENT_URL', 'URL is not a GitHub issue attachment')
+  }
+  return url
+}
+
+async function fetchGitHubAttachment(url: URL): Promise<CachedMedia> {
+  const token = url.hostname === 'github.com' ? await getGitHubToken() : null
+  let currentUrl = url
+  let response: Response | null = null
+  for (let redirect = 0; redirect <= 5; redirect += 1) {
+    response = await fetch(currentUrl, {
+      redirect: 'manual',
+      headers: {
+        Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        ...(redirect === 0 && token != null ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    })
+    if (![301, 302, 303, 307, 308].includes(response.status)) break
+    const location = response.headers.get('location')
+    if (location == null) {
+      throw new AppError(
+        'GITHUB_ATTACHMENT_FETCH_FAILED',
+        'GitHub attachment redirect had no location',
+        502,
+      )
+    }
+    currentUrl = new URL(location, currentUrl)
+    if (currentUrl.protocol !== 'https:') {
+      throw new AppError(
+        'GITHUB_ATTACHMENT_FETCH_FAILED',
+        'GitHub attachment redirected to an unsafe URL',
+        502,
+      )
+    }
+    response = null
+  }
+  if (response == null) {
+    throw new AppError(
+      'GITHUB_ATTACHMENT_FETCH_FAILED',
+      'GitHub attachment redirected too many times',
+      502,
+    )
+  }
+  if (!response.ok) {
+    throw new AppError(
+      'GITHUB_ATTACHMENT_FETCH_FAILED',
+      `GitHub attachment request failed with ${response.status}`,
+      502,
+    )
+  }
+  const contentType = response.headers.get('content-type')?.split(';', 1)[0] ?? ''
+  if (!contentType.startsWith('image/') && !contentType.startsWith('video/')) {
+    throw new AppError(
+      'GITHUB_ATTACHMENT_FETCH_FAILED',
+      'GitHub attachment was not an image or video',
+      502,
+    )
+  }
+  const contentLength = Number(response.headers.get('content-length'))
+  if (Number.isFinite(contentLength) && contentLength > GITHUB_ATTACHMENT_BODY_LIMIT) {
+    throw new AppError('GITHUB_ATTACHMENT_TOO_LARGE', 'GitHub attachment exceeds 100 MiB', 502)
+  }
+  const body = new Uint8Array(await response.arrayBuffer())
+  if (body.byteLength > GITHUB_ATTACHMENT_BODY_LIMIT) {
+    throw new AppError('GITHUB_ATTACHMENT_TOO_LARGE', 'GitHub attachment exceeds 100 MiB', 502)
   }
   return { body, contentType }
 }
