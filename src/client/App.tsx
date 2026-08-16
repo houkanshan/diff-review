@@ -2575,7 +2575,9 @@ function PiRunCard({ run }: { run: PiReviewRun }) {
         <div>
           <dt>Pi session</dt>
           <dd>
-            {resumable ? (
+            {run.activePid != null ? (
+              `Active in process ${run.activePid}`
+            ) : resumable ? (
               <span className="pi-resume-command">
                 <code>{resumeCommand}</code>
                 <AnnotationIconButton
@@ -2614,7 +2616,8 @@ function piCleanupLabel(run: PiReviewRun): string {
   if (run.state === 'cleaning') return 'Cleaning…'
   if (run.state === 'cleanup-blocked') return 'Blocked; worktree was kept'
   if (run.keep) return 'Kept until manually cleaned'
-  if (run.state === 'creating' || run.state === 'running') return 'Kept for 14 days after this run'
+  if (run.activePid != null) return 'Paused while Pi is active'
+  if (run.state === 'creating' || run.state === 'running') return 'Kept while Pi is running'
   return `Automatic cleanup ${relativeTime(run.cleanupEligibleAt)}`
 }
 

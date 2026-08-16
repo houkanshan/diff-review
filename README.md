@@ -56,6 +56,19 @@ Importance controls only the changed-line background:
 
 Human comments and agent annotations stay local. Nothing is published to GitHub. Data is stored in `~/.diff-review/reviews.db` by default; set `DIFF_REVIEW_DATA_DIR` to use another directory.
 
+## Explain PR sessions
+
+**Explain with Pi** saves both the detached PR worktree and the Pi session. The Annotations panel shows their paths and a resume command:
+
+```bash
+diff-review pi resume pir_abc123
+```
+
+Saved runs remain available for 14 days after their last use. The daemon checks for expired runs at startup and every six hours. Automatic cleanup skips active runs and worktrees with modified or untracked files; annotations remain in Diff Review after the worktree and Pi session are removed.
+
+Run assets are stored under `~/.diff-review/worktrees` and `~/.diff-review/pi-sessions`, or the corresponding `DIFF_REVIEW_DATA_DIR`.
+
+
 ## Development
 
 ```bash

@@ -108,22 +108,26 @@ export class PiReviewRunner {
     if (piSessionPath == null || !pathExists(piSessionPath)) {
       throw new AppError('PI_SESSION_MISSING', 'The saved Pi session could not be found')
     }
-    return this.store.updatePiReviewRun(run.id, {
+    const leased = this.store.updatePiReviewRun(run.id, {
       activePid: pid,
       piSessionPath,
       lastUsedAt: new Date().toISOString(),
       cleanupEligibleAt: retentionDeadline(),
     })
+    this.onUpdate(run.sessionId)
+    return leased
   }
 
   releaseLease(runId: string, pid: number): PiReviewRun {
     const run = this.requiredRun(runId)
     if (run.activePid !== pid) return run
-    return this.store.updatePiReviewRun(run.id, {
+    const released = this.store.updatePiReviewRun(run.id, {
       activePid: null,
       lastUsedAt: new Date().toISOString(),
       cleanupEligibleAt: retentionDeadline(),
     })
+    this.onUpdate(run.sessionId)
+    return released
   }
 
   async reconcileAndCleanup(): Promise<void> {
