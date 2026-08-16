@@ -573,16 +573,33 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
     )
     store.updatePiReviewRun(run.id, { state: 'completed' })
     const runner = new PiReviewRunner(store, () => undefined)
+    const excludePath = execFileSync('git', ['rev-parse', '--git-path', 'info/exclude'], {
+      cwd: worktree,
+      encoding: 'utf8',
+    }).trim()
+    const originalExclude = readFileSync(excludePath, 'utf8')
 
     try {
       await runner.reconcileAndCleanup()
       expect(store.getPiReviewRun(run.id)).toMatchObject({
         state: 'cleanup-blocked',
-        error: expect.stringContaining('uncommitted changes'),
+        error: expect.stringContaining('local, untracked, or ignored files'),
       })
       expect(existsSync(worktree)).toBe(true)
       expect(existsSync(piSessionDir)).toBe(true)
+
+      rmSync(path.join(worktree, 'untracked.txt'))
+      writeFileSync(excludePath, `${originalExclude}\nignored-cleanup.log\n`)
+      writeFileSync(path.join(worktree, 'ignored-cleanup.log'), 'keep me too')
+      store.updatePiReviewRun(run.id, { state: 'completed', error: null })
+      await runner.reconcileAndCleanup()
+      expect(store.getPiReviewRun(run.id)).toMatchObject({
+        state: 'cleanup-blocked',
+        error: expect.stringContaining('ignored files'),
+      })
+      expect(existsSync(path.join(worktree, 'ignored-cleanup.log'))).toBe(true)
     } finally {
+      writeFileSync(excludePath, originalExclude)
       execFileSync('git', ['worktree', 'remove', '--force', worktree], { cwd: fixture.repository })
     }
   })
