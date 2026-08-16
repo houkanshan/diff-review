@@ -30,7 +30,10 @@ export async function serveDaemon(): Promise<void> {
 
   console.log(`Diff Review daemon listening on http://${host}:${port}`)
 
-  const close = () => server.close(() => process.exit(0))
+  const close = () => {
+    handler.close()
+    server.close(() => process.exit(0))
+  }
   process.on('SIGINT', close)
   process.on('SIGTERM', close)
 }

@@ -159,11 +159,35 @@ export interface PullRequestWorkspace {
   piStatus: PiReviewStatus
 }
 
-export type PiReviewStatus =
-  | { state: 'idle' }
-  | { state: 'running'; startedAt: string }
-  | { state: 'completed'; startedAt: string; completedAt: string }
-  | { state: 'failed'; startedAt: string; completedAt: string; error: string }
+export type PiReviewRunState =
+  | 'creating'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'interrupted'
+  | 'cleaning'
+  | 'cleanup-blocked'
+  | 'cleaned'
+
+export interface PiReviewRun {
+  id: string
+  sessionId: string
+  worktreePath: string
+  piSessionDir: string
+  piSessionId: string
+  piSessionPath: string | null
+  state: PiReviewRunState
+  activePid: number | null
+  keep: boolean
+  error: string | null
+  startedAt: string
+  completedAt: string | null
+  lastUsedAt: string
+  cleanupEligibleAt: string
+  cleanedAt: string | null
+}
+
+export type PiReviewStatus = { state: 'idle' } | PiReviewRun
 
 export interface StartPiReviewInput {
   additionalInstructions: string

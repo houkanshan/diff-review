@@ -51,6 +51,11 @@ export class ApiHandler {
   ) {
     this.events.setMaxListeners(100)
     this.piReviews = new PiReviewRunner(store, (sessionId) => this.emitSessionUpdate(sessionId))
+    this.piReviews.initialize()
+  }
+
+  close(): void {
+    this.piReviews.close()
   }
 
   handle = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
@@ -95,6 +100,7 @@ export class ApiHandler {
     const fileViewedMatch = /^\/api\/sessions\/([^/]+)\/files\/viewed$/.exec(url.pathname)
     const fileMatch = /^\/api\/sessions\/([^/]+)\/file$/.exec(url.pathname)
     const piReviewMatch = /^\/api\/sessions\/([^/]+)\/pi-review$/.exec(url.pathname)
+    const piRunLeaseMatch = /^\/api\/pi-runs\/([^/]+)\/lease$/.exec(url.pathname)
     const pullRequestOpenMatch = /^\/api\/pull-requests\/(\d+)\/open$/.exec(url.pathname)
     const pullRequestRevisionsMatch = /^\/api\/pull-requests\/(\d+)\/revisions$/.exec(
       url.pathname,
@@ -205,6 +211,18 @@ export class ApiHandler {
         202,
         this.piReviews.start(piReviewMatch[1] ?? '', input.additionalInstructions),
       )
+      return
+    }
+
+    if (piRunLeaseMatch != null && method === 'POST') {
+      const { pid } = parsePiLeaseInput(await readJson(request))
+      sendJson(response, 200, this.piReviews.acquireLease(piRunLeaseMatch[1] ?? '', pid))
+      return
+    }
+
+    if (piRunLeaseMatch != null && method === 'DELETE') {
+      const { pid } = parsePiLeaseInput(await readJson(request))
+      sendJson(response, 200, this.piReviews.releaseLease(piRunLeaseMatch[1] ?? '', pid))
       return
     }
 
@@ -621,6 +639,15 @@ function parseStartPiReviewInput(value: unknown): StartPiReviewInput {
     throw new AppError('INVALID_INPUT', 'additionalInstructions must be a string')
   }
   return { additionalInstructions: object.additionalInstructions.trim() }
+}
+
+function parsePiLeaseInput(value: unknown): { pid: number } {
+  const object = expectObject(value)
+  const pid = Number(object.pid)
+  if (!Number.isInteger(pid) || pid <= 0) {
+    throw new AppError('INVALID_INPUT', 'pid must be a positive integer')
+  }
+  return { pid }
 }
 
 function parseTarget(value: unknown): ReviewTarget {

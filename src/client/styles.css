@@ -2176,6 +2176,75 @@ body.resizing-panels * {
   background: var(--surface-raised);
 }
 
+.pi-run-card {
+  border-color: var(--border-strong);
+  background: var(--surface-raised);
+}
+
+.pi-run-state {
+  color: var(--faint);
+  font-weight: 650;
+}
+
+.pi-run-state.creating,
+.pi-run-state.running,
+.pi-run-state.cleaning { color: var(--blue); }
+.pi-run-state.completed { color: var(--green); }
+.pi-run-state.failed,
+.pi-run-state.interrupted,
+.pi-run-state.cleanup-blocked { color: var(--red); }
+
+.pi-run-card dl {
+  display: grid;
+  gap: 7px;
+  margin: 9px 0 0;
+}
+
+.pi-run-card dl > div {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 7px;
+}
+
+.pi-run-card dt {
+  color: var(--faint);
+  font-size: 9px;
+}
+
+.pi-run-card dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.pi-run-card .pi-worktree-path {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pi-resume-command {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+}
+.pi-resume-command code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pi-resume-command button {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+}
+.pi-run-card .pi-run-error { color: var(--red); }
+
 .global-comment-heading {
   display: flex;
   align-items: center;

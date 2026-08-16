@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite'
 import type {
   AddAnnotationInput,
   CommitSummary,
+  PiReviewRun,
   PullRequestRevision,
   ReviewSession,
   ReviewTarget,
@@ -52,10 +53,30 @@ interface AnnotationRow {
   updated_at: string
 }
 
+interface PiReviewRunRow {
+  id: string
+  session_id: string
+  worktree_path: string
+  pi_session_dir: string
+  pi_session_id: string
+  pi_session_path: string | null
+  state: PiReviewRun['state']
+  active_pid: number | null
+  keep: number
+  error: string | null
+  started_at: string
+  completed_at: string | null
+  last_used_at: string
+  cleanup_eligible_at: string
+  cleaned_at: string | null
+}
+
 export class ReviewStore {
   private readonly database: DatabaseSync
+  private readonly databasePath: string
 
   constructor(databasePath = defaultDatabasePath()) {
+    this.databasePath = databasePath
     mkdirSync(path.dirname(databasePath), { recursive: true })
     this.database = new DatabaseSync(databasePath)
     this.database.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;')
@@ -97,11 +118,40 @@ export class ReviewStore {
         updated_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS pi_review_runs (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        worktree_path TEXT NOT NULL,
+        pi_session_dir TEXT NOT NULL,
+        pi_session_id TEXT NOT NULL,
+        pi_session_path TEXT,
+        state TEXT NOT NULL CHECK(state IN (
+          'creating', 'running', 'completed', 'failed', 'interrupted',
+          'cleaning', 'cleanup-blocked', 'cleaned'
+        )),
+        active_pid INTEGER,
+        keep INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        started_at TEXT NOT NULL,
+        completed_at TEXT,
+        last_used_at TEXT NOT NULL,
+        cleanup_eligible_at TEXT NOT NULL,
+        cleaned_at TEXT
+      );
+
       CREATE INDEX IF NOT EXISTS annotations_session_id ON annotations(session_id);
       CREATE INDEX IF NOT EXISTS sessions_repository_root ON sessions(repository_root);
+      CREATE INDEX IF NOT EXISTS pi_review_runs_session_latest
+        ON pi_review_runs(session_id, started_at DESC);
+      CREATE INDEX IF NOT EXISTS pi_review_runs_cleanup
+        ON pi_review_runs(keep, state, cleanup_eligible_at);
     `)
     this.migrateSessionsTable()
     this.migrateAnnotationsTable()
+  }
+
+  get dataDirectory(): string {
+    return path.dirname(this.databasePath)
   }
 
   createSession(
@@ -212,6 +262,143 @@ export class ReviewStore {
       .get(id) as unknown as SessionRow | undefined
     if (row == null) throw new AppError('SESSION_NOT_FOUND', `Review session not found: ${id}`, 404)
     return this.sessionFromRow(row)
+  }
+
+  createPiReviewRun(
+    sessionId: string,
+    worktreePath: string,
+    piSessionDir: string,
+    piSessionId: string,
+    cleanupEligibleAt: string,
+  ): PiReviewRun {
+    this.getSession(sessionId)
+    const id = createId('pir')
+    const now = new Date().toISOString()
+    this.database
+      .prepare(`
+        INSERT INTO pi_review_runs (
+          id, session_id, worktree_path, pi_session_dir, pi_session_id, pi_session_path,
+          state, active_pid, keep, error, started_at, completed_at, last_used_at,
+          cleanup_eligible_at, cleaned_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        id,
+        sessionId,
+        worktreePath,
+        piSessionDir,
+        piSessionId,
+        null,
+        'creating',
+        null,
+        0,
+        null,
+        now,
+        null,
+        now,
+        cleanupEligibleAt,
+        null,
+      )
+    return this.getPiReviewRun(id)!
+  }
+
+  getPiReviewRun(runId: string): PiReviewRun | null {
+    const row = this.database
+      .prepare('SELECT * FROM pi_review_runs WHERE id = ?')
+      .get(runId) as unknown as PiReviewRunRow | undefined
+    return row == null ? null : piReviewRunFromRow(row)
+  }
+
+  latestPiReviewRun(sessionId: string): PiReviewRun | null {
+    const row = this.database
+      .prepare(`
+        SELECT * FROM pi_review_runs
+        WHERE session_id = ?
+        ORDER BY started_at DESC, rowid DESC
+        LIMIT 1
+      `)
+      .get(sessionId) as unknown as PiReviewRunRow | undefined
+    return row == null ? null : piReviewRunFromRow(row)
+  }
+
+  listPiReviewRunsEligibleForCleanup(now: string): PiReviewRun[] {
+    const rows = this.database
+      .prepare(`
+        SELECT * FROM pi_review_runs
+        WHERE keep = 0
+          AND state IN ('completed', 'failed', 'interrupted', 'cleaning', 'cleanup-blocked')
+          AND cleanup_eligible_at <= ?
+        ORDER BY cleanup_eligible_at ASC
+      `)
+      .all(now) as unknown as PiReviewRunRow[]
+    return rows.map(piReviewRunFromRow)
+  }
+
+  listActivePiReviewRuns(): PiReviewRun[] {
+    const rows = this.database
+      .prepare("SELECT * FROM pi_review_runs WHERE state IN ('creating', 'running')")
+      .all() as unknown as PiReviewRunRow[]
+    return rows.map(piReviewRunFromRow)
+  }
+
+  claimPiReviewRunForCleanup(runId: string): PiReviewRun | null {
+    const result = this.database
+      .prepare(`
+        UPDATE pi_review_runs
+        SET state = 'cleaning', error = NULL
+        WHERE id = ?
+          AND keep = 0
+          AND active_pid IS NULL
+          AND state IN ('completed', 'failed', 'interrupted', 'cleaning', 'cleanup-blocked')
+      `)
+      .run(runId)
+    return result.changes === 0 ? null : this.getPiReviewRun(runId)
+  }
+
+  updatePiReviewRun(
+    runId: string,
+    patch: Partial<
+      Pick<
+        PiReviewRun,
+        | 'piSessionPath'
+        | 'state'
+        | 'activePid'
+        | 'keep'
+        | 'error'
+        | 'completedAt'
+        | 'lastUsedAt'
+        | 'cleanupEligibleAt'
+        | 'cleanedAt'
+      >
+    >,
+  ): PiReviewRun {
+    const fields: string[] = []
+    const values: (string | number | null)[] = []
+    const add = (key: keyof typeof patch, column: string, value: string | number | null): void => {
+      if (!(key in patch)) return
+      fields.push(`${column} = ?`)
+      values.push(value)
+    }
+    add('piSessionPath', 'pi_session_path', patch.piSessionPath ?? null)
+    add('state', 'state', patch.state ?? null)
+    add('activePid', 'active_pid', patch.activePid ?? null)
+    add('keep', 'keep', patch.keep == null ? null : Number(patch.keep))
+    add('error', 'error', patch.error ?? null)
+    add('completedAt', 'completed_at', patch.completedAt ?? null)
+    add('lastUsedAt', 'last_used_at', patch.lastUsedAt ?? null)
+    add('cleanupEligibleAt', 'cleanup_eligible_at', patch.cleanupEligibleAt ?? null)
+    add('cleanedAt', 'cleaned_at', patch.cleanedAt ?? null)
+
+    if (fields.length === 0) {
+      const run = this.getPiReviewRun(runId)
+      if (run == null) throw piReviewRunNotFound(runId)
+      return run
+    }
+    const result = this.database
+      .prepare(`UPDATE pi_review_runs SET ${fields.join(', ')} WHERE id = ?`)
+      .run(...values, runId)
+    if (result.changes === 0) throw piReviewRunNotFound(runId)
+    return this.getPiReviewRun(runId)!
   }
 
   getResolvedReview(id: string): ResolvedReview {
@@ -482,6 +669,30 @@ export class ReviewStore {
       updatedAt: row.updated_at,
     }
   }
+}
+
+function piReviewRunFromRow(row: PiReviewRunRow): PiReviewRun {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    worktreePath: row.worktree_path,
+    piSessionDir: row.pi_session_dir,
+    piSessionId: row.pi_session_id,
+    piSessionPath: row.pi_session_path,
+    state: row.state,
+    activePid: row.active_pid,
+    keep: row.keep === 1,
+    error: row.error,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    lastUsedAt: row.last_used_at,
+    cleanupEligibleAt: row.cleanup_eligible_at,
+    cleanedAt: row.cleaned_at,
+  }
+}
+
+function piReviewRunNotFound(runId: string): AppError {
+  return new AppError('PI_REVIEW_RUN_NOT_FOUND', `Pi review run not found: ${runId}`, 404)
 }
 
 function annotationFromRow(row: AnnotationRow): SessionAnnotation {

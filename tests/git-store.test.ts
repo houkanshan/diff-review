@@ -206,7 +206,7 @@ JSON
 })
 
 describe('local review storage', () => {
-  test('runs Pi against the immutable head in a disposable worktree', async () => {
+  test('keeps a resumable Pi session and safely cleans it after retention', async () => {
     const review = await resolveTarget(fixture.repository, {
       kind: 'range',
       expression: 'origin/main...HEAD',
@@ -229,7 +229,19 @@ exec > "$PI_TEST_OUTPUT"
 pwd
 git rev-parse HEAD
 printf '%s\n' "$@"
-`,
+session_dir=''
+session_id=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --session-dir) shift; session_dir="$1" ;;
+    --session-id) shift; session_id="$1" ;;
+  esac
+  shift
+done
+mkdir -p "$session_dir"
+printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
+  > "$session_dir/2026-01-01T00-00-00-000Z_$session_id.jsonl"
+`
     )
     chmodSync(pi, 0o755)
     const originalPath = process.env.PATH
@@ -240,17 +252,31 @@ printf '%s\n' "$@"
     const runner = new PiReviewRunner(store, (sessionId) => updates.push(sessionId))
 
     try {
-      expect(runner.start(session.id, 'Emphasize how the data model changed.').state).toBe('running')
-      expect(runner.start(session.id).state).toBe('running')
-      await waitFor(() => updates.length >= 2)
+      expect(runner.start(session.id, 'Emphasize how the data model changed.').state).toBe('creating')
+      expect(runner.start(session.id).state).toBe('creating')
+      await waitFor(() => runner.getStatus(session.id).state === 'completed')
       const lines = readFileSync(output, 'utf8').split('\n')
       const worktree = lines[0] ?? ''
       expect(lines[1]).toBe(session.revisionHeadOid)
       expect(lines.join('\n')).toContain(`diff-review annotate ${session.id}`)
       expect(lines.join('\n')).toContain('Explain PR #42 in plain language')
+      expect(lines).toContain('--session-dir')
+      expect(lines).toContain('--session-id')
+      expect(lines).not.toContain('--no-session')
       expect(lines.join('\n')).toContain('Emphasize how the data model changed.')
-      expect(runner.getStatus(session.id).state).toBe('completed')
-      expect(existsSync(worktree)).toBe(false)
+      const status = runner.getStatus(session.id)
+      expect(status.state).toBe('completed')
+      if (status.state !== 'completed') throw new Error('Expected completed Pi review')
+      expect(path.basename(status.worktreePath)).toBe(path.basename(worktree))
+      expect(status.piSessionPath).not.toBeNull()
+      expect(existsSync(status.worktreePath)).toBe(true)
+      expect(existsSync(status.piSessionPath ?? '')).toBe(true)
+
+      store.updatePiReviewRun(status.id, { cleanupEligibleAt: '1970-01-01T00:00:00.000Z' })
+      await runner.reconcileAndCleanup()
+      expect(runner.getStatus(session.id).state).toBe('cleaned')
+      expect(existsSync(status.worktreePath)).toBe(false)
+      expect(existsSync(status.piSessionDir)).toBe(false)
     } finally {
       process.env.PATH = originalPath
       if (originalOutput == null) delete process.env.PI_TEST_OUTPUT
@@ -299,6 +325,266 @@ printf '%s\n' "$@"
         createdAt: session.createdAt,
       },
     ])
+  })
+
+  test('persists Pi review runs and selects the latest run', async () => {
+    const review = await resolveTarget(fixture.repository, {
+      kind: 'range',
+      expression: 'origin/main...HEAD',
+    })
+    const databasePath = path.join(fixture.directory, 'persistent-pi-runs.db')
+    const store = new ReviewStore(databasePath)
+    const session = store.createSession(
+      fixture.repository,
+      'repo',
+      { kind: 'range', expression: 'origin/main...HEAD' },
+      review,
+    )
+    const first = store.createPiReviewRun(
+      session.id,
+      '/tmp/worktree-1',
+      '/tmp/pi-session-1',
+      'pi-session-1',
+      '2026-02-01T00:00:00.000Z',
+    )
+    expect(first).toMatchObject({
+      id: expect.stringMatching(/^pir_/),
+      sessionId: session.id,
+      state: 'creating',
+      activePid: null,
+      keep: false,
+      error: null,
+      completedAt: null,
+      cleanedAt: null,
+    })
+    expect(store.dataDirectory).toBe(path.dirname(databasePath))
+
+    store.updatePiReviewRun(first.id, {
+      state: 'running',
+      activePid: 1234,
+      piSessionPath: '/tmp/pi-session-1/session.jsonl',
+      error: 'temporary error',
+    })
+    const cleared = store.updatePiReviewRun(first.id, {
+      activePid: null,
+      piSessionPath: null,
+      error: null,
+    })
+    expect(cleared).toMatchObject({ activePid: null, piSessionPath: null, error: null })
+
+    const second = store.createPiReviewRun(
+      session.id,
+      '/tmp/worktree-2',
+      '/tmp/pi-session-2',
+      'pi-session-2',
+      '2026-02-02T00:00:00.000Z',
+    )
+    expect(store.latestPiReviewRun(session.id)?.id).toBe(second.id)
+    expect(store.getPiReviewRun('pir_missing')).toBeNull()
+    expect(() => store.updatePiReviewRun('pir_missing', {})).toThrow(/Pi review run not found/)
+    expect(() =>
+      store.createPiReviewRun(
+        'missing-session',
+        '/tmp/worktree',
+        '/tmp/pi-session',
+        'pi-session',
+        '2026-02-01T00:00:00.000Z',
+      ),
+    ).toThrow(/Review session not found/)
+
+    const reopened = new ReviewStore(databasePath)
+    expect(reopened.getPiReviewRun(first.id)).toEqual(cleared)
+    expect(reopened.latestPiReviewRun(session.id)?.id).toBe(second.id)
+  })
+
+  test('filters Pi review runs eligible for cleanup', async () => {
+    const review = await resolveTarget(fixture.repository, {
+      kind: 'range',
+      expression: 'origin/main...HEAD',
+    })
+    const store = new ReviewStore(path.join(fixture.directory, 'pi-run-cleanup.db'))
+    const session = store.createSession(
+      fixture.repository,
+      'repo',
+      { kind: 'range', expression: 'origin/main...HEAD' },
+      review,
+    )
+    const createRun = (suffix: string, cleanupEligibleAt = '2026-02-01T00:00:00.000Z') =>
+      store.createPiReviewRun(
+        session.id,
+        `/tmp/worktree-${suffix}`,
+        `/tmp/pi-session-${suffix}`,
+        `pi-session-${suffix}`,
+        cleanupEligibleAt,
+      )
+
+    const completed = createRun('completed')
+    store.updatePiReviewRun(completed.id, { state: 'completed' })
+    const blocked = createRun('blocked')
+    store.updatePiReviewRun(blocked.id, { state: 'cleanup-blocked' })
+    const cleaning = createRun('cleaning')
+    store.updatePiReviewRun(cleaning.id, { state: 'cleaning' })
+    const kept = createRun('kept')
+    store.updatePiReviewRun(kept.id, { state: 'failed', keep: true })
+    const future = createRun('future', '2026-04-01T00:00:00.000Z')
+    store.updatePiReviewRun(future.id, { state: 'interrupted' })
+    const running = createRun('running')
+    store.updatePiReviewRun(running.id, { state: 'running' })
+    const cleaned = createRun('cleaned')
+    store.updatePiReviewRun(cleaned.id, { state: 'cleaned' })
+
+    expect(
+      store
+        .listPiReviewRunsEligibleForCleanup('2026-03-01T00:00:00.000Z')
+        .map((run) => run.id)
+        .sort(),
+    ).toEqual([blocked.id, cleaning.id, completed.id].sort())
+  })
+
+  test('leases a saved Pi session while it is being resumed', async () => {
+    const review = await resolveTarget(fixture.repository, {
+      kind: 'range',
+      expression: 'origin/main...HEAD',
+    })
+    const store = new ReviewStore(path.join(fixture.directory, 'pi-run-lease.db'))
+    const session = store.createSession(
+      fixture.repository,
+      'repo',
+      { kind: 'pr', number: 42 },
+      review,
+    )
+    const worktree = path.join(fixture.directory, 'lease-worktree')
+    const piSessionDir = path.join(fixture.directory, 'lease-session')
+    const piSessionPath = path.join(piSessionDir, 'saved.jsonl')
+    mkdirSync(worktree, { recursive: true })
+    mkdirSync(piSessionDir, { recursive: true })
+    writeFileSync(piSessionPath, '{}\n')
+    const run = store.createPiReviewRun(
+      session.id,
+      worktree,
+      piSessionDir,
+      'saved-session',
+      '2026-01-01T00:00:00.000Z',
+    )
+    store.updatePiReviewRun(run.id, { state: 'completed', piSessionPath })
+    const runner = new PiReviewRunner(store, () => undefined)
+
+    const leased = runner.acquireLease(run.id, process.pid)
+    expect(leased.activePid).toBe(process.pid)
+    expect(leased.piSessionPath).toBe(piSessionPath)
+    const released = runner.releaseLease(run.id, process.pid)
+    expect(released.activePid).toBeNull()
+    expect(released.cleanupEligibleAt >= leased.cleanupEligibleAt).toBe(true)
+  })
+
+  test('rediscovers a saved Pi session after an interrupted daemon run', async () => {
+    const review = await resolveTarget(fixture.repository, {
+      kind: 'range',
+      expression: 'origin/main...HEAD',
+    })
+    const store = new ReviewStore(path.join(fixture.directory, 'pi-run-recovery.db'))
+    const session = store.createSession(
+      fixture.repository,
+      'repo',
+      { kind: 'pr', number: 42 },
+      review,
+    )
+    const worktree = path.join(fixture.directory, 'recovery-worktree')
+    const piSessionDir = path.join(fixture.directory, 'recovery-session')
+    const piSessionId = 'recovery-session-id'
+    const piSessionPath = path.join(piSessionDir, `timestamp_${piSessionId}.jsonl`)
+    mkdirSync(worktree, { recursive: true })
+    mkdirSync(piSessionDir, { recursive: true })
+    writeFileSync(piSessionPath, '{}\n')
+    const run = store.createPiReviewRun(
+      session.id,
+      worktree,
+      piSessionDir,
+      piSessionId,
+      '2026-01-01T00:00:00.000Z',
+    )
+    store.updatePiReviewRun(run.id, { state: 'running', activePid: 999_999_999 })
+
+    const recovered = new PiReviewRunner(store, () => undefined).getStatus(session.id)
+    expect(recovered).toMatchObject({
+      state: 'interrupted',
+      activePid: null,
+      piSessionPath,
+    })
+  })
+
+  test('a cleanup claim excludes a concurrent resume lease', async () => {
+    const review = await resolveTarget(fixture.repository, {
+      kind: 'range',
+      expression: 'origin/main...HEAD',
+    })
+    const store = new ReviewStore(path.join(fixture.directory, 'pi-run-cleanup-lease.db'))
+    const session = store.createSession(
+      fixture.repository,
+      'repo',
+      { kind: 'pr', number: 42 },
+      review,
+    )
+    const worktree = path.join(fixture.directory, 'cleanup-lease-worktree')
+    const piSessionDir = path.join(fixture.directory, 'cleanup-lease-session')
+    const piSessionPath = path.join(piSessionDir, 'saved.jsonl')
+    mkdirSync(worktree, { recursive: true })
+    mkdirSync(piSessionDir, { recursive: true })
+    writeFileSync(piSessionPath, '{}\n')
+    const run = store.createPiReviewRun(
+      session.id,
+      worktree,
+      piSessionDir,
+      'cleanup-session',
+      '1970-01-01T00:00:00.000Z',
+    )
+    store.updatePiReviewRun(run.id, { state: 'completed', piSessionPath })
+    expect(store.claimPiReviewRunForCleanup(run.id)?.state).toBe('cleaning')
+
+    const runner = new PiReviewRunner(store, () => undefined)
+    expect(() => runner.acquireLease(run.id, process.pid)).toThrow(/cleaned up/)
+  })
+
+  test('blocks automatic cleanup for a dirty worktree', async () => {
+    const review = await resolveTarget(fixture.repository, {
+      kind: 'range',
+      expression: 'origin/main...HEAD',
+    })
+    const store = new ReviewStore(path.join(fixture.directory, 'pi-run-dirty-cleanup.db'))
+    const session = store.createSession(
+      fixture.repository,
+      'repo',
+      { kind: 'pr', number: 42 },
+      review,
+    )
+    const worktree = path.join(fixture.directory, 'dirty-worktree')
+    const piSessionDir = path.join(fixture.directory, 'dirty-pi-session')
+    execFileSync('git', ['worktree', 'add', '--detach', worktree, session.revisionHeadOid!], {
+      cwd: fixture.repository,
+    })
+    mkdirSync(piSessionDir, { recursive: true })
+    writeFileSync(path.join(worktree, 'untracked.txt'), 'keep me')
+    const run = store.createPiReviewRun(
+      session.id,
+      worktree,
+      piSessionDir,
+      'dirty-session',
+      '1970-01-01T00:00:00.000Z',
+    )
+    store.updatePiReviewRun(run.id, { state: 'completed' })
+    const runner = new PiReviewRunner(store, () => undefined)
+
+    try {
+      await runner.reconcileAndCleanup()
+      expect(store.getPiReviewRun(run.id)).toMatchObject({
+        state: 'cleanup-blocked',
+        error: expect.stringContaining('uncommitted changes'),
+      })
+      expect(existsSync(worktree)).toBe(true)
+      expect(existsSync(piSessionDir)).toBe(true)
+    } finally {
+      execFileSync('git', ['worktree', 'remove', '--force', worktree], { cwd: fixture.repository })
+    }
   })
 
   test('preserves the full commit timeline while viewing a selected span', async () => {

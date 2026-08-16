@@ -59,6 +59,7 @@ import {
 import type {
   DiffSide,
   GitHubUser,
+  PiReviewRun,
   PiReviewStatus,
   PullRequestActivity,
   PullRequestDetails,
@@ -1065,6 +1066,7 @@ function ReviewWorkspace({
           <Inspector
             session={session}
             files={parsedFiles}
+            piStatus={pullRequest?.piStatus}
             onSetArchived={setArchived}
             onUpdateComment={editAnnotation}
             onUpdateGlobalComment={editGlobalComment}
@@ -1345,7 +1347,10 @@ function PiExplanationControl({
   const [open, setOpen] = useState(false)
   const [additionalInstructions, setAdditionalInstructions] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const running = status.state === 'running'
+  const running =
+    status.state === 'creating' ||
+    status.state === 'running' ||
+    (status.state !== 'idle' && status.activePid != null)
 
   const start = async () => {
     setError(null)
@@ -1366,7 +1371,7 @@ function PiExplanationControl({
       <Popover.Trigger
         className="agent-button"
         disabled={running}
-        title={status.state === 'failed' ? status.error : undefined}
+        title={status.state !== 'idle' ? status.error ?? undefined : undefined}
       >
         <span className={running ? 'pi-pulse' : ''}>π</span>
         {piExplanationButtonLabel(status)}
@@ -2325,6 +2330,7 @@ function FileViewedToggle({
 function Inspector({
   session,
   files,
+  piStatus,
   onSetArchived,
   onUpdateComment,
   onUpdateGlobalComment,
@@ -2334,6 +2340,7 @@ function Inspector({
 }: {
   session: ReviewSession
   files: FileDiffMetadata[]
+  piStatus?: PiReviewStatus
   onSetArchived(annotationId: string, archived: boolean): Promise<void>
   onUpdateComment(annotationId: string, comment: string): Promise<void>
   onUpdateGlobalComment(comment: string): Promise<void>
@@ -2357,6 +2364,8 @@ function Inspector({
     allowGlobalComment &&
     view === 'active' &&
     (session.globalComment != null || globalEditing)
+  const piRun = piStatus == null || piStatus.state === 'idle' ? null : piStatus
+  const showPiReviewDetails = view === 'active' && piRun != null
 
   return (
     <aside className="inspector">
@@ -2425,7 +2434,7 @@ function Inspector({
           <Toggle value="active">Active {active.length}</Toggle>
           <Toggle value="archived">Archived {archived.length}</Toggle>
         </ToggleGroup>
-        {visible.length === 0 && !showGlobalComment ? (
+        {visible.length === 0 && !showGlobalComment && !showPiReviewDetails ? (
           <p className="notes-empty">
             {view === 'active'
               ? 'Comments and importance highlights will collect here.'
@@ -2433,6 +2442,7 @@ function Inspector({
           </p>
         ) : (
           <div className="notes-list">
+            {showPiReviewDetails && piRun != null && <PiRunCard run={piRun} />}
             {showGlobalComment && (
               <article className="note-card global-comment-card">
                 <div className="global-comment-heading">
@@ -2534,6 +2544,78 @@ function Inspector({
       </section>
     </aside>
   )
+}
+
+function PiRunCard({ run }: { run: PiReviewRun }) {
+  const [copied, setCopied] = useState(false)
+  const resumeCommand = `diff-review pi resume ${run.id}`
+  const resumable =
+    run.piSessionPath != null && run.state !== 'cleaned' && run.state !== 'cleaning'
+  return (
+    <article className="note-card pi-run-card">
+      <div className="global-comment-heading">
+        <strong>Explain PR run</strong>
+        <span className={`pi-run-state ${run.state}`}>{piReviewStateLabel(run.state)}</span>
+      </div>
+      <dl>
+        <div>
+          <dt>Worktree</dt>
+          <dd>
+            {run.state === 'cleaned' ? 'Removed' : (
+              <code className="pi-worktree-path" title={run.worktreePath}>{run.worktreePath}</code>
+            )}
+          </dd>
+        </div>
+        <div>
+          <dt>Cleanup</dt>
+          <dd title={`Eligible ${formatTimestamp(run.cleanupEligibleAt)}`}>
+            {piCleanupLabel(run)}
+          </dd>
+        </div>
+        <div>
+          <dt>Pi session</dt>
+          <dd>
+            {resumable ? (
+              <span className="pi-resume-command">
+                <code>{resumeCommand}</code>
+                <AnnotationIconButton
+                  label={copied ? 'Copied' : 'Copy resume command'}
+                  onClick={async () => {
+                    await navigator.clipboard.writeText(resumeCommand)
+                    setCopied(true)
+                    window.setTimeout(() => setCopied(false), 1600)
+                  }}
+                >
+                  {copied ? <CheckIcon /> : <CopyIcon />}
+                </AnnotationIconButton>
+              </span>
+            ) : run.state === 'creating' || run.state === 'running' ? (
+              'Saving…'
+            ) : run.state === 'cleaned' ? (
+              'Removed'
+            ) : (
+              'Unavailable'
+            )}
+          </dd>
+        </div>
+      </dl>
+      {run.error != null && <p className="pi-run-error">{run.error}</p>}
+    </article>
+  )
+}
+
+function piReviewStateLabel(state: PiReviewRun['state']): string {
+  if (state === 'cleanup-blocked') return 'Cleanup blocked'
+  return state.charAt(0).toUpperCase() + state.slice(1)
+}
+
+function piCleanupLabel(run: PiReviewRun): string {
+  if (run.state === 'cleaned') return 'Removed'
+  if (run.state === 'cleaning') return 'Cleaning…'
+  if (run.state === 'cleanup-blocked') return 'Blocked; worktree was kept'
+  if (run.keep) return 'Kept until manually cleaned'
+  if (run.state === 'creating' || run.state === 'running') return 'Kept for 14 days after this run'
+  return `Automatic cleanup ${relativeTime(run.cleanupEligibleAt)}`
 }
 
 function CommentEditor({
@@ -2981,16 +3063,10 @@ function activityLabel(activity: PullRequestActivity): string {
 }
 
 function piExplanationButtonLabel(status: PiReviewStatus): string {
-  switch (status.state) {
-    case 'idle':
-      return 'Explain with Pi'
-    case 'running':
-      return 'Pi explaining…'
-    case 'completed':
-      return 'Explain again'
-    case 'failed':
-      return 'Retry explanation'
-  }
+  if (status.state === 'idle') return 'Explain with Pi'
+  if (status.state === 'creating' || status.state === 'running') return 'Pi explaining…'
+  if (status.state === 'failed' || status.state === 'interrupted') return 'Retry explanation'
+  return 'Explain again'
 }
 
 function capitalize(value: string): string {
