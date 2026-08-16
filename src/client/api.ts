@@ -2,11 +2,12 @@ import type {
   AddAnnotationInput,
   ApiErrorShape,
   CreateSessionInput,
+  OpenPullRequestInput,
   PiReviewStatus,
-  PullRequestDetails,
   PullRequestListView,
   PullRequestRevision,
   PullRequestSummary,
+  PullRequestWorkspace,
   RepositoryInfo,
   ReviewSession,
   SessionAnnotation,
@@ -45,13 +46,14 @@ export function getPullRequests(
   )
 }
 
-export function getPullRequest(
-  repositoryPath: string,
+export function openPullRequest(
   number: number,
-): Promise<PullRequestDetails> {
-  return request(
-    `/api/pull-requests/${number}?repositoryPath=${encodeURIComponent(repositoryPath)}`,
-  )
+  input: OpenPullRequestInput,
+): Promise<PullRequestWorkspace> {
+  return request(`/api/pull-requests/${number}/open`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
 }
 
 export function getPullRequestRevisions(

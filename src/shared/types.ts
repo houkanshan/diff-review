@@ -142,6 +142,14 @@ export interface PullRequestRevision {
   createdAt: string
 }
 
+export interface PullRequestWorkspace {
+  details: PullRequestDetails
+  currentSession: ReviewSession
+  selectedSession: ReviewSession
+  revisions: PullRequestRevision[]
+  piStatus: PiReviewStatus
+}
+
 export type PiReviewStatus =
   | { state: 'idle' }
   | { state: 'running'; startedAt: string }
@@ -151,6 +159,11 @@ export type PiReviewStatus =
 export interface CreateSessionInput {
   repositoryPath: string
   target: ReviewTarget
+}
+
+export interface OpenPullRequestInput {
+  repositoryPath: string
+  revisionId?: string | null
 }
 
 export interface AddAnnotationInput {

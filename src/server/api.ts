@@ -7,7 +7,9 @@ import type {
   AddAnnotationInput,
   ApiErrorShape,
   CreateSessionInput,
+  OpenPullRequestInput,
   PullRequestListView,
+  PullRequestWorkspace,
   ReviewSession,
   ReviewTarget,
 } from '../shared/types.js'
@@ -16,6 +18,7 @@ import {
   getRepositoryInfo,
   readSnapshotFile,
   resolveCommitSpan,
+  resolvePullRequestRevision,
   resolveRepository,
   resolveTarget,
   stageReviewFile,
@@ -82,7 +85,7 @@ export class ApiHandler {
     const fileViewedMatch = /^\/api\/sessions\/([^/]+)\/files\/viewed$/.exec(url.pathname)
     const fileMatch = /^\/api\/sessions\/([^/]+)\/file$/.exec(url.pathname)
     const piReviewMatch = /^\/api\/sessions\/([^/]+)\/pi-review$/.exec(url.pathname)
-    const pullRequestMatch = /^\/api\/pull-requests\/(\d+)$/.exec(url.pathname)
+    const pullRequestOpenMatch = /^\/api\/pull-requests\/(\d+)\/open$/.exec(url.pathname)
     const pullRequestRevisionsMatch = /^\/api\/pull-requests\/(\d+)\/revisions$/.exec(
       url.pathname,
     )
@@ -105,9 +108,36 @@ export class ApiHandler {
       return
     }
 
-    if (method === 'GET' && pullRequestMatch != null) {
-      const root = await resolveRepository(requiredQuery(url, 'repositoryPath'))
-      sendJson(response, 200, await getPullRequestDetails(root, Number(pullRequestMatch[1])))
+    if (method === 'POST' && pullRequestOpenMatch != null) {
+      const number = Number(pullRequestOpenMatch[1])
+      const input = parseOpenPullRequestInput(await readJson(request))
+      const root = await resolveRepository(input.repositoryPath)
+      const details = await getPullRequestDetails(root, number)
+      const resolved = await resolvePullRequestRevision(root, details, false)
+      const target: ReviewTarget = { kind: 'pr', number }
+      const currentSession = this.createOrReuseSession(root, target, resolved)
+      const selectedSession = input.revisionId == null
+        ? currentSession
+        : this.store.getSession(input.revisionId)
+      if (
+        selectedSession.repositoryRoot !== root ||
+        selectedSession.target.kind !== 'pr' ||
+        selectedSession.target.number !== number
+      ) {
+        throw new AppError(
+          'INVALID_PULL_REQUEST_REVISION',
+          'The selected revision does not belong to this pull request',
+        )
+      }
+      const workspace: PullRequestWorkspace = {
+        details,
+        currentSession,
+        selectedSession,
+        revisions: this.store.listPullRequestRevisions(root, number),
+        piStatus: this.piReviews.getStatus(selectedSession.id),
+      }
+      this.emitSessionUpdate(currentSession.id)
+      sendJson(response, 200, workspace)
       return
     }
 
@@ -504,6 +534,18 @@ function parseCreateSessionInput(value: unknown): CreateSessionInput {
 function parsePullRequestListView(value: string): PullRequestListView {
   if (value === 'open' || value === 'additional-review' || value === 'merged') return value
   throw new AppError('INVALID_INPUT', `Unknown pull request list view: ${value}`)
+}
+
+function parseOpenPullRequestInput(value: unknown): OpenPullRequestInput {
+  const object = expectObject(value)
+  const revisionId = object.revisionId
+  if (revisionId != null && typeof revisionId !== 'string') {
+    throw new AppError('INVALID_INPUT', 'revisionId must be a string or null')
+  }
+  return {
+    repositoryPath: expectString(object.repositoryPath, 'repositoryPath'),
+    revisionId: revisionId as string | null | undefined,
+  }
 }
 
 function parseTarget(value: unknown): ReviewTarget {

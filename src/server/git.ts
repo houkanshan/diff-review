@@ -9,7 +9,10 @@ import type {
   ReviewTarget,
 } from '../shared/types.js'
 import { AppError } from './errors.js'
-import { getPullRequestRevisionDetails } from './github.js'
+import {
+  getPullRequestRevisionDetails,
+  type PullRequestRevisionDetails,
+} from './github.js'
 
 export type SnapshotRef =
   | { kind: 'commit'; id: string }
@@ -82,8 +85,10 @@ export async function resolveTarget(
       return resolveStaged(root, ignoreWhitespace)
     case 'range':
       return resolveRange(root, target.expression, ignoreWhitespace)
-    case 'pr':
-      return resolvePullRequest(root, target.number, ignoreWhitespace)
+    case 'pr': {
+      const details = await getPullRequestRevisionDetails(root, target.number)
+      return resolvePullRequestRevision(root, details, ignoreWhitespace)
+    }
   }
 }
 
@@ -278,16 +283,16 @@ async function resolveRange(
   }
 }
 
-async function resolvePullRequest(
+export async function resolvePullRequestRevision(
   root: string,
-  number: number,
+  details: PullRequestRevisionDetails,
   ignoreWhitespace: boolean,
 ): Promise<ResolvedReview> {
+  const number = details.number
   if (!Number.isInteger(number) || number <= 0) {
     throw new AppError('INVALID_PULL_REQUEST', `Invalid pull request number: ${number}`)
   }
 
-  const details = await getPullRequestRevisionDetails(root, number)
   await ensureCommitAvailable(root, details.baseRefOid, details.baseRefName)
   await ensurePullRequestHeadAvailable(root, number, details.headRefOid)
   const base = (

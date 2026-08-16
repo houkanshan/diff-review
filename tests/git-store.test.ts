@@ -17,6 +17,7 @@ import { afterAll, describe, expect, test } from 'vitest'
 import {
   getRepositoryInfo,
   resolveCommitSpan,
+  resolvePullRequestRevision,
   resolveTarget,
   stageReviewFile,
   validateAnnotationTarget,
@@ -140,27 +141,32 @@ describe('Git review targets', () => {
     const bin = path.join(fixture.directory, 'bin')
     mkdirSync(bin, { recursive: true })
     const gh = path.join(bin, 'gh')
+    const ghCalls = path.join(fixture.directory, 'gh-calls.txt')
     const baseRefOid = git(fixture.repository, ['rev-parse', 'origin/main']).trim()
     const headRefOid = git(fixture.repository, ['rev-parse', 'HEAD']).trim()
+    const details = {
+      number: 42,
+      title: 'Fixture pull request',
+      url: 'https://example.test/pull/42',
+      baseRefName: 'main',
+      headRefName: 'feature',
+      baseRefOid,
+      headRefOid,
+    }
     writeFileSync(
       gh,
       `#!/bin/sh
+printf '%s\n' "$*" >> "$GH_TEST_OUTPUT"
 cat <<'JSON'
-${JSON.stringify({
-  number: 42,
-  title: 'Fixture pull request',
-  url: 'https://example.test/pull/42',
-  baseRefName: 'main',
-  headRefName: 'feature',
-  baseRefOid,
-  headRefOid,
-})}
+${JSON.stringify(details)}
 JSON
 `,
     )
     chmodSync(gh, 0o755)
     const originalPath = process.env.PATH
+    const originalOutput = process.env.GH_TEST_OUTPUT
     process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`
+    process.env.GH_TEST_OUTPUT = ghCalls
 
     try {
       const review = await resolveTarget(fixture.repository, { kind: 'pr', number: 42 })
@@ -173,8 +179,12 @@ JSON
         'refs/diff-review/pull-requests/42/',
       ]).trim().split('\n').sort()
       expect(pinned).toEqual([mergeBase, headRefOid].sort())
+
+      await resolvePullRequestRevision(fixture.repository, details, false)
+      expect(readFileSync(ghCalls, 'utf8').trim().split('\n')).toHaveLength(1)
     } finally {
       process.env.PATH = originalPath
+      process.env.GH_TEST_OUTPUT = originalOutput
     }
   })
 

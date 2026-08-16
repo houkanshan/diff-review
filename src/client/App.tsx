@@ -18,7 +18,10 @@ import { ToggleGroup } from '@base-ui/react/toggle-group'
 import { Tooltip } from '@base-ui/react/tooltip'
 import type { GitStatusEntry } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
+import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query'
 import Markdown from 'react-markdown'
+import rehypeRaw from 'rehype-raw'
+import rehypeSanitize from 'rehype-sanitize'
 import remarkGfm from 'remark-gfm'
 import {
   useCallback,
@@ -39,6 +42,7 @@ import type {
   PullRequestListView,
   PullRequestRevision,
   PullRequestSummary,
+  PullRequestWorkspace,
   RepositoryInfo,
   ReviewSession,
   ReviewTarget,
@@ -50,12 +54,12 @@ import {
   createSession,
   getFileContents,
   getPiReviewStatus,
-  getPullRequest,
   getPullRequestRevisions,
   getPullRequests,
   getRepositoryInfo,
   getSession,
   getSessions,
+  openPullRequest,
   refreshSession,
   selectCommits,
   setAnnotationArchived,
@@ -117,6 +121,19 @@ interface FileChangeStats {
   additions: number
   deletions: number
   modifications: number
+}
+
+function pullRequestWorkspaceQueryKey(
+  repositoryPath: string,
+  number: number | null,
+  revisionId: string | null,
+) {
+  return ['pull-request-workspace', repositoryPath, number, revisionId ?? 'current'] as const
+}
+
+function queryErrorMessage(error: unknown): string | null {
+  if (error == null) return null
+  return error instanceof Error ? error.message : String(error)
 }
 
 export default function App() {
@@ -295,121 +312,104 @@ function PullRequestsPage({
   onThemeChange(theme: ThemePreference): void
 }) {
   const [view, setView] = useState<PullRequestListView>('open')
-  const [repository, setRepository] = useState<RepositoryInfo | null>(null)
-  const [pullRequests, setPullRequests] = useState<PullRequestSummary[]>([])
-  const [listLoading, setListLoading] = useState(true)
-  const [listError, setListError] = useState<string | null>(null)
-  const [details, setDetails] = useState<PullRequestDetails | null>(null)
-  const [session, setSession] = useState<ReviewSession | null>(null)
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
-  const [revisions, setRevisions] = useState<PullRequestRevision[]>([])
-  const [piStatus, setPiStatus] = useState<PiReviewStatus>({ state: 'idle' })
-  const [detailLoading, setDetailLoading] = useState(false)
-  const [detailError, setDetailError] = useState<string | null>(null)
+  const queryClient = useQueryClient()
+  const number = route.pullRequestNumber
+  const workspaceKey = useMemo(
+    () => pullRequestWorkspaceQueryKey(route.repositoryPath, number, route.revisionId),
+    [number, route.repositoryPath, route.revisionId],
+  )
+  const repositoryQuery = useQuery({
+    queryKey: ['repository', route.repositoryPath],
+    queryFn: () => getRepositoryInfo(route.repositoryPath),
+  })
+  const pullRequestsQuery = useQuery({
+    queryKey: ['pull-requests', route.repositoryPath, view],
+    queryFn: () => getPullRequests(route.repositoryPath, view),
+  })
+  const workspaceQuery = useQuery({
+    queryKey: workspaceKey,
+    queryFn: number == null
+      ? skipToken
+      : () => openPullRequest(number, {
+          repositoryPath: route.repositoryPath,
+          revisionId: route.revisionId,
+        }),
+  })
+  const repository = repositoryQuery.data ?? null
+  const pullRequests = pullRequestsQuery.data ?? []
+  const workspace = workspaceQuery.data
+  const details = workspace?.details ?? null
+  const session = workspace?.selectedSession ?? null
+  const currentSessionId = workspace?.currentSession.id ?? null
+  const revisions = workspace?.revisions ?? []
+  const piStatus = workspace?.piStatus ?? { state: 'idle' }
+  const listLoading = pullRequestsQuery.isPending
+  const listError = queryErrorMessage(pullRequestsQuery.error)
+  const detailLoading = number != null && workspaceQuery.isPending
+  const detailError = queryErrorMessage(workspaceQuery.error)
+
+  const updateWorkspace = useCallback(
+    (update: (current: PullRequestWorkspace) => PullRequestWorkspace) => {
+      let updated: PullRequestWorkspace | undefined
+      queryClient.setQueryData<PullRequestWorkspace>(workspaceKey, (current) => {
+        updated = current == null ? undefined : update(current)
+        return updated
+      })
+      if (
+        number != null &&
+        route.revisionId != null &&
+        updated != null &&
+        updated.selectedSession.id === updated.currentSession.id
+      ) {
+        queryClient.setQueryData(
+          pullRequestWorkspaceQueryKey(route.repositoryPath, number, null),
+          updated,
+        )
+      }
+    },
+    [number, queryClient, route.repositoryPath, route.revisionId, workspaceKey],
+  )
 
   useEffect(() => {
-    void getRepositoryInfo(route.repositoryPath).then(setRepository).catch(() => undefined)
-  }, [route.repositoryPath])
-
-  useEffect(() => {
-    let active = true
-    setListLoading(true)
-    setListError(null)
-    void getPullRequests(route.repositoryPath, view)
-      .then((items) => {
-        if (active) setPullRequests(items)
-      })
-      .catch((caught) => {
-        if (active) setListError(caught instanceof Error ? caught.message : String(caught))
-      })
-      .finally(() => {
-        if (active) setListLoading(false)
-      })
-    return () => {
-      active = false
-    }
-  }, [route.repositoryPath, view])
-
-  useEffect(() => {
-    const number = route.pullRequestNumber
-    if (number == null) {
-      setDetails(null)
-      setSession(null)
-      setCurrentSessionId(null)
-      setRevisions([])
-      return
-    }
-    let active = true
-    setDetailLoading(true)
-    setDetailError(null)
-    setDetails(null)
-    setSession(null)
-    setCurrentSessionId(null)
-    setRevisions([])
-    const currentRequest = createSession({
-      repositoryPath: route.repositoryPath,
-      target: { kind: 'pr', number },
-    })
-    void Promise.all([
-      getPullRequest(route.repositoryPath, number),
-      currentRequest,
-      route.revisionId == null ? currentRequest : getSession(route.revisionId),
-    ])
-      .then(async ([nextDetails, current, selected]) => {
-        if (
-          selected.repositoryRoot !== current.repositoryRoot ||
-          selected.target.kind !== 'pr' ||
-          selected.target.number !== number
-        ) {
-          throw new Error('The selected revision does not belong to this pull request')
-        }
-        const [nextRevisions, nextPiStatus] = await Promise.all([
-          getPullRequestRevisions(route.repositoryPath, number),
-          getPiReviewStatus(selected.id),
-        ])
-        if (!active) return
-        setDetails(nextDetails)
-        setSession(selected)
-        setCurrentSessionId(current.id)
-        setRevisions(nextRevisions)
-        setPiStatus(nextPiStatus)
-        if (route.revisionId == null) {
-          onOpenPullRequests(route.repositoryPath, number, current.id, true)
-        }
-      })
-      .catch((caught) => {
-        if (active) setDetailError(caught instanceof Error ? caught.message : String(caught))
-      })
-      .finally(() => {
-        if (active) setDetailLoading(false)
-      })
-    return () => {
-      active = false
-    }
+    if (number == null || route.revisionId != null || workspace == null) return
+    const revisionId = workspace.currentSession.id
+    queryClient.setQueryData(
+      pullRequestWorkspaceQueryKey(route.repositoryPath, number, revisionId),
+      workspace,
+    )
+    onOpenPullRequests(route.repositoryPath, number, revisionId, true)
   }, [
+    number,
     onOpenPullRequests,
-    route.pullRequestNumber,
+    queryClient,
     route.repositoryPath,
     route.revisionId,
+    workspace,
   ])
 
   useEffect(() => {
-    if (session == null || route.pullRequestNumber == null) return
+    if (session == null || number == null) return
     const sessionId = session.id
     const events = new EventSource(`/api/events?session=${encodeURIComponent(sessionId)}`)
     events.onmessage = () => {
       void Promise.all([
         getSession(sessionId),
-        getPullRequestRevisions(route.repositoryPath, route.pullRequestNumber!),
+        getPullRequestRevisions(route.repositoryPath, number),
         getPiReviewStatus(sessionId),
       ]).then(([nextSession, nextRevisions, nextPiStatus]) => {
-        setSession(nextSession)
-        setRevisions(nextRevisions)
-        setPiStatus(nextPiStatus)
+        updateWorkspace((current) => ({
+          ...current,
+          currentSession: current.currentSession.id === sessionId
+            ? nextSession
+            : current.currentSession,
+          selectedSession: nextSession,
+          revisions: nextRevisions,
+          piStatus: nextPiStatus,
+        }))
       })
     }
     return () => events.close()
-  }, [route.pullRequestNumber, route.repositoryPath, session?.id])
+  }, [number, route.repositoryPath, session?.id, updateWorkspace])
 
   const rail = (
     <PullRequestRail
@@ -463,15 +463,29 @@ function PullRequestsPage({
     )
   }
 
-  const number = details.number
   return (
     <ReviewWorkspace
       session={session}
       error={detailError}
-      onSessionChange={setSession}
-      onOpenSession={(id) => onOpenPullRequests(route.repositoryPath, number, id)}
+      onSessionChange={(nextSession) => updateWorkspace((current) => ({
+        ...current,
+        currentSession: current.currentSession.id === nextSession.id
+          ? nextSession
+          : current.currentSession,
+        selectedSession: nextSession,
+      }))}
+      onOpenSession={onOpenSession}
       onOpenPullRequests={onOpenPullRequests}
-      onReload={async () => setSession(await getSession(session.id))}
+      onReload={async () => {
+        const nextSession = await getSession(session.id)
+        updateWorkspace((current) => ({
+          ...current,
+          currentSession: current.currentSession.id === nextSession.id
+            ? nextSession
+            : current.currentSession,
+          selectedSession: nextSession,
+        }))
+      }}
       themePreference={themePreference}
       resolvedTheme={resolvedTheme}
       onThemeChange={onThemeChange}
@@ -482,7 +496,10 @@ function PullRequestsPage({
         list: rail,
         piStatus,
         onSelectRevision: (id) => onOpenPullRequests(route.repositoryPath, number, id),
-        onStartPiReview: async () => setPiStatus(await startPiReview(session.id)),
+        onStartPiReview: async () => {
+          const nextPiStatus = await startPiReview(session.id)
+          updateWorkspace((current) => ({ ...current, piStatus: nextPiStatus }))
+        },
       }}
     />
   )
@@ -1381,7 +1398,12 @@ function ConversationCard({
           <button className="conversation-target" onClick={onTarget}><code>{target}</code></button>
         )}
         <div className="markdown-body">
-          <Markdown remarkPlugins={[remarkGfm]}>{body}</Markdown>
+          <Markdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[rehypeRaw, rehypeSanitize]}
+          >
+            {body}
+          </Markdown>
         </div>
         {url != null && <a href={url} target="_blank" rel="noreferrer">View on GitHub ↗</a>}
       </div>

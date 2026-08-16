@@ -1468,6 +1468,8 @@ body.resizing-panels * {
 .markdown-body th,
 .markdown-body td { padding: 4px 7px; border: 1px solid var(--border); }
 .markdown-body input[type='checkbox'] { margin-right: 5px; }
+.markdown-body details { margin: 0.8em 0; }
+.markdown-body summary { cursor: pointer; color: var(--text); font-weight: 600; }
 
 .conversation-card-body > a {
   display: inline-block;
