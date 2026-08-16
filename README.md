@@ -54,7 +54,7 @@ Importance controls only the changed-line background:
 - omitted: normal diff intensity, equivalent to `0.5`
 - `1`: strongest readable background
 
-Human comments and agent annotations stay local. Nothing is published to GitHub. Data is stored in `~/.diff-review/reviews.db` by default; set `DIFF_REVIEW_DATA_DIR` to use another directory.
+Diff annotations and local-review comments stay in `~/.diff-review/reviews.db` by default; set `DIFF_REVIEW_DATA_DIR` to use another directory. Pull request overview actions explicitly publish comments and reviews to GitHub.
 
 ## Explain PR sessions
 

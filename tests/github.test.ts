@@ -1,3 +1,6 @@
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { describe, expect, test } from 'vitest'
 import remarkGfm from 'remark-gfm'
 import remarkParse from 'remark-parse'
@@ -10,12 +13,61 @@ import {
 import { parseGitHubAttachmentUrl } from '../src/server/api.js'
 import {
   aggregateCheckStatus,
+  addPullRequestComment,
   parsePullRequestChecks,
   parsePullRequestMergeable,
   parsePullRequestReviewers,
   parsePullRequestTimelineEvents,
   parseReviewComment,
+  squashMergePullRequest,
+  submitPullRequestReview,
 } from '../src/server/github.js'
+
+describe('GitHub pull request actions', () => {
+  test('sends comments, reviews, and squash merges through the expected REST endpoints', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-github-actions-'))
+    const bin = path.join(directory, 'bin')
+    const calls = path.join(directory, 'calls.txt')
+    mkdirSync(bin)
+    const gh = path.join(bin, 'gh')
+    writeFileSync(gh, `#!/bin/sh
+printf '%s\\n' '---' >> "$GH_TEST_OUTPUT"
+printf '<%s>\\n' "$@" >> "$GH_TEST_OUTPUT"
+printf '%s\\n' '{"merged":true,"message":"Pull Request successfully merged"}'
+`)
+    chmodSync(gh, 0o755)
+    const originalPath = process.env.PATH
+    const originalOutput = process.env.GH_TEST_OUTPUT
+    process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`
+    process.env.GH_TEST_OUTPUT = calls
+    try {
+      await addPullRequestComment(directory, 42, 'A conversation comment')
+      await submitPullRequestReview(
+        directory,
+        42,
+        'REQUEST_CHANGES',
+        'Please revise this',
+        'def456',
+      )
+      await squashMergePullRequest(directory, 42, 'abc123')
+      const output = readFileSync(calls, 'utf8')
+      expect(output).toContain('<repos/{owner}/{repo}/issues/42/comments>')
+      expect(output).toContain('<body=A conversation comment>')
+      expect(output).toContain('<repos/{owner}/{repo}/pulls/42/reviews>')
+      expect(output).toContain('<event=REQUEST_CHANGES>')
+      expect(output).toContain('<body=Please revise this>')
+      expect(output).toContain('<commit_id=def456>')
+      expect(output).toContain('<repos/{owner}/{repo}/pulls/42/merge>')
+      expect(output).toContain('<merge_method=squash>')
+      expect(output).toContain('<sha=abc123>')
+    } finally {
+      process.env.PATH = originalPath
+      if (originalOutput == null) delete process.env.GH_TEST_OUTPUT
+      else process.env.GH_TEST_OUTPUT = originalOutput
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+})
 
 describe('GitHub issue attachments', () => {
   test.each([

@@ -1,5 +1,6 @@
 import type {
   AddAnnotationInput,
+  AddPullRequestCommentInput,
   ApiErrorShape,
   CreateSessionInput,
   OpenPullRequestInput,
@@ -8,6 +9,8 @@ import type {
   PullRequestRevision,
   PullRequestSummary,
   PullRequestWorkspace,
+  SquashMergePullRequestInput,
+  SubmitPullRequestReviewInput,
   UpdatePullRequestLabelInput,
   RepositoryInfo,
   ReviewSession,
@@ -67,6 +70,36 @@ export function removePullRequestLabel(
     `/api/pull-requests/${number}/labels/${encodeURIComponent(label)}`,
     { method: 'DELETE', body: JSON.stringify(input) },
   )
+}
+
+export function addPullRequestComment(
+  number: number,
+  input: AddPullRequestCommentInput,
+): Promise<void> {
+  return request(`/api/pull-requests/${number}/comments`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function submitPullRequestReview(
+  number: number,
+  input: SubmitPullRequestReviewInput,
+): Promise<void> {
+  return request(`/api/pull-requests/${number}/reviews`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function squashMergePullRequest(
+  number: number,
+  input: SquashMergePullRequestInput,
+): Promise<void> {
+  return request(`/api/pull-requests/${number}/merge`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
 }
 
 export function getPullRequestRevisions(

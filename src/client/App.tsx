@@ -77,6 +77,7 @@ import type {
   PiReviewStatus,
   PullRequestActivity,
   PullRequestDetails,
+  PullRequestReviewEvent,
   PullRequestCheckRun,
   PullRequestCheckRunStatus,
   PullRequestListView,
@@ -90,6 +91,7 @@ import type {
 } from '../shared/types'
 import {
   addAnnotation,
+  addPullRequestComment,
   archiveAllAnnotations,
   createSession,
   getFileContents,
@@ -107,6 +109,8 @@ import {
   setFileViewed,
   setIgnoreWhitespace,
   stageFile,
+  squashMergePullRequest,
+  submitPullRequestReview,
   startPiReview,
   updateAnnotationComment,
   updateGlobalComment,
@@ -141,6 +145,9 @@ interface PullRequestWorkspaceContext {
   onSelectRevision(sessionId: string): void
   onStartPiReview(additionalInstructions: string): Promise<void>
   onRemoveAdditionalReviewLabel(): Promise<void>
+  onAddComment(body: string): Promise<void>
+  onSubmitReview(event: PullRequestReviewEvent, body: string): Promise<void>
+  onSquashMerge(): Promise<void>
 }
 
 interface FileChangeStats {
@@ -160,6 +167,13 @@ function pullRequestWorkspaceQueryKey(
 function queryErrorMessage(error: unknown): string | null {
   if (error == null) return null
   return error instanceof Error ? error.message : String(error)
+}
+
+function pullRequestRevisionHead(session: ReviewSession): string {
+  if (session.target.kind !== 'pr' || session.revisionHeadOid == null) {
+    throw new Error('The selected pull request revision has no head commit')
+  }
+  return session.revisionHeadOid
 }
 
 export default function App() {
@@ -396,6 +410,15 @@ function PullRequestsPage({
     [number, queryClient, route.repositoryPath, route.revisionId, workspaceKey],
   )
 
+  const refreshPullRequestData = useCallback((pullRequestNumber: number) => {
+    void Promise.all([
+      queryClient.invalidateQueries({
+        queryKey: ['pull-request-workspace', route.repositoryPath, pullRequestNumber],
+      }),
+      queryClient.invalidateQueries({ queryKey: ['pull-requests', route.repositoryPath] }),
+    ])
+  }, [queryClient, route.repositoryPath])
+
   useEffect(() => {
     if (number == null || route.revisionId != null || workspace == null) return
     const revisionId = workspace.currentSession.id
@@ -552,6 +575,29 @@ function PullRequestsPage({
               queryKey: ['pull-requests', route.repositoryPath],
             }),
           ])
+        },
+        onAddComment: async (body) => {
+          await addPullRequestComment(details.number, {
+            repositoryPath: route.repositoryPath,
+            body,
+          })
+          refreshPullRequestData(details.number)
+        },
+        onSubmitReview: async (event, body) => {
+          await submitPullRequestReview(details.number, {
+            repositoryPath: route.repositoryPath,
+            event,
+            body,
+            commitId: pullRequestRevisionHead(session),
+          })
+          refreshPullRequestData(details.number)
+        },
+        onSquashMerge: async () => {
+          await squashMergePullRequest(details.number, {
+            repositoryPath: route.repositoryPath,
+            expectedHeadOid: pullRequestRevisionHead(session),
+          })
+          refreshPullRequestData(details.number)
         },
       }}
     />
@@ -1009,6 +1055,8 @@ function ReviewWorkspace({
               details={pullRequest.details}
               onViewChange={switchPullRequestView}
               onRemoveAdditionalReviewLabel={pullRequest.onRemoveAdditionalReviewLabel}
+              currentRevision={session.id === pullRequest.currentSessionId}
+              onSquashMerge={pullRequest.onSquashMerge}
             />
             <section
               ref={overviewScrollRef}
@@ -1024,6 +1072,8 @@ function ReviewWorkspace({
                 oldRevision={session.id !== pullRequest.currentSessionId}
                 resolvedTheme={resolvedTheme}
                 onNavigate={navigateToPullRequestActivity}
+                onAddComment={pullRequest.onAddComment}
+                onSubmitReview={pullRequest.onSubmitReview}
               />
             </section>
           </>
@@ -1539,16 +1589,22 @@ function RevisionPicker({
 function PullRequestViewHeader({
   view,
   details,
+  currentRevision,
   onViewChange,
   onRemoveAdditionalReviewLabel,
+  onSquashMerge,
 }: {
   view: PullRequestViewMode
   details: PullRequestDetails
+  currentRevision: boolean
   onViewChange(view: PullRequestViewMode): void
   onRemoveAdditionalReviewLabel(): Promise<void>
+  onSquashMerge(): Promise<void>
 }) {
   const [labelBusy, setLabelBusy] = useState(false)
   const [labelError, setLabelError] = useState<string | null>(null)
+  const [mergeBusy, setMergeBusy] = useState(false)
+  const [mergeError, setMergeError] = useState<string | null>(null)
   const hasAdditionalReviewLabel = details.labels.some(
     (label) => label.name === 'additional-review-needed',
   )
@@ -1561,6 +1617,18 @@ function PullRequestViewHeader({
       setLabelError(caught instanceof Error ? caught.message : String(caught))
     } finally {
       setLabelBusy(false)
+    }
+  }
+  const squashMerge = async () => {
+    if (!window.confirm(`Squash and merge #${details.number}? This cannot be undone.`)) return
+    setMergeBusy(true)
+    setMergeError(null)
+    try {
+      await onSquashMerge()
+    } catch (caught) {
+      setMergeError(caught instanceof Error ? caught.message : String(caught))
+    } finally {
+      setMergeBusy(false)
     }
   }
   return (
@@ -1592,6 +1660,7 @@ function PullRequestViewHeader({
           <span className="merge-conflict-badge" role="status">Merge conflicts</span>
         )}
         {labelError != null && <span role="alert">{labelError}</span>}
+        {mergeError != null && <span role="alert">{mergeError}</span>}
         {hasAdditionalReviewLabel && (
           <button
             className="remove-additional-label-button"
@@ -1601,14 +1670,21 @@ function PullRequestViewHeader({
             {labelBusy ? 'Removing…' : 'Remove addi. label'}
           </button>
         )}
-        {details.state !== 'MERGED' && (
+        {details.state === 'OPEN' && (
           <button
             className="squash-merge-button"
-            disabled
-            title="Merge API is not connected yet"
+            disabled={!currentRevision || mergeBusy || details.isDraft || details.mergeable === 'CONFLICTING'}
+            title={!currentRevision
+              ? 'Switch to the current revision before merging'
+              : details.isDraft
+                ? 'Draft pull requests cannot be merged'
+                : details.mergeable === 'CONFLICTING'
+                  ? 'Resolve merge conflicts before merging'
+                  : undefined}
+            onClick={() => void squashMerge()}
           >
             <MergeIcon />
-            Squash &amp; merge
+            {mergeBusy ? 'Merging…' : 'Squash & merge'}
           </button>
         )}
       </div>
@@ -1621,11 +1697,15 @@ function PullRequestConversation({
   oldRevision,
   resolvedTheme,
   onNavigate,
+  onAddComment,
+  onSubmitReview,
 }: {
   details: PullRequestDetails
   oldRevision: boolean
   resolvedTheme: ResolvedTheme
   onNavigate(activity: PullRequestActivity): void
+  onAddComment(body: string): Promise<void>
+  onSubmitReview(event: PullRequestReviewEvent, body: string): Promise<void>
 }) {
   return (
     <section className="pr-conversation">
@@ -1677,12 +1757,108 @@ function PullRequestConversation({
               ))}
             </div>
           </section>
+          {details.state === 'OPEN' && !oldRevision && (
+            <PullRequestActionComposer
+              key={details.number}
+              onAddComment={onAddComment}
+              onSubmitReview={onSubmitReview}
+            />
+          )}
         </div>
         <PullRequestSidebar
           key={`${details.number}:${details.checkStatus}`}
           details={details}
         />
       </div>
+    </section>
+  )
+}
+
+function PullRequestActionComposer({
+  onAddComment,
+  onSubmitReview,
+}: {
+  onAddComment(body: string): Promise<void>
+  onSubmitReview(event: PullRequestReviewEvent, body: string): Promise<void>
+}) {
+  const [mode, setMode] = useState<'comment' | 'review'>('comment')
+  const [event, setEvent] = useState<PullRequestReviewEvent>('COMMENT')
+  const [body, setBody] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const submit = async () => {
+    const comment = body.trim()
+    if (!comment) return
+    setBusy(true)
+    setError(null)
+    try {
+      if (mode === 'comment') await onAddComment(comment)
+      else await onSubmitReview(event, comment)
+      setBody('')
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <section className="pr-action-composer" aria-label="Pull request actions">
+      <div className="pr-action-tabs" role="tablist" aria-label="Action type">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === 'comment'}
+          className={mode === 'comment' ? 'active' : ''}
+          onClick={() => { setMode('comment'); setError(null) }}
+        >
+          Add comment
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === 'review'}
+          className={mode === 'review' ? 'active' : ''}
+          onClick={() => { setMode('review'); setError(null) }}
+        >
+          Submit review
+        </button>
+      </div>
+      <textarea
+        value={body}
+        onChange={(input) => setBody(input.target.value)}
+        placeholder={mode === 'comment' ? 'Add to the conversation…' : 'Add a review comment…'}
+        rows={5}
+        disabled={busy}
+      />
+      {error != null && <p className="pr-action-error" role="alert">{error}</p>}
+      <footer>
+        {mode === 'review' ? (
+          <label>
+            Review type
+            <select
+              value={event}
+              disabled={busy}
+              onChange={(input) => {
+                const next = input.target.value
+                if (next === 'APPROVE' || next === 'COMMENT' || next === 'REQUEST_CHANGES') {
+                  setEvent(next)
+                }
+              }}
+            >
+              <option value="APPROVE">Approve</option>
+              <option value="COMMENT">Comment</option>
+              <option value="REQUEST_CHANGES">Request changes</option>
+            </select>
+          </label>
+        ) : <span />}
+        <button
+          type="button"
+          disabled={busy || !body.trim()}
+          onClick={() => void submit()}
+        >
+          {busy ? 'Submitting…' : mode === 'comment' ? 'Add comment' : 'Submit review'}
+        </button>
+      </footer>
     </section>
   )
 }

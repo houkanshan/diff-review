@@ -240,6 +240,25 @@ export interface UpdatePullRequestLabelInput {
   repositoryPath: string
 }
 
+export interface AddPullRequestCommentInput {
+  repositoryPath: string
+  body: string
+}
+
+export type PullRequestReviewEvent = 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES'
+
+export interface SubmitPullRequestReviewInput {
+  repositoryPath: string
+  event: PullRequestReviewEvent
+  commitId: string
+  body: string
+}
+
+export interface SquashMergePullRequestInput {
+  repositoryPath: string
+  expectedHeadOid: string
+}
+
 export interface AddAnnotationInput {
   filePath: string
   side: DiffSide

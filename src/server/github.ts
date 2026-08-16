@@ -11,6 +11,7 @@ import type {
   PullRequestCheckStatus,
   PullRequestDetails,
   PullRequestMergeable,
+  PullRequestReviewEvent,
   PullRequestListView,
   PullRequestState,
   PullRequestSummary,
@@ -268,6 +269,87 @@ export async function removePullRequestLabel(
       error.code === 'GITHUB_COMMAND_FAILED' &&
       /label.*(?:does not exist|not found)|(?:does not exist|not found).*label/i.test(error.message)
     if (!labelWasAlreadyAbsent) throw error
+  }
+}
+
+export async function addPullRequestComment(
+  root: string,
+  number: number,
+  body: string,
+): Promise<void> {
+  validatePullRequestNumber(number)
+  const comment = body.trim()
+  if (!comment) throw new AppError('INVALID_PULL_REQUEST_COMMENT', 'Comment must not be empty')
+  await runGitHub(
+    [
+      'api',
+      '--method',
+      'POST',
+      `repos/{owner}/{repo}/issues/${number}/comments`,
+      '--raw-field',
+      `body=${comment}`,
+    ],
+    root,
+  )
+}
+
+export async function submitPullRequestReview(
+  root: string,
+  number: number,
+  event: PullRequestReviewEvent,
+  body: string,
+  commitId: string,
+): Promise<void> {
+  validatePullRequestNumber(number)
+  const comment = body.trim()
+  if (!comment) throw new AppError('INVALID_PULL_REQUEST_REVIEW', 'Review comment must not be empty')
+  const revision = commitId.trim()
+  if (!revision) throw new AppError('INVALID_PULL_REQUEST_REVIEW', 'Review commit must not be empty')
+  await runGitHub(
+    [
+      'api',
+      '--method',
+      'POST',
+      `repos/{owner}/{repo}/pulls/${number}/reviews`,
+      '--raw-field',
+      `event=${event}`,
+      '--raw-field',
+      `body=${comment}`,
+      '--raw-field',
+      `commit_id=${revision}`,
+    ],
+    root,
+  )
+}
+
+export async function squashMergePullRequest(
+  root: string,
+  number: number,
+  expectedHeadOid: string,
+): Promise<void> {
+  validatePullRequestNumber(number)
+  const headOid = expectedHeadOid.trim()
+  if (!headOid) throw new AppError('INVALID_PULL_REQUEST_HEAD', 'Expected head commit must not be empty')
+  const output = await runGitHub(
+    [
+      'api',
+      '--method',
+      'PUT',
+      `repos/{owner}/{repo}/pulls/${number}/merge`,
+      '--raw-field',
+      'merge_method=squash',
+      '--raw-field',
+      `sha=${headOid}`,
+    ],
+    root,
+  )
+  const response = expectObject(parseJson(output, `GitHub PR #${number} squash merge`))
+  if (response.merged !== true) {
+    throw new AppError(
+      'PULL_REQUEST_MERGE_FAILED',
+      optionalString(response.message) ?? 'GitHub did not merge the pull request',
+      409,
+    )
   }
 }
 

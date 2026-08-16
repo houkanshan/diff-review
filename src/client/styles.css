@@ -1052,7 +1052,7 @@ svg {
 
 .squash-merge-button:disabled {
   cursor: not-allowed;
-  opacity: 1;
+  opacity: 0.55;
 }
 
 .squash-merge-button svg { width: 14px; height: 14px; }
@@ -1841,6 +1841,102 @@ body.resizing-panels * {
   display: grid;
   gap: 14px;
   margin-top: 8px;
+}
+
+.pr-action-composer {
+  margin-top: 32px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.pr-action-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 7px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--surface-inset);
+}
+
+.pr-action-tabs button {
+  height: 30px;
+  padding: 0 11px;
+  color: var(--muted);
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.pr-action-tabs button:hover,
+.pr-action-tabs button.active {
+  color: var(--text);
+  background: var(--surface);
+}
+
+.pr-action-composer > textarea {
+  width: 100%;
+  min-height: 112px;
+  padding: 14px 16px;
+  resize: vertical;
+  color: var(--text);
+  border: 0;
+  border-bottom: 1px solid var(--border-soft);
+  outline: 0;
+  background: transparent;
+  font: 13px/1.55 var(--font-sans);
+}
+
+.pr-action-composer > textarea:focus {
+  box-shadow: inset 0 0 0 2px var(--accent-border);
+}
+
+.pr-action-composer footer {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+}
+
+.pr-action-composer footer label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.pr-action-composer select {
+  height: 32px;
+  padding: 0 28px 0 9px;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  font-size: 11px;
+}
+
+.pr-action-composer footer > button {
+  height: 34px;
+  padding: 0 14px;
+  color: #fff;
+  border: 1px solid light-dark(#6875df, #7c87e7);
+  border-radius: 8px;
+  background: light-dark(#6875df, #6570d1);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.pr-action-composer footer > button:disabled { opacity: 0.55; }
+
+.pr-action-error {
+  margin: 0;
+  padding: 8px 14px 0;
+  color: var(--red);
+  font-size: 11px;
 }
 
 

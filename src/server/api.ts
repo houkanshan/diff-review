@@ -5,9 +5,12 @@ import path from 'node:path'
 
 import type {
   AddAnnotationInput,
+  AddPullRequestCommentInput,
   ApiErrorShape,
   CreateSessionInput,
   OpenPullRequestInput,
+  SquashMergePullRequestInput,
+  SubmitPullRequestReviewInput,
   UpdatePullRequestLabelInput,
   PullRequestListView,
   PullRequestWorkspace,
@@ -30,8 +33,11 @@ import {
 import {
   getGitHubToken,
   getPullRequestDetails,
+  addPullRequestComment,
   listPullRequests,
   removePullRequestLabel,
+  squashMergePullRequest,
+  submitPullRequestReview,
 } from './github.js'
 import { PiReviewRunner } from './pi.js'
 import { ReviewStore } from './store.js'
@@ -114,6 +120,9 @@ export class ApiHandler {
     const pullRequestLabelMatch = /^\/api\/pull-requests\/(\d+)\/labels\/([^/]+)$/.exec(
       url.pathname,
     )
+    const pullRequestCommentMatch = /^\/api\/pull-requests\/(\d+)\/comments$/.exec(url.pathname)
+    const pullRequestReviewMatch = /^\/api\/pull-requests\/(\d+)\/reviews$/.exec(url.pathname)
+    const pullRequestMergeMatch = /^\/api\/pull-requests\/(\d+)\/merge$/.exec(url.pathname)
 
     if (method === 'GET' && url.pathname === '/api/avatar') {
       await this.serveAvatar(response, requiredQuery(url, 'url'))
@@ -182,6 +191,33 @@ export class ApiHandler {
       const input = parseUpdatePullRequestLabelInput(await readJson(request))
       const root = await resolveRepository(input.repositoryPath)
       await removePullRequestLabel(root, number, label)
+      response.writeHead(204).end()
+      return
+    }
+
+    if (method === 'POST' && pullRequestCommentMatch != null) {
+      const number = Number(pullRequestCommentMatch[1])
+      const input = parseAddPullRequestCommentInput(await readJson(request))
+      const root = await resolveRepository(input.repositoryPath)
+      await addPullRequestComment(root, number, input.body)
+      response.writeHead(204).end()
+      return
+    }
+
+    if (method === 'POST' && pullRequestReviewMatch != null) {
+      const number = Number(pullRequestReviewMatch[1])
+      const input = parseSubmitPullRequestReviewInput(await readJson(request))
+      const root = await resolveRepository(input.repositoryPath)
+      await submitPullRequestReview(root, number, input.event, input.body, input.commitId)
+      response.writeHead(204).end()
+      return
+    }
+
+    if (method === 'POST' && pullRequestMergeMatch != null) {
+      const number = Number(pullRequestMergeMatch[1])
+      const input = parseSquashMergePullRequestInput(await readJson(request))
+      const root = await resolveRepository(input.repositoryPath)
+      await squashMergePullRequest(root, number, input.expectedHeadOid)
       response.writeHead(204).end()
       return
     }
@@ -657,6 +693,36 @@ function parseUpdatePullRequestLabelInput(value: unknown): UpdatePullRequestLabe
   return { repositoryPath: expectString(object.repositoryPath, 'repositoryPath') }
 }
 
+function parseAddPullRequestCommentInput(value: unknown): AddPullRequestCommentInput {
+  const object = expectObject(value)
+  return {
+    repositoryPath: expectString(object.repositoryPath, 'repositoryPath'),
+    body: expectTrimmedString(object.body, 'body'),
+  }
+}
+
+function parseSubmitPullRequestReviewInput(value: unknown): SubmitPullRequestReviewInput {
+  const object = expectObject(value)
+  const event = expectString(object.event, 'event')
+  if (event !== 'APPROVE' && event !== 'COMMENT' && event !== 'REQUEST_CHANGES') {
+    throw new AppError('INVALID_INPUT', 'event must be APPROVE, COMMENT, or REQUEST_CHANGES')
+  }
+  return {
+    repositoryPath: expectString(object.repositoryPath, 'repositoryPath'),
+    event,
+    body: expectTrimmedString(object.body, 'body'),
+    commitId: expectTrimmedString(object.commitId, 'commitId'),
+  }
+}
+
+function parseSquashMergePullRequestInput(value: unknown): SquashMergePullRequestInput {
+  const object = expectObject(value)
+  return {
+    repositoryPath: expectString(object.repositoryPath, 'repositoryPath'),
+    expectedHeadOid: expectTrimmedString(object.expectedHeadOid, 'expectedHeadOid'),
+  }
+}
+
 function parseStartPiReviewInput(value: unknown): StartPiReviewInput {
   const object = expectObject(value)
   if (typeof object.additionalInstructions !== 'string') {
@@ -816,6 +882,12 @@ function expectString(value: unknown, field: string): string {
     throw new AppError('INVALID_INPUT', `${field} must be a non-empty string`)
   }
   return value
+}
+
+function expectTrimmedString(value: unknown, field: string): string {
+  const result = expectString(value, field).trim()
+  if (!result) throw new AppError('INVALID_INPUT', `${field} must not be empty`)
+  return result
 }
 
 function requiredQuery(url: URL, name: string): string {
