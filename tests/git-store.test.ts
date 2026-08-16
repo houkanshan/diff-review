@@ -21,6 +21,7 @@ import {
   resolveTarget,
   stageReviewFile,
   validateAnnotationTarget,
+  validateReviewCommentTarget,
 } from '../src/server/git.js'
 import { PiReviewRunner } from '../src/server/pi.js'
 import { ReviewStore } from '../src/server/store.js'
@@ -202,6 +203,34 @@ JSON
     } finally {
       rmSync(stagingFixture.directory, { recursive: true, force: true })
     }
+  })
+})
+
+describe('GitHub review comment targets', () => {
+  const patch = `diff --git a/example.ts b/example.ts
+--- a/example.ts
++++ b/example.ts
+@@ -10,3 +10,3 @@
+ context
+-old
++new
+ context
+@@ -20,1 +20,1 @@
+-before
++after
+`
+
+  test('accepts ranges represented by one diff hunk', () => {
+    expect(() => validateReviewCommentTarget(patch, 'example.ts', 'new', 10, 12)).not.toThrow()
+  })
+
+  test('rejects expanded context and cross-hunk ranges', () => {
+    expect(() => validateReviewCommentTarget(patch, 'example.ts', 'new', 5, 5)).toThrow(
+      'not a commentable range',
+    )
+    expect(() => validateReviewCommentTarget(patch, 'example.ts', 'new', 12, 20)).toThrow(
+      'not a commentable range',
+    )
   })
 })
 
@@ -665,6 +694,7 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
     expect(annotation.importance).toBeNull()
     expect(annotation.endSide).toBeNull()
     expect(annotation.archivedAt).toBeNull()
+    expect(annotation.intent).toBe('annotation')
     expect(store.getSession(session.id).annotations).toEqual([annotation])
 
     const archived = store.setAnnotationArchived(session.id, annotation.id, true)
@@ -687,6 +717,26 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
     expect(
       store.updateAnnotationComment(session.id, crossSide.id, 'Updated review comment').comment,
     ).toBe('Updated review comment')
+    const reviewComment = store.addAnnotation(session.id, {
+      filePath: 'tracked.txt',
+      side: 'new',
+      startLine: 5,
+      endLine: 5,
+      comment: 'Publish this with the review',
+      source: 'user',
+      intent: 'review-comment',
+    })
+    expect(reviewComment.intent).toBe('review-comment')
+    store.markAnnotationsSubmitted(session.id, [reviewComment.id])
+    const submitted = store.getSession(session.id).annotations.find(
+      (item) => item.id === reviewComment.id,
+    )
+    expect(submitted?.submittedAt).not.toBeNull()
+    expect(submitted?.archivedAt).not.toBeNull()
+    expect(() => store.setAnnotationArchived(session.id, reviewComment.id, false)).toThrow()
+    expect(() =>
+      store.updateAnnotationComment(session.id, reviewComment.id, 'Cannot edit submitted'),
+    ).toThrow()
     expect(() =>
       store.updateAnnotationComment(session.id, annotation.id, 'Cannot edit an agent note'),
     ).toThrow('User annotation not found')
@@ -702,7 +752,7 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
     const individuallyArchived = store.setAnnotationArchived(session.id, annotation.id, true)
     await new Promise((resolve) => setTimeout(resolve, 5))
     const archiveAll = store.archiveAllAnnotations(session.id)
-    expect(archiveAll.annotations).toHaveLength(2)
+    expect(archiveAll.annotations).toHaveLength(3)
     expect(archiveAll.annotations.every((item) => item.archivedAt !== null)).toBe(true)
     expect(
       archiveAll.annotations.find((item) => item.id === annotation.id)?.updatedAt,
@@ -824,7 +874,13 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
     expect(store.getSession('drs_legacy').revisionBaseOid).toBeNull()
     expect(store.getSession('drs_legacy').revisionHeadOid).toBeNull()
     expect(store.getSession('drs_legacy').annotations).toMatchObject([
-      { id: 'ann_legacy', endSide: null, archivedAt: null },
+      {
+        id: 'ann_legacy',
+        endSide: null,
+        intent: 'annotation',
+        archivedAt: null,
+        submittedAt: null,
+      },
     ])
     expect(store.getSession('drs_legacy_pr').revisionBaseOid).toBe('b'.repeat(40))
     expect(store.getSession('drs_legacy_pr').revisionHeadOid).toBe(commit.oid)

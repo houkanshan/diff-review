@@ -1,4 +1,6 @@
 export type DiffSide = 'old' | 'new'
+export type AnnotationIntent = 'annotation' | 'review-comment'
+
 
 export type ReviewTarget =
   | { kind: 'worktree' }
@@ -26,7 +28,9 @@ export interface SessionAnnotation {
   comment: string | null
   importance: number | null
   source: 'user' | 'agent'
+  intent: AnnotationIntent
   archivedAt: string | null
+  submittedAt: string | null
   createdAt: string
   updatedAt: string
 }
@@ -250,7 +254,7 @@ export type PullRequestReviewEvent = 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES'
 export interface SubmitPullRequestReviewInput {
   repositoryPath: string
   event: PullRequestReviewEvent
-  commitId: string
+  sessionId: string
   body: string
 }
 
@@ -268,6 +272,7 @@ export interface AddAnnotationInput {
   comment?: string
   importance?: number
   source: 'user' | 'agent'
+  intent?: AnnotationIntent
 }
 
 export interface ApiErrorShape {

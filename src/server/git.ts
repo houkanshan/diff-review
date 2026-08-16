@@ -173,6 +173,85 @@ export async function validateAnnotationTarget(
   }
 }
 
+export function validateReviewCommentTarget(
+  patch: string,
+  filePath: string,
+  side: 'old' | 'new',
+  startLine: number,
+  endLine: number,
+): void {
+  const normalizedPath = validateReviewFilePath(patch, filePath)
+  const commentableLines = reviewCommentLines(patch, normalizedPath, side)
+  const hunk = commentableLines.get(startLine)
+  if (
+    hunk == null ||
+    commentableLines.get(endLine) !== hunk ||
+    Array.from({ length: endLine - startLine + 1 }, (_, index) => startLine + index)
+      .some((line) => commentableLines.get(line) !== hunk)
+  ) {
+    throw new AppError(
+      'REVIEW_COMMENT_LINE_NOT_FOUND',
+      `${filePath}:${startLine}${endLine === startLine ? '' : `-${endLine}`} is not a commentable range in the pull request diff`,
+    )
+  }
+}
+
+function reviewCommentLines(
+  patch: string,
+  filePath: string,
+  side: 'old' | 'new',
+): Map<number, number> {
+  const lines = new Map<number, number>()
+  let oldPath: string | null = null
+  let currentFile = false
+  let oldLine = 0
+  let newLine = 0
+  let hunk = 0
+  let inHunk = false
+  for (const line of patch.split('\n')) {
+    if (line.startsWith('diff --git ')) {
+      oldPath = null
+      currentFile = false
+      inHunk = false
+      continue
+    }
+    if (line.startsWith('--- ')) {
+      const rawPath = line.slice(4).split('\t')[0] ?? ''
+      const parsedPath = stripPatchPrefix(rawPath)
+      oldPath = parsedPath === '/dev/null' ? null : parsedPath
+      continue
+    }
+    if (line.startsWith('+++ ')) {
+      const rawPath = line.slice(4).split('\t')[0] ?? ''
+      const parsedPath = stripPatchPrefix(rawPath)
+      const newPath = parsedPath === '/dev/null' ? null : parsedPath
+      currentFile = oldPath === filePath || newPath === filePath
+      continue
+    }
+    const header = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line)
+    if (header != null) {
+      oldLine = Number(header[1])
+      newLine = Number(header[2])
+      hunk += 1
+      inHunk = currentFile
+      continue
+    }
+    if (!inHunk || line.startsWith('\\ No newline at end of file')) continue
+    if (line.startsWith(' ')) {
+      lines.set(side === 'old' ? oldLine : newLine, hunk)
+      oldLine += 1
+      newLine += 1
+    } else if (line.startsWith('-')) {
+      if (side === 'old') lines.set(oldLine, hunk)
+      oldLine += 1
+    } else if (line.startsWith('+')) {
+      if (side === 'new') lines.set(newLine, hunk)
+      newLine += 1
+    }
+  }
+  return lines
+}
+
 export function validateReviewFilePath(patch: string, filePath: string): string {
   const normalizedPath = filePath.replace(/^\.\//, '')
   if (!filePathsFromPatch(patch).has(normalizedPath)) {

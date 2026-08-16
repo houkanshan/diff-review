@@ -48,7 +48,9 @@ interface AnnotationRow {
   comment: string | null
   importance: number | null
   source: 'user' | 'agent'
+  intent: 'annotation' | 'review-comment'
   archived_at: string | null
+  submitted_at: string | null
   created_at: string
   updated_at: string
 }
@@ -113,7 +115,9 @@ export class ReviewStore {
         comment TEXT,
         importance REAL,
         source TEXT NOT NULL CHECK(source IN ('user', 'agent')),
+        intent TEXT NOT NULL DEFAULT 'annotation' CHECK(intent IN ('annotation', 'review-comment')),
         archived_at TEXT,
+        submitted_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -453,8 +457,8 @@ export class ReviewStore {
       .prepare(`
         INSERT INTO annotations (
           id, session_id, file_path, side, start_line, end_side, end_line,
-          comment, importance, source, archived_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          comment, importance, source, intent, archived_at, submitted_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         id,
@@ -467,6 +471,8 @@ export class ReviewStore {
         input.comment ?? null,
         input.importance ?? null,
         input.source,
+        input.source === 'user' ? input.intent ?? 'annotation' : 'annotation',
+        null,
         null,
         now,
         now,
@@ -484,13 +490,28 @@ export class ReviewStore {
       .prepare(`
         UPDATE annotations
         SET archived_at = ?, updated_at = ?
-        WHERE id = ? AND session_id = ?
+        WHERE id = ? AND session_id = ? AND (? = 1 OR submitted_at IS NULL)
       `)
-      .run(archived ? now : null, now, annotationId, sessionId)
+      .run(archived ? now : null, now, annotationId, sessionId, Number(archived))
     if (result.changes === 0) {
       throw new AppError('ANNOTATION_NOT_FOUND', `Annotation not found: ${annotationId}`, 404)
     }
     return this.getAnnotation(annotationId)
+  }
+
+  markAnnotationsSubmitted(sessionId: string, annotationIds: string[]): void {
+    this.getSession(sessionId)
+    if (annotationIds.length === 0) return
+    const now = new Date().toISOString()
+    const placeholders = annotationIds.map(() => '?').join(', ')
+    this.database
+      .prepare(`
+        UPDATE annotations
+        SET submitted_at = ?, archived_at = ?, updated_at = ?
+        WHERE session_id = ? AND id IN (${placeholders})
+          AND source = 'user' AND intent = 'review-comment' AND submitted_at IS NULL
+      `)
+      .run(now, now, now, sessionId, ...annotationIds)
   }
 
   updateAnnotationComment(
@@ -502,7 +523,7 @@ export class ReviewStore {
       .prepare(`
         UPDATE annotations
         SET comment = ?, updated_at = ?
-        WHERE id = ? AND session_id = ? AND source = 'user'
+        WHERE id = ? AND session_id = ? AND source = 'user' AND submitted_at IS NULL
       `)
       .run(comment, new Date().toISOString(), annotationId, sessionId)
     if (result.changes === 0) {
@@ -644,6 +665,14 @@ export class ReviewStore {
     if (!columns.some((column) => column.name === 'archived_at')) {
       this.database.exec('ALTER TABLE annotations ADD COLUMN archived_at TEXT')
     }
+    if (!columns.some((column) => column.name === 'intent')) {
+      this.database.exec(
+        "ALTER TABLE annotations ADD COLUMN intent TEXT NOT NULL DEFAULT 'annotation' CHECK(intent IN ('annotation', 'review-comment'))",
+      )
+    }
+    if (!columns.some((column) => column.name === 'submitted_at')) {
+      this.database.exec('ALTER TABLE annotations ADD COLUMN submitted_at TEXT')
+    }
   }
 
   private sessionFromRow(row: SessionRow): ReviewSession {
@@ -707,7 +736,9 @@ function annotationFromRow(row: AnnotationRow): SessionAnnotation {
     comment: row.comment,
     importance: row.importance,
     source: row.source,
+    intent: row.intent,
     archivedAt: row.archived_at,
+    submittedAt: row.submitted_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }

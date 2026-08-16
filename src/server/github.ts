@@ -15,6 +15,7 @@ import type {
   PullRequestListView,
   PullRequestState,
   PullRequestSummary,
+  SessionAnnotation,
 } from '../shared/types.js'
 import {
   extractIssueReferenceTargets,
@@ -293,12 +294,56 @@ export async function addPullRequestComment(
   )
 }
 
+export function pendingReviewComments(annotations: SessionAnnotation[]): SessionAnnotation[] {
+  return annotations.filter((annotation) =>
+    annotation.source === 'user' &&
+    annotation.intent === 'review-comment' &&
+    annotation.archivedAt == null &&
+    annotation.submittedAt == null &&
+    Boolean(annotation.comment?.trim()) &&
+    annotation.endSide == null,
+  )
+}
+
+export interface GitHubReviewComment {
+  path: string
+  body: string
+  line: number
+  side: 'LEFT' | 'RIGHT'
+  start_line?: number
+  start_side?: 'LEFT' | 'RIGHT'
+}
+
+export function toGitHubReviewComment(annotation: SessionAnnotation): GitHubReviewComment {
+  if (
+    annotation.source !== 'user' ||
+    annotation.intent !== 'review-comment' ||
+    annotation.archivedAt != null ||
+    annotation.submittedAt != null ||
+    !annotation.comment?.trim() ||
+    annotation.endSide != null
+  ) {
+    throw new AppError('INVALID_REVIEW_COMMENT', 'Annotation is not a pending review comment')
+  }
+  const side = annotation.side === 'old' ? 'LEFT' : 'RIGHT'
+  return {
+    path: annotation.filePath,
+    body: annotation.comment.trim(),
+    line: annotation.endLine,
+    side,
+    ...(annotation.startLine === annotation.endLine
+      ? {}
+      : { start_line: annotation.startLine, start_side: side }),
+  }
+}
+
 export async function submitPullRequestReview(
   root: string,
   number: number,
   event: PullRequestReviewEvent,
   body: string,
   commitId: string,
+  comments: GitHubReviewComment[],
 ): Promise<void> {
   validatePullRequestNumber(number)
   const comment = body.trim()
@@ -311,14 +356,11 @@ export async function submitPullRequestReview(
       '--method',
       'POST',
       `repos/{owner}/{repo}/pulls/${number}/reviews`,
-      '--raw-field',
-      `event=${event}`,
-      '--raw-field',
-      `body=${comment}`,
-      '--raw-field',
-      `commit_id=${revision}`,
+      '--input',
+      '-',
     ],
     root,
+    JSON.stringify({ event, body: comment, commit_id: revision, comments }),
   )
 }
 
@@ -704,13 +746,13 @@ function invalidGitHubResponse(message: string): AppError {
   return new AppError('GITHUB_RESPONSE_INVALID', message)
 }
 
-async function runGitHub(args: string[], cwd: string): Promise<string> {
+async function runGitHub(args: string[], cwd: string, input?: string): Promise<string> {
   const result = await new Promise<{ stdout: string; stderr: string; exitCode: number }>(
     (resolve, reject) => {
       const child = spawn('gh', args, {
         cwd,
         env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe'],
       })
       const stdout: Buffer[] = []
       const stderr: Buffer[] = []
@@ -727,6 +769,8 @@ async function runGitHub(args: string[], cwd: string): Promise<string> {
       child.stdout.on('data', collect(stdout))
       child.stderr.on('data', collect(stderr))
       child.on('error', reject)
+      child.stdin.on('error', () => undefined)
+      child.stdin.end(input)
       child.on('close', (exitCode) => {
         resolve({
           stdout: Buffer.concat(stdout).toString('utf8'),

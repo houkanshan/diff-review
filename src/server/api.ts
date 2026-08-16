@@ -28,16 +28,20 @@ import {
   resolveTarget,
   stageReviewFile,
   validateAnnotationTarget,
+  validateReviewCommentTarget,
   validateReviewFilePath,
 } from './git.js'
 import {
   getGitHubToken,
   getPullRequestDetails,
+  getPullRequestRevisionDetails,
   addPullRequestComment,
   listPullRequests,
   removePullRequestLabel,
   squashMergePullRequest,
   submitPullRequestReview,
+  pendingReviewComments,
+  toGitHubReviewComment,
 } from './github.js'
 import { PiReviewRunner } from './pi.js'
 import { ReviewStore } from './store.js'
@@ -208,7 +212,40 @@ export class ApiHandler {
       const number = Number(pullRequestReviewMatch[1])
       const input = parseSubmitPullRequestReviewInput(await readJson(request))
       const root = await resolveRepository(input.repositoryPath)
-      await submitPullRequestReview(root, number, input.event, input.body, input.commitId)
+      const session = this.store.getSession(input.sessionId)
+      if (
+        session.repositoryRoot !== root ||
+        session.target.kind !== 'pr' ||
+        session.target.number !== number ||
+        session.revisionHeadOid == null
+      ) {
+        throw new AppError(
+          'INVALID_PULL_REQUEST_REVISION',
+          'The review session does not belong to this pull request',
+        )
+      }
+      const currentRevision = await getPullRequestRevisionDetails(root, number)
+      if (currentRevision.headRefOid !== session.revisionHeadOid) {
+        throw new AppError(
+          'PULL_REQUEST_REVISION_CHANGED',
+          'The pull request changed. Refresh before submitting the review.',
+          409,
+        )
+      }
+      const pendingComments = pendingReviewComments(session.annotations)
+      await submitPullRequestReview(
+        root,
+        number,
+        input.event,
+        input.body,
+        session.revisionHeadOid,
+        pendingComments.map(toGitHubReviewComment),
+      )
+      this.store.markAnnotationsSubmitted(
+        session.id,
+        pendingComments.map((annotation) => annotation.id),
+      )
+      this.emitSessionUpdate(session.id)
       response.writeHead(204).end()
       return
     }
@@ -397,6 +434,15 @@ export class ApiHandler {
       const id = annotationsMatch[1] ?? ''
       const input = parseAnnotationInput(await readJson(request))
       const session = this.store.getSession(id)
+      if (
+        input.intent === 'review-comment' &&
+        (input.source !== 'user' || session.target.kind !== 'pr' || input.endSide != null)
+      ) {
+        throw new AppError(
+          'INVALID_REVIEW_COMMENT',
+          'Review comments must be user comments on one side of a pull request diff',
+        )
+      }
       const resolved = this.store.getResolvedReview(id)
       await validateAnnotationTarget(
         session.repositoryRoot,
@@ -413,6 +459,15 @@ export class ApiHandler {
           input.filePath,
           input.endSide,
           input.endLine,
+          input.endLine,
+        )
+      }
+      if (input.intent === 'review-comment') {
+        validateReviewCommentTarget(
+          resolved.patch,
+          input.filePath,
+          input.side,
+          input.startLine,
           input.endLine,
         )
       }
@@ -710,8 +765,8 @@ function parseSubmitPullRequestReviewInput(value: unknown): SubmitPullRequestRev
   return {
     repositoryPath: expectString(object.repositoryPath, 'repositoryPath'),
     event,
+    sessionId: expectTrimmedString(object.sessionId, 'sessionId'),
     body: expectTrimmedString(object.body, 'body'),
-    commitId: expectTrimmedString(object.commitId, 'commitId'),
   }
 }
 
@@ -814,6 +869,10 @@ function parseAnnotationInput(value: unknown): AddAnnotationInput {
     throw new AppError('INVALID_INPUT', 'At least one of comment or importance is required')
   }
   const source = object.source === 'agent' ? 'agent' : 'user'
+  const intent = object.intent == null ? 'annotation' : expectString(object.intent, 'intent')
+  if (intent !== 'annotation' && intent !== 'review-comment') {
+    throw new AppError('INVALID_INPUT', 'intent must be annotation or review-comment')
+  }
   return {
     filePath: expectString(object.filePath, 'filePath'),
     side,
@@ -823,6 +882,7 @@ function parseAnnotationInput(value: unknown): AddAnnotationInput {
     comment,
     importance,
     source,
+    intent,
   }
 }
 
@@ -869,6 +929,7 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
     throw new AppError('INVALID_JSON', 'Request body must be valid JSON')
   }
 }
+
 
 function expectObject(value: unknown): Record<string, unknown> {
   if (value == null || typeof value !== 'object' || Array.isArray(value)) {

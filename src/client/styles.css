@@ -1036,6 +1036,152 @@ svg {
 
 .remove-additional-label-button:disabled { opacity: 0.6; }
 
+.submit-review-button {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px 0 13px;
+  color: var(--text-soft);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.submit-review-button:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent-border);
+}
+
+.submit-review-button:disabled { cursor: not-allowed; opacity: 0.55; }
+
+.review-comment-count {
+  min-width: 19px;
+  height: 19px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0 5px;
+  color: var(--accent);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  font-size: 10px;
+}
+
+.submit-review-popover {
+  width: min(440px, calc(100vw - 24px));
+  max-height: min(680px, calc(100vh - 32px));
+  padding: 16px;
+  overflow: auto;
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--surface-raised);
+  box-shadow: 0 16px 45px var(--shadow);
+}
+
+.submit-review-popover > h2 {
+  margin: 0 0 14px;
+  font-size: 14px;
+}
+
+.review-type-field,
+.review-summary-field {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.submit-review-popover select,
+.submit-review-popover textarea {
+  width: 100%;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  outline: 0;
+  background: var(--input);
+  font: 12px/1.5 var(--font-sans);
+}
+
+.submit-review-popover select { height: 34px; padding: 0 9px; }
+
+.submit-review-popover textarea { padding: 9px 10px; resize: vertical; }
+
+.submit-review-popover select:focus,
+.submit-review-popover textarea:focus { border-color: var(--accent); }
+
+.review-comments-preview {
+  margin-top: 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+}
+
+.review-comments-preview > header {
+  display: flex;
+  justify-content: space-between;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 11px;
+}
+
+.review-comments-preview > header span { color: var(--muted); }
+
+.review-comments-preview > p { margin: 0; padding: 14px 10px; color: var(--faint); font-size: 11px; }
+
+.review-comments-preview ul {
+  max-height: 240px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.review-comments-preview li { padding: 9px 10px; }
+
+.review-comments-preview li + li { border-top: 1px solid var(--border-soft); }
+
+.review-comments-preview code { color: var(--accent); font-size: 10px; }
+
+.review-comments-preview li p {
+  margin: 5px 0 0;
+  overflow-wrap: anywhere;
+  color: var(--text-soft);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.submit-review-error { margin: 10px 0 0; color: var(--red); font-size: 11px; }
+
+.submit-review-popover > footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.submit-review-popover > footer button {
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  font-size: 11px;
+}
+
+.submit-review-popover > footer button:last-child {
+  color: var(--on-accent);
+  border-color: var(--accent);
+  background: var(--accent);
+  font-weight: 700;
+}
+
+.submit-review-popover > footer button:disabled { opacity: 0.55; }
+
 .squash-merge-button {
   height: 34px;
   display: inline-flex;
@@ -1851,29 +1997,13 @@ body.resizing-panels * {
   background: var(--surface);
 }
 
-.pr-action-tabs {
-  display: flex;
-  gap: 4px;
-  padding: 7px;
+.pr-comment-heading {
+  padding: 10px 14px;
+  color: var(--text);
   border-bottom: 1px solid var(--border-soft);
   background: var(--surface-inset);
-}
-
-.pr-action-tabs button {
-  height: 30px;
-  padding: 0 11px;
-  color: var(--muted);
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
   font-size: 11px;
-  font-weight: 650;
-}
-
-.pr-action-tabs button:hover,
-.pr-action-tabs button.active {
-  color: var(--text);
-  background: var(--surface);
+  font-weight: 700;
 }
 
 .pr-action-composer > textarea {
@@ -1901,23 +2031,6 @@ body.resizing-panels * {
   padding: 10px 12px;
 }
 
-.pr-action-composer footer label {
-  display: grid;
-  gap: 4px;
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 650;
-}
-
-.pr-action-composer select {
-  height: 32px;
-  padding: 0 28px 0 9px;
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--surface);
-  font-size: 11px;
-}
 
 .pr-action-composer footer > button {
   height: 34px;
@@ -2461,7 +2574,47 @@ body.resizing-panels * {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
   margin-top: 5px;
+}
+
+.composer-actions > div {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.review-comment-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  color: var(--muted);
+  border: 0;
+  background: transparent;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.review-comment-toggle:disabled { opacity: 0.5; }
+
+.review-comment-checkbox {
+  width: 14px;
+  height: 14px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--input);
+}
+
+.review-comment-checkbox svg { width: 10px; height: 10px; }
+
+.review-comment-toggle[data-checked] .review-comment-checkbox {
+  color: var(--on-accent);
+  border-color: var(--accent);
+  background: var(--accent);
 }
 
 .composer-actions small {
@@ -2469,7 +2622,7 @@ body.resizing-panels * {
   font-size: 8px;
 }
 
-.composer-actions button,
+.composer-actions > div button,
 .start-button {
   color: var(--on-accent);
   border: 1px solid var(--accent);
@@ -2478,10 +2631,11 @@ body.resizing-panels * {
   font-weight: 720;
 }
 
-.composer-actions button {
+.composer-actions > div button {
   height: 24px;
   padding: 0 8px;
   font-size: 9px;
+  white-space: nowrap;
 }
 
 .notes-panel {
@@ -2767,6 +2921,12 @@ body.resizing-panels * {
 .source.user {
   color: var(--blue);
   background: var(--blue-soft);
+}
+
+.review-comment-source {
+  color: var(--accent);
+  font-size: 8px;
+  font-weight: 700;
 }
 
 .importance-inline {

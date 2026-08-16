@@ -70,6 +70,7 @@ import {
 
 import { remarkIssueReferences } from '../shared/markdown'
 import type {
+  AnnotationIntent,
   DiffSide,
   GitHubIssueReference,
   GitHubUser,
@@ -174,6 +175,17 @@ function pullRequestRevisionHead(session: ReviewSession): string {
     throw new Error('The selected pull request revision has no head commit')
   }
   return session.revisionHeadOid
+}
+
+function pendingReviewComments(session: ReviewSession): SessionAnnotation[] {
+  return session.annotations.filter((annotation) =>
+    annotation.source === 'user' &&
+    annotation.intent === 'review-comment' &&
+    annotation.archivedAt == null &&
+    annotation.submittedAt == null &&
+    Boolean(annotation.comment?.trim()) &&
+    annotation.endSide == null,
+  )
 }
 
 export default function App() {
@@ -588,7 +600,7 @@ function PullRequestsPage({
             repositoryPath: route.repositoryPath,
             event,
             body,
-            commitId: pullRequestRevisionHead(session),
+            sessionId: session.id,
           })
           refreshPullRequestData(details.number)
         },
@@ -641,6 +653,7 @@ function ReviewWorkspace({
   const [composerSelection, setComposerSelection] = useState<CodeViewLineSelection | null>(null)
   const [selectionRevision, setSelectionRevision] = useState(0)
   const [comment, setComment] = useState('')
+  const [commentIntent, setCommentIntent] = useState<AnnotationIntent>('annotation')
   const [commentBusy, setCommentBusy] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
   const [leftPanelWidth, setLeftPanelWidth] = useState(() =>
@@ -668,8 +681,9 @@ function ReviewWorkspace({
     setSelection(null)
     setComposerSelection(null)
     setComment('')
+    setCommentIntent('annotation')
     setCommentError(null)
-  }, [session.patch])
+  }, [session.id, session.patch])
 
   useEffect(() => {
     setCollapsedFiles(new Set(session.viewedFiles))
@@ -739,6 +753,7 @@ function ReviewWorkspace({
         const next = { id: context.item.id, range }
         setSelection(next)
         setComposerSelection(next)
+        setCommentIntent('annotation')
         setSelectionRevision((revision) => revision + 1)
       },
       async loadDiffFiles(fileDiff) {
@@ -787,6 +802,7 @@ function ReviewWorkspace({
     if (composerSelection != null && !areCodeViewSelectionsEqual(composerSelection, next)) {
       setComposerSelection(null)
       setComment('')
+      setCommentIntent('annotation')
       setCommentError(null)
       setSelectionRevision((revision) => revision + 1)
     }
@@ -796,6 +812,13 @@ function ReviewWorkspace({
   const submitComment = useCallback(async () => {
     if (selection == null || !comment.trim()) return
     const range = annotationRangeFromSelection(selection)
+    const effectiveIntent: AnnotationIntent =
+      commentIntent === 'review-comment' &&
+      pullRequest != null &&
+      session.id === pullRequest.currentSessionId &&
+      range.endSide == null
+        ? 'review-comment'
+        : 'annotation'
     setCommentBusy(true)
     setCommentError(null)
     try {
@@ -804,8 +827,10 @@ function ReviewWorkspace({
         ...range,
         comment: comment.trim(),
         source: 'user',
+        intent: effectiveIntent,
       })
       setComment('')
+      setCommentIntent('annotation')
       setSelection(null)
       setComposerSelection(null)
       setSelectionRevision((revision) => revision + 1)
@@ -815,7 +840,14 @@ function ReviewWorkspace({
     } finally {
       setCommentBusy(false)
     }
-  }, [comment, onReload, selection, session.id])
+  }, [
+    comment,
+    commentIntent,
+    onReload,
+    pullRequest,
+    selection,
+    session.id,
+  ])
 
   const setArchived = useCallback(async (annotationId: string, archived: boolean) => {
     await setAnnotationArchived(session.id, annotationId, archived)
@@ -1056,6 +1088,8 @@ function ReviewWorkspace({
               onViewChange={switchPullRequestView}
               onRemoveAdditionalReviewLabel={pullRequest.onRemoveAdditionalReviewLabel}
               currentRevision={session.id === pullRequest.currentSessionId}
+              reviewComments={pendingReviewComments(session)}
+              onSubmitReview={pullRequest.onSubmitReview}
               onSquashMerge={pullRequest.onSquashMerge}
             />
             <section
@@ -1073,7 +1107,6 @@ function ReviewWorkspace({
                 resolvedTheme={resolvedTheme}
                 onNavigate={navigateToPullRequestActivity}
                 onAddComment={pullRequest.onAddComment}
-                onSubmitReview={pullRequest.onSubmitReview}
               />
             </section>
           </>
@@ -1158,9 +1191,17 @@ function ReviewWorkspace({
                       comment={comment}
                       error={commentError}
                       busy={commentBusy}
+                      intent={commentIntent}
+                      reviewCommentAvailable={
+                        pullRequest != null &&
+                        session.id === pullRequest.currentSessionId &&
+                        annotationRangeFromSelection(metadata.selection).endSide == null
+                      }
+                      onIntentChange={setCommentIntent}
                       onCommentChange={setComment}
                       onCancel={() => {
                         setComment('')
+                        setCommentIntent('annotation')
                         setCommentError(null)
                         setSelection(null)
                         setComposerSelection(null)
@@ -1590,15 +1631,19 @@ function PullRequestViewHeader({
   view,
   details,
   currentRevision,
+  reviewComments,
   onViewChange,
   onRemoveAdditionalReviewLabel,
+  onSubmitReview,
   onSquashMerge,
 }: {
   view: PullRequestViewMode
   details: PullRequestDetails
   currentRevision: boolean
+  reviewComments: SessionAnnotation[]
   onViewChange(view: PullRequestViewMode): void
   onRemoveAdditionalReviewLabel(): Promise<void>
+  onSubmitReview(event: PullRequestReviewEvent, body: string): Promise<void>
   onSquashMerge(): Promise<void>
 }) {
   const [labelBusy, setLabelBusy] = useState(false)
@@ -1671,6 +1716,13 @@ function PullRequestViewHeader({
           </button>
         )}
         {details.state === 'OPEN' && (
+          <SubmitReviewPopover
+            disabled={!currentRevision}
+            comments={reviewComments}
+            onSubmit={onSubmitReview}
+          />
+        )}
+        {details.state === 'OPEN' && (
           <button
             className="squash-merge-button"
             disabled={!currentRevision || mergeBusy || details.isDraft || details.mergeable === 'CONFLICTING'}
@@ -1692,20 +1744,125 @@ function PullRequestViewHeader({
   )
 }
 
+function SubmitReviewPopover({
+  disabled,
+  comments,
+  onSubmit,
+}: {
+  disabled: boolean
+  comments: SessionAnnotation[]
+  onSubmit(event: PullRequestReviewEvent, body: string): Promise<void>
+}) {
+  const [open, setOpen] = useState(false)
+  const [event, setEvent] = useState<PullRequestReviewEvent>('COMMENT')
+  const [body, setBody] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const submit = async () => {
+    if (!body.trim()) return
+    setBusy(true)
+    setError(null)
+    try {
+      await onSubmit(event, body.trim())
+      setBody('')
+      setOpen(false)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger
+        className="submit-review-button"
+        disabled={disabled}
+        title={disabled ? 'Switch to the current revision before submitting a review' : undefined}
+      >
+        Submit review
+        <span className="review-comment-count" aria-label={`${comments.length} review comments`}>
+          {comments.length}
+        </span>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Positioner className="popup-positioner" sideOffset={8} align="end">
+          <Popover.Popup className="submit-review-popover">
+            <Popover.Title>Submit review</Popover.Title>
+            <label className="review-type-field">
+              Review type
+              <select
+                value={event}
+                disabled={busy}
+                onChange={(input) => {
+                  const next = input.target.value
+                  if (next === 'APPROVE' || next === 'COMMENT' || next === 'REQUEST_CHANGES') {
+                    setEvent(next)
+                  }
+                }}
+              >
+                <option value="COMMENT">Comment</option>
+                <option value="APPROVE">Approve</option>
+                <option value="REQUEST_CHANGES">Request changes</option>
+              </select>
+            </label>
+            <label className="review-summary-field">
+              Review summary
+              <textarea
+                rows={4}
+                value={body}
+                disabled={busy}
+                placeholder="Add a review summary…"
+                onChange={(input) => setBody(input.target.value)}
+              />
+            </label>
+            <section className="review-comments-preview" aria-label="Review comments to submit">
+              <header>
+                <strong>Review comments</strong>
+                <span>{comments.length}</span>
+              </header>
+              {comments.length === 0 ? (
+                <p>No pending review comments.</p>
+              ) : (
+                <ul>
+                  {comments.map((comment) => (
+                    <li key={comment.id}>
+                      <code>{comment.filePath}:{lineLabel(comment)}</code>
+                      <p>{comment.comment}</p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+            {error != null && <p className="submit-review-error" role="alert">{error}</p>}
+            <footer>
+              <button type="button" disabled={busy} onClick={() => setOpen(false)}>Cancel</button>
+              <button
+                type="button"
+                disabled={busy || !body.trim()}
+                onClick={() => void submit()}
+              >
+                {busy ? 'Submitting…' : 'Submit review'}
+              </button>
+            </footer>
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
+  )
+}
+
 function PullRequestConversation({
   details,
   oldRevision,
   resolvedTheme,
   onNavigate,
   onAddComment,
-  onSubmitReview,
 }: {
   details: PullRequestDetails
   oldRevision: boolean
   resolvedTheme: ResolvedTheme
   onNavigate(activity: PullRequestActivity): void
   onAddComment(body: string): Promise<void>
-  onSubmitReview(event: PullRequestReviewEvent, body: string): Promise<void>
 }) {
   return (
     <section className="pr-conversation">
@@ -1758,10 +1915,9 @@ function PullRequestConversation({
             </div>
           </section>
           {details.state === 'OPEN' && !oldRevision && (
-            <PullRequestActionComposer
+            <PullRequestCommentComposer
               key={details.number}
               onAddComment={onAddComment}
-              onSubmitReview={onSubmitReview}
             />
           )}
         </div>
@@ -1774,15 +1930,11 @@ function PullRequestConversation({
   )
 }
 
-function PullRequestActionComposer({
+function PullRequestCommentComposer({
   onAddComment,
-  onSubmitReview,
 }: {
   onAddComment(body: string): Promise<void>
-  onSubmitReview(event: PullRequestReviewEvent, body: string): Promise<void>
 }) {
-  const [mode, setMode] = useState<'comment' | 'review'>('comment')
-  const [event, setEvent] = useState<PullRequestReviewEvent>('COMMENT')
   const [body, setBody] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -1792,8 +1944,7 @@ function PullRequestActionComposer({
     setBusy(true)
     setError(null)
     try {
-      if (mode === 'comment') await onAddComment(comment)
-      else await onSubmitReview(event, comment)
+      await onAddComment(comment)
       setBody('')
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught))
@@ -1802,61 +1953,24 @@ function PullRequestActionComposer({
     }
   }
   return (
-    <section className="pr-action-composer" aria-label="Pull request actions">
-      <div className="pr-action-tabs" role="tablist" aria-label="Action type">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={mode === 'comment'}
-          className={mode === 'comment' ? 'active' : ''}
-          onClick={() => { setMode('comment'); setError(null) }}
-        >
-          Add comment
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={mode === 'review'}
-          className={mode === 'review' ? 'active' : ''}
-          onClick={() => { setMode('review'); setError(null) }}
-        >
-          Submit review
-        </button>
-      </div>
+    <section className="pr-action-composer" aria-label="Add comment">
+      <header className="pr-comment-heading">Add comment</header>
       <textarea
         value={body}
         onChange={(input) => setBody(input.target.value)}
-        placeholder={mode === 'comment' ? 'Add to the conversation…' : 'Add a review comment…'}
+        placeholder="Add to the conversation…"
         rows={5}
         disabled={busy}
       />
       {error != null && <p className="pr-action-error" role="alert">{error}</p>}
       <footer>
-        {mode === 'review' ? (
-          <label>
-            Review type
-            <select
-              value={event}
-              disabled={busy}
-              onChange={(input) => {
-                const next = input.target.value
-                if (next === 'APPROVE' || next === 'COMMENT' || next === 'REQUEST_CHANGES') {
-                  setEvent(next)
-                }
-              }}
-            >
-              <option value="APPROVE">Approve</option>
-              <option value="COMMENT">Comment</option>
-              <option value="REQUEST_CHANGES">Request changes</option>
-            </select>
-          </label>
-        ) : <span />}
+        <span />
         <button
           type="button"
           disabled={busy || !body.trim()}
           onClick={() => void submit()}
         >
-          {busy ? 'Submitting…' : mode === 'comment' ? 'Add comment' : 'Submit review'}
+          {busy ? 'Submitting…' : 'Add comment'}
         </button>
       </footer>
     </section>
@@ -3240,6 +3354,9 @@ function Inspector({
                   <footer>
                     <div className="note-source">
                       <span className={`source ${annotation.source}`}>{annotation.source}</span>
+                      {annotation.intent === 'review-comment' && annotation.submittedAt == null && annotation.archivedAt == null && (
+                        <span className="review-comment-source">pending review</span>
+                      )}
                       {annotation.importance != null && (
                         <span className="importance-inline">
                           importance {formatImportance(annotation.importance)}
@@ -3247,7 +3364,7 @@ function Inspector({
                       )}
                     </div>
                     <div className="note-actions">
-                      {annotation.source === 'user' && annotation.comment != null && !editing && (
+                      {annotation.source === 'user' && annotation.submittedAt == null && annotation.comment != null && !editing && (
                         <AnnotationIconButton
                           label="Edit comment"
                           onClick={() => {
@@ -3258,8 +3375,12 @@ function Inspector({
                         </AnnotationIconButton>
                       )}
                       <AnnotationIconButton
-                        label={view === 'active' ? 'Archive' : 'Restore'}
-                        disabled={busyId === annotation.id}
+                        label={annotation.submittedAt != null
+                          ? 'Submitted review comment'
+                          : view === 'active' ? 'Archive' : 'Restore'}
+                        disabled={busyId === annotation.id || (
+                          view === 'archived' && annotation.submittedAt != null
+                        )}
                         onClick={async () => {
                           setBusyId(annotation.id)
                           try {
@@ -3428,21 +3549,27 @@ function InlineComposer({
   comment,
   error,
   busy,
+  intent,
+  reviewCommentAvailable,
   onCommentChange,
+  onIntentChange,
   onCancel,
   onSubmit,
 }: {
   comment: string
   error: string | null
   busy: boolean
+  intent: AnnotationIntent
+  reviewCommentAvailable: boolean
   onCommentChange(comment: string): void
+  onIntentChange(intent: AnnotationIntent): void
   onCancel(): void
   onSubmit(): Promise<void>
 }) {
   return (
     <section className="inline-composer">
       <div className="composer-heading">
-        <span><CommentIcon /> Add comment</span>
+        <span><CommentIcon /> {intent === 'review-comment' ? 'Add review comment' : 'Add annotation'}</span>
         <button onClick={onCancel} aria-label="Cancel selection">
           <CloseIcon />
         </button>
@@ -3458,10 +3585,28 @@ function InlineComposer({
       />
       {error != null && <div className="composer-error">{error}</div>}
       <div className="composer-actions">
-        <small>⌘ Enter</small>
-        <button disabled={!comment.trim() || busy} onClick={() => void onSubmit()}>
-          Add comment
-        </button>
+        <Checkbox.Root
+          className="review-comment-toggle"
+          checked={intent === 'review-comment'}
+          disabled={!reviewCommentAvailable || busy}
+          title={reviewCommentAvailable
+            ? 'Include this comment when submitting the review'
+            : 'Review comments require the current PR revision and a same-side selection'}
+          onCheckedChange={(checked) => onIntentChange(
+            checked === true ? 'review-comment' : 'annotation',
+          )}
+        >
+          <span className="review-comment-checkbox">
+            <Checkbox.Indicator><CheckIcon /></Checkbox.Indicator>
+          </span>
+          <span>Review comment</span>
+        </Checkbox.Root>
+        <div>
+          <small>⌘ Enter</small>
+          <button disabled={!comment.trim() || busy} onClick={() => void onSubmit()}>
+            {intent === 'review-comment' ? 'Add review comment' : 'Add annotation'}
+          </button>
+        </div>
       </div>
     </section>
   )
@@ -3482,7 +3627,13 @@ function InlineAnnotation({
     <div className={`inline-annotation ${annotation.source}`}>
       <div className="inline-source">
         <div>
-          <span>{annotation.source === 'agent' ? 'Agent note' : 'Review comment'}</span>
+          <span>{annotation.source === 'agent'
+            ? 'Agent note'
+            : annotation.submittedAt != null
+              ? 'Submitted review comment'
+              : annotation.intent === 'review-comment'
+                ? 'Pending review comment'
+                : 'Annotation'}</span>
           <code>{lineLabel(annotation)}</code>
         </div>
         <div>

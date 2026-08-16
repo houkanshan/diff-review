@@ -54,7 +54,7 @@ Importance controls only the changed-line background:
 - omitted: normal diff intensity, equivalent to `0.5`
 - `1`: strongest readable background
 
-Diff annotations and local-review comments stay in `~/.diff-review/reviews.db` by default; set `DIFF_REVIEW_DATA_DIR` to use another directory. Pull request overview actions explicitly publish comments and reviews to GitHub.
+Diff comments default to local annotations stored in `~/.diff-review/reviews.db`; set `DIFF_REVIEW_DATA_DIR` to use another directory. On a pull request, select **Review comment** in the inline composer to queue that user comment for GitHub. **Submit review** publishes the queued user comments with the review; agent annotations always stay local.
 
 ## Explain PR sessions
 

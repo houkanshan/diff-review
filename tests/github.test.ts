@@ -17,10 +17,12 @@ import {
   parsePullRequestChecks,
   parsePullRequestMergeable,
   parsePullRequestReviewers,
+  pendingReviewComments,
   parsePullRequestTimelineEvents,
   parseReviewComment,
   squashMergePullRequest,
   submitPullRequestReview,
+  toGitHubReviewComment,
 } from '../src/server/github.js'
 
 describe('GitHub pull request actions', () => {
@@ -28,18 +30,22 @@ describe('GitHub pull request actions', () => {
     const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-github-actions-'))
     const bin = path.join(directory, 'bin')
     const calls = path.join(directory, 'calls.txt')
+    const input = path.join(directory, 'input.json')
     mkdirSync(bin)
     const gh = path.join(bin, 'gh')
     writeFileSync(gh, `#!/bin/sh
 printf '%s\\n' '---' >> "$GH_TEST_OUTPUT"
 printf '<%s>\\n' "$@" >> "$GH_TEST_OUTPUT"
+cat >> "$GH_TEST_INPUT"
 printf '%s\\n' '{"merged":true,"message":"Pull Request successfully merged"}'
 `)
     chmodSync(gh, 0o755)
     const originalPath = process.env.PATH
     const originalOutput = process.env.GH_TEST_OUTPUT
+    const originalInput = process.env.GH_TEST_INPUT
     process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`
     process.env.GH_TEST_OUTPUT = calls
+    process.env.GH_TEST_INPUT = input
     try {
       await addPullRequestComment(directory, 42, 'A conversation comment')
       await submitPullRequestReview(
@@ -48,15 +54,31 @@ printf '%s\\n' '{"merged":true,"message":"Pull Request successfully merged"}'
         'REQUEST_CHANGES',
         'Please revise this',
         'def456',
+        [{
+          path: 'src/example.ts',
+          body: 'Use the shared helper.',
+          line: 18,
+          side: 'RIGHT',
+        }],
       )
       await squashMergePullRequest(directory, 42, 'abc123')
       const output = readFileSync(calls, 'utf8')
       expect(output).toContain('<repos/{owner}/{repo}/issues/42/comments>')
       expect(output).toContain('<body=A conversation comment>')
       expect(output).toContain('<repos/{owner}/{repo}/pulls/42/reviews>')
-      expect(output).toContain('<event=REQUEST_CHANGES>')
-      expect(output).toContain('<body=Please revise this>')
-      expect(output).toContain('<commit_id=def456>')
+      expect(output).toContain('<--input>')
+      const review = JSON.parse(readFileSync(input, 'utf8'))
+      expect(review).toEqual({
+        event: 'REQUEST_CHANGES',
+        body: 'Please revise this',
+        commit_id: 'def456',
+        comments: [{
+          path: 'src/example.ts',
+          body: 'Use the shared helper.',
+          line: 18,
+          side: 'RIGHT',
+        }],
+      })
       expect(output).toContain('<repos/{owner}/{repo}/pulls/42/merge>')
       expect(output).toContain('<merge_method=squash>')
       expect(output).toContain('<sha=abc123>')
@@ -64,8 +86,62 @@ printf '%s\\n' '{"merged":true,"message":"Pull Request successfully merged"}'
       process.env.PATH = originalPath
       if (originalOutput == null) delete process.env.GH_TEST_OUTPUT
       else process.env.GH_TEST_OUTPUT = originalOutput
+      if (originalInput == null) delete process.env.GH_TEST_INPUT
+      else process.env.GH_TEST_INPUT = originalInput
       rmSync(directory, { recursive: true, force: true })
     }
+  })
+
+  test('maps a user annotation to a multi-line GitHub review comment', () => {
+    expect(toGitHubReviewComment({
+      id: 'ann_1',
+      sessionId: 'session_1',
+      filePath: 'src/example.ts',
+      side: 'new',
+      startLine: 12,
+      endSide: null,
+      endLine: 14,
+      comment: 'Keep this range together.',
+      importance: null,
+      source: 'user',
+      intent: 'review-comment',
+      archivedAt: null,
+      submittedAt: null,
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    })).toEqual({
+      path: 'src/example.ts',
+      body: 'Keep this range together.',
+      line: 14,
+      side: 'RIGHT',
+      start_line: 12,
+      start_side: 'RIGHT',
+    })
+  })
+
+  test('excludes agent annotations from pending review comments', () => {
+    const userComment = {
+      id: 'ann_user',
+      sessionId: 'session_1',
+      filePath: 'src/example.ts',
+      side: 'new' as const,
+      startLine: 12,
+      endSide: null,
+      endLine: 12,
+      comment: 'Publish this.',
+      importance: null,
+      source: 'user' as const,
+      intent: 'review-comment' as const,
+      archivedAt: null,
+      submittedAt: null,
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    }
+    expect(pendingReviewComments([
+      userComment,
+      { ...userComment, id: 'ann_agent', source: 'agent' },
+      { ...userComment, id: 'ann_local', intent: 'annotation' },
+    ])).toEqual([userComment])
   })
 })
 
