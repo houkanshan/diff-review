@@ -24,7 +24,6 @@ import {
   resolveTarget,
   stageReviewFile,
   validateAnnotationTarget,
-  validateReviewCommentTarget,
 } from '../src/server/git.js'
 import { ApiHandler } from '../src/server/api.js'
 import { PiReviewRunner } from '../src/server/pi.js'
@@ -140,6 +139,20 @@ describe('Git review targets', () => {
     expect(worktree.patch).toContain('untracked content')
   })
 
+  test('combines current branch, staged, unstaged, and untracked changes', async () => {
+    const review = await resolveTarget(fixture.repository, { kind: 'branch-worktree' })
+
+    expect(review.patch).toContain('feature one')
+    expect(review.patch).toContain('from side')
+    expect(review.patch).toContain('staged content')
+    expect(review.patch).toContain('two edited')
+    expect(review.patch).toContain('untracked content')
+    expect(review.gitCommand).toBe("git diff --merge-base 'origin/main'")
+    expect(review.oldSnapshot.kind).toBe('commit')
+    expect(review.newSnapshot.kind).toBe('worktree')
+    expect(review.commits).toEqual([])
+  })
+
   test('validates ranges in new, old, deleted, and untracked file snapshots', async () => {
     const review = await resolveTarget(fixture.repository, { kind: 'worktree' })
 
@@ -168,6 +181,7 @@ describe('Git review targets', () => {
       number: 42,
       title: 'Fixture pull request',
       url: 'https://example.test/pull/42',
+      state: 'OPEN' as const,
       baseRefName: 'main',
       headRefName: 'feature',
       baseRefOid,
@@ -225,55 +239,99 @@ JSON
   })
 })
 
-describe('GitHub review comment targets', () => {
-  const patch = `diff --git a/example.ts b/example.ts
---- a/example.ts
-+++ b/example.ts
-@@ -10,3 +10,3 @@
- context
--old
-+new
- context
-@@ -20,1 +20,1 @@
--before
-+after
-`
-
-  test('accepts ranges represented by one diff hunk', () => {
-    expect(() => validateReviewCommentTarget(patch, 'example.ts', 'new', 10, 12)).not.toThrow()
-  })
-
-  test('counts hunk content that resembles file headers', () => {
-    const deletedPrefixPatch = `diff --git a/example.ts b/example.ts
---- a/example.ts
-+++ b/example.ts
-@@ -1,2 +1,1 @@
- context
---- deleted content
-`
-    const addedPrefixPatch = `diff --git a/example.ts b/example.ts
---- a/example.ts
-+++ b/example.ts
-@@ -1,1 +1,2 @@
- context
-+++ added content
-`
-
-    expect(() => {
-      validateReviewCommentTarget(deletedPrefixPatch, 'example.ts', 'old', 2, 2)
-    }).not.toThrow()
-    expect(() => {
-      validateReviewCommentTarget(addedPrefixPatch, 'example.ts', 'new', 2, 2)
-    }).not.toThrow()
-  })
-
-  test('rejects expanded context and cross-hunk ranges', () => {
-    expect(() => validateReviewCommentTarget(patch, 'example.ts', 'new', 5, 5)).toThrow(
-      'not a commentable range',
+describe('GitHub review comments', () => {
+  test('accepts comments on unchanged lines in a changed file', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-unchanged-line-'))
+    const repository = path.join(directory, 'repo')
+    mkdirSync(repository)
+    git(repository, ['init', '-b', 'main'])
+    git(repository, ['config', 'user.name', 'Diff Reviewer'])
+    git(repository, ['config', 'user.email', 'reviewer@example.com'])
+    writeFileSync(
+      path.join(repository, 'example.ts'),
+      Array.from({ length: 20 }, (_, index) => `line ${index + 1}`).join('\n') + '\n',
     )
-    expect(() => validateReviewCommentTarget(patch, 'example.ts', 'new', 12, 20)).toThrow(
-      'not a commentable range',
+    git(repository, ['add', 'example.ts'])
+    git(repository, ['commit', '-m', 'base'])
+    writeFileSync(
+      path.join(repository, 'example.ts'),
+      Array.from({ length: 20 }, (_, index) => {
+        return index === 19 ? 'line 20 changed' : `line ${index + 1}`
+      }).join('\n') + '\n',
     )
+    git(repository, ['add', 'example.ts'])
+    git(repository, ['commit', '-m', 'change the last line'])
+
+    const review = await resolveTarget(repository, {
+      kind: 'range',
+      expression: 'HEAD~1...HEAD',
+    })
+    expect(review.patch).not.toContain('+line 1')
+
+    const store = new ReviewStore(path.join(directory, 'store.db'))
+    const session = store.createSession(
+      repository,
+      'repo',
+      { kind: 'pr', number: 42 },
+      review,
+      false,
+    )
+    const handler = new ApiHandler(store, null)
+    const server = createServer(handler.handle)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address() as AddressInfo
+    const annotationsUrl = `http://127.0.0.1:${port}/api/sessions/${session.id}/annotations`
+
+    try {
+      const created = await fetch(annotationsUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filePath: 'example.ts',
+          side: 'new',
+          startLine: 1,
+          endLine: 2,
+          comment: 'This setup should have changed too.',
+          source: 'user',
+          intent: 'review-comment',
+        }),
+      })
+      expect(created.status).toBe(201)
+      await expect(created.json()).resolves.toMatchObject({
+        filePath: 'example.ts',
+        side: 'new',
+        startLine: 1,
+        endLine: 2,
+        intent: 'review-comment',
+      })
+
+      const missing = await fetch(annotationsUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filePath: 'example.ts',
+          side: 'new',
+          startLine: 99,
+          endLine: 99,
+          comment: 'This line does not exist.',
+          source: 'user',
+          intent: 'review-comment',
+        }),
+      })
+      expect(missing.status).toBe(400)
+      await expect(missing.json()).resolves.toMatchObject({
+        error: {
+          code: 'ANNOTATION_LINE_NOT_FOUND',
+          message: expect.stringMatching(/does not exist/),
+        },
+      })
+    } finally {
+      handler.close()
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error == null ? resolve() : reject(error))
+      })
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 })
 

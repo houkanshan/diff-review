@@ -18,6 +18,8 @@ import type {
   ReviewTarget,
   StartPiReviewInput,
 } from '../shared/types.js'
+import { targetSupportsStaging } from '../shared/types.js'
+import { pullRequestAllowsReviewEvent } from '../shared/pull-request.js'
 import { AppError, errorMessage } from './errors.js'
 import {
   getRepositoryInfo,
@@ -29,7 +31,6 @@ import {
   resolveTarget,
   stageReviewFile,
   validateAnnotationTarget,
-  validateReviewCommentTarget,
   validateReviewFilePath,
 } from './git.js'
 import {
@@ -210,7 +211,7 @@ export class ApiHandler {
       const number = Number(pullRequestCommentMatch[1])
       const input = parseAddPullRequestCommentInput(await readJson(request))
       const root = await resolveRepository(input.repositoryPath)
-      await addPullRequestComment(root, number, input.body)
+      await addPullRequestComment(root, number, input.body, input.replyToId)
       response.writeHead(204).end()
       return
     }
@@ -237,6 +238,12 @@ export class ApiHandler {
           'PULL_REQUEST_REVISION_CHANGED',
           'The pull request changed. Refresh before submitting the review.',
           409,
+        )
+      }
+      if (!pullRequestAllowsReviewEvent(currentRevision.state, input.event)) {
+        throw new AppError(
+          'PULL_REQUEST_REVIEW_NOT_ALLOWED',
+          'Closed and merged pull requests can only be reviewed as a comment.',
         )
       }
       const pendingComments = pendingReviewComments(session.annotations)
@@ -476,15 +483,6 @@ export class ApiHandler {
           input.endLine,
         )
       }
-      if (input.intent === 'review-comment') {
-        validateReviewCommentTarget(
-          resolved.patch,
-          input.filePath,
-          input.side,
-          input.startLine,
-          input.endLine,
-        )
-      }
       const annotation = this.store.addAnnotation(id, input)
       this.emitSessionUpdate(id)
       sendJson(response, 201, annotation)
@@ -528,10 +526,10 @@ export class ApiHandler {
     if (method === 'POST' && fileStageMatch != null) {
       const sessionId = fileStageMatch[1] ?? ''
       const session = this.store.getSession(sessionId)
-      if (session.target.kind !== 'worktree' && session.target.kind !== 'unstaged') {
+      if (!targetSupportsStaging(session.target)) {
         throw new AppError(
           'INVALID_REVIEW_TARGET',
-          'Files can only be added from working tree or unstaged reviews',
+          'Files can only be added from reviews with working tree changes',
         )
       }
       const { filePath } = parseFileInput(await readJson(request))
@@ -771,9 +769,14 @@ function parseUpdatePullRequestLabelInput(value: unknown): UpdatePullRequestLabe
 
 function parseAddPullRequestCommentInput(value: unknown): AddPullRequestCommentInput {
   const object = expectObject(value)
+  const replyToId = object.replyToId
+  if (replyToId != null && typeof replyToId !== 'string') {
+    throw new AppError('INVALID_INPUT', 'replyToId must be a string or null')
+  }
   return {
     repositoryPath: expectString(object.repositoryPath, 'repositoryPath'),
     body: expectTrimmedString(object.body, 'body'),
+    replyToId: replyToId == null || replyToId === '' ? null : replyToId,
   }
 }
 
@@ -821,6 +824,7 @@ function parseTarget(value: unknown): ReviewTarget {
   const kind = expectString(object.kind, 'target.kind')
   switch (kind) {
     case 'worktree':
+    case 'branch-worktree':
     case 'unstaged':
     case 'staged':
       return { kind }

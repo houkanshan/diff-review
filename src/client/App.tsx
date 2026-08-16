@@ -11,6 +11,7 @@ import {
   type FileDiffMetadata,
   parsePatchFiles,
 } from '@pierre/diffs'
+import { parseReviewCommentDiff } from '../shared/reviewCommentDiff'
 import { Checkbox } from '@base-ui/react/checkbox'
 import { Menu } from '@base-ui/react/menu'
 import { Popover } from '@base-ui/react/popover'
@@ -70,11 +71,13 @@ import {
 } from 'react'
 
 import { remarkIssueReferences } from '../shared/markdown'
+import { targetSupportsStaging } from '../shared/types'
 import type {
   AnnotationIntent,
   DiffSide,
   GitHubIssueReference,
   GitHubUser,
+  MinimizedCommentReason,
   PiReviewRun,
   PiReviewStatus,
   PullRequestActivity,
@@ -91,6 +94,8 @@ import type {
   ReviewTarget,
   SessionAnnotation,
 } from '../shared/types'
+import { pullRequestAllowsReviewEvent } from '../shared/pull-request'
+import { groupConversationActivities, type ReviewCommentThread } from '../shared/pullRequestActivity'
 import {
   addAnnotation,
   addPullRequestComment,
@@ -147,7 +152,7 @@ interface PullRequestWorkspaceContext {
   onSelectRevision(sessionId: string): void
   onStartPiReview(additionalInstructions: string): Promise<void>
   onRemoveAdditionalReviewLabel(): Promise<void>
-  onAddComment(body: string): Promise<void>
+  onAddComment(body: string, replyToId?: string | null): Promise<void>
   onSubmitReview(event: PullRequestReviewEvent, body: string): Promise<void>
   onSquashMerge(): Promise<void>
 }
@@ -589,10 +594,11 @@ function PullRequestsPage({
             }),
           ])
         },
-        onAddComment: async (body) => {
+        onAddComment: async (body, replyToId) => {
           await addPullRequestComment(details.number, {
             repositoryPath: route.repositoryPath,
             body,
+            replyToId,
           })
           refreshPullRequestData(details.number)
         },
@@ -817,7 +823,6 @@ function ReviewWorkspace({
     const effectiveIntent: AnnotationIntent =
       commentIntent === 'review-comment' &&
       pullRequest != null &&
-      pullRequest.details.state === 'OPEN' &&
       session.id === pullRequest.currentSessionId &&
       range.endSide == null
         ? 'review-comment'
@@ -1166,6 +1171,9 @@ function ReviewWorkspace({
                 options={diffOptions}
                 selectedLines={selection}
                 onSelectedLinesChange={handleSelection}
+                renderHeaderFilenameSuffix={(item) => (
+                  <FileCopyButton filePath={item.id} />
+                )}
               renderHeaderMetadata={(item) => (
                 <div
                   className="file-header-controls"
@@ -1183,7 +1191,7 @@ function ReviewWorkspace({
                   >
                     <ChevronIcon />
                   </button>
-                  {(session.target.kind === 'worktree' || session.target.kind === 'unstaged') && (
+                  {targetSupportsStaging(session.target) && (
                     <FileStageButton filePath={item.id} onAdd={() => addFile(item.id)} />
                   )}
                   <FileViewedToggle
@@ -1202,7 +1210,6 @@ function ReviewWorkspace({
                       intent={commentIntent}
                       reviewCommentAvailable={
                         pullRequest != null &&
-                        pullRequest.details.state === 'OPEN' &&
                         session.id === pullRequest.currentSessionId &&
                         annotationRangeFromSelection(metadata.selection).endSide == null
                       }
@@ -1399,7 +1406,7 @@ function DiffOptionsMenu({
                 onCheckedChange={onWrapChange}
                 className="diff-option"
               >
-                <Menu.CheckboxItemIndicator className="diff-option-check">
+                <Menu.CheckboxItemIndicator keepMounted className="diff-option-check">
                   <CheckIcon />
                 </Menu.CheckboxItemIndicator>
                 <span>Wrap lines</span>
@@ -1410,7 +1417,7 @@ function DiffOptionsMenu({
                 onCheckedChange={onIgnoreWhitespaceChange}
                 className="diff-option"
               >
-                <Menu.CheckboxItemIndicator className="diff-option-check">
+                <Menu.CheckboxItemIndicator keepMounted className="diff-option-check">
                   <CheckIcon />
                 </Menu.CheckboxItemIndicator>
                 <span>Ignore whitespace</span>
@@ -1491,6 +1498,13 @@ function PullRequestRail({
               <span>{pullRequest.author.login}</span>
               {pullRequest.assignees.length > 0 && (
                 <span>→ {pullRequest.assignees.map((assignee) => assignee.login).join(', ')}</span>
+              )}
+              {pullRequest.reviewers.length > 0 && (
+                <span className="pr-item-reviewers" title={pullRequest.reviewers.map((reviewer) => reviewer.login).join(', ')}>
+                  {pullRequest.reviewers.map((reviewer) => (
+                    <UserAvatar key={reviewer.login} user={reviewer} />
+                  ))}
+                </span>
               )}
             </div>
             <div className="pr-item-stats">
@@ -1720,13 +1734,13 @@ function PullRequestViewHeader({
             {labelBusy ? 'Removing…' : 'Remove addi. label'}
           </button>
         )}
-        {details.state === 'OPEN' && (
-          <SubmitReviewPopover
-            disabled={!currentRevision}
-            comments={reviewComments}
-            onSubmit={onSubmitReview}
-          />
-        )}
+        <SubmitReviewPopover
+          key={`${details.number}:${details.state}`}
+          disabled={!currentRevision}
+          comments={reviewComments}
+          allowedEvents={reviewEventsForPullRequest(details.state)}
+          onSubmit={onSubmitReview}
+        />
         {details.state === 'OPEN' && (
           <button
             className="squash-merge-button"
@@ -1755,13 +1769,21 @@ function PullRequestViewHeader({
   )
 }
 
+function reviewEventsForPullRequest(state: PullRequestDetails['state']): PullRequestReviewEvent[] {
+  return (['COMMENT', 'APPROVE', 'REQUEST_CHANGES'] as const).filter((event) =>
+    pullRequestAllowsReviewEvent(state, event),
+  )
+}
+
 function SubmitReviewPopover({
   disabled,
   comments,
+  allowedEvents,
   onSubmit,
 }: {
   disabled: boolean
   comments: SessionAnnotation[]
+  allowedEvents: PullRequestReviewEvent[]
   onSubmit(event: PullRequestReviewEvent, body: string): Promise<void>
 }) {
   const [open, setOpen] = useState(false)
@@ -1799,23 +1821,27 @@ function SubmitReviewPopover({
         <Popover.Positioner className="popup-positioner" sideOffset={8} align="end">
           <Popover.Popup className="submit-review-popover">
             <Popover.Title>Submit review</Popover.Title>
-            <label className="review-type-field">
-              Review type
-              <select
-                value={event}
-                disabled={busy}
-                onChange={(input) => {
-                  const next = input.target.value
-                  if (next === 'APPROVE' || next === 'COMMENT' || next === 'REQUEST_CHANGES') {
-                    setEvent(next)
-                  }
-                }}
-              >
-                <option value="COMMENT">Comment</option>
-                <option value="APPROVE">Approve</option>
-                <option value="REQUEST_CHANGES">Request changes</option>
-              </select>
-            </label>
+            {allowedEvents.length > 1 && (
+              <label className="review-type-field">
+                Review type
+                <select
+                  value={event}
+                  disabled={busy}
+                  onChange={(input) => {
+                    const next = input.target.value
+                    if (next === 'APPROVE' || next === 'COMMENT' || next === 'REQUEST_CHANGES') {
+                      if (allowedEvents.includes(next)) setEvent(next)
+                    }
+                  }}
+                >
+                  {allowedEvents.includes('COMMENT') && <option value="COMMENT">Comment</option>}
+                  {allowedEvents.includes('APPROVE') && <option value="APPROVE">Approve</option>}
+                  {allowedEvents.includes('REQUEST_CHANGES') && (
+                    <option value="REQUEST_CHANGES">Request changes</option>
+                  )}
+                </select>
+              </label>
+            )}
             <label className="review-summary-field">
               Review summary
               <textarea
@@ -1873,8 +1899,8 @@ function PullRequestConversation({
   oldRevision: boolean
   resolvedTheme: ResolvedTheme
   onNavigate(activity: PullRequestActivity): void
-  onAddComment(body: string): Promise<void>
-}) {
+  onAddComment(body: string, replyToId?: string | null): Promise<void>
+} ) {
   return (
     <section className="pr-conversation">
       {oldRevision && (
@@ -1913,19 +1939,47 @@ function PullRequestConversation({
                 text={<>Opened by <strong>{details.author.login}</strong></>}
                 timestamp={details.createdAt}
               />
-              {groupTimelineActivities(details.activity).map(({ activity, count }) => (
-                <ActivityItem
-                  key={`${activity.kind}:${activity.id}`}
-                  activity={activity}
-                  count={count}
-                  issueReferences={details.issueReferences}
-                  resolvedTheme={resolvedTheme}
-                  onNavigate={onNavigate}
-                />
-              ))}
+              {groupConversationActivities(details.activity).map((group) => {
+                if (group.kind === 'item') {
+                  return (
+                    <ActivityItem
+                      key={`${group.activity.kind}:${group.activity.id}`}
+                      activity={group.activity}
+                      count={group.count}
+                      issueReferences={details.issueReferences}
+                      resolvedTheme={resolvedTheme}
+                      onNavigate={onNavigate}
+                      onReply={oldRevision ? undefined : onAddComment}
+                    />
+                  )
+                }
+                if (group.kind === 'review-group') {
+                  return (
+                    <ReviewActivityGroup
+                      key={`review:${group.review.id}`}
+                      review={group.review}
+                      comments={group.comments}
+                      issueReferences={details.issueReferences}
+                      resolvedTheme={resolvedTheme}
+                      onNavigate={onNavigate}
+                      onReply={oldRevision ? undefined : onAddComment}
+                    />
+                  )
+                }
+                return (
+                  <ReviewCommentThreadList
+                    key={`orphan-comments:${group.comments[0]?.comment.id ?? 'empty'}`}
+                    comments={group.comments}
+                    issueReferences={details.issueReferences}
+                    resolvedTheme={resolvedTheme}
+                    onNavigate={onNavigate}
+                    onReply={oldRevision ? undefined : onAddComment}
+                  />
+                )
+              })}
             </div>
           </section>
-          {details.state === 'OPEN' && !oldRevision && (
+          {!oldRevision && (
             <PullRequestCommentComposer
               key={details.number}
               onAddComment={onAddComment}
@@ -1943,9 +1997,19 @@ function PullRequestConversation({
 
 function PullRequestCommentComposer({
   onAddComment,
+  compact = false,
+  heading = 'Add comment',
+  placeholder = 'Add to the conversation…',
+  submitLabel = 'Add comment',
+  ariaLabel = 'Add comment',
 }: {
-  onAddComment(body: string): Promise<void>
-}) {
+  onAddComment(body: string, replyToId?: string | null): Promise<void>
+  compact?: boolean
+  heading?: string
+  placeholder?: string
+  submitLabel?: string
+  ariaLabel?: string
+} ) {
   const [body, setBody] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -1964,13 +2028,16 @@ function PullRequestCommentComposer({
     }
   }
   return (
-    <section className="pr-action-composer" aria-label="Add comment">
-      <header className="pr-comment-heading">Add comment</header>
+    <section
+      className={`pr-action-composer${compact ? ' is-compact' : ''}`}
+      aria-label={ariaLabel}
+    >
+      <header className="pr-comment-heading">{heading}</header>
       <textarea
         value={body}
         onChange={(input) => setBody(input.target.value)}
-        placeholder="Add to the conversation…"
-        rows={5}
+        placeholder={placeholder}
+        rows={compact ? 3 : 5}
         disabled={busy}
       />
       {error != null && <p className="pr-action-error" role="alert">{error}</p>}
@@ -1981,7 +2048,7 @@ function PullRequestCommentComposer({
           disabled={busy || !body.trim()}
           onClick={() => void submit()}
         >
-          {busy ? 'Submitting…' : 'Add comment'}
+          {busy ? 'Submitting…' : submitLabel}
         </button>
       </footer>
     </section>
@@ -2192,7 +2259,117 @@ function checkStatusSummary(details: PullRequestDetails): string {
     return `${pending} pending`
   }
   if (details.checkStatus === 'pass') return 'All passed'
+  if (details.checkStatus === 'unknown') return 'Unknown'
   return 'None'
+}
+
+function ReviewActivityGroup({
+  review,
+  comments,
+  issueReferences,
+  resolvedTheme,
+  onNavigate,
+  onReply,
+}: {
+  review: Extract<PullRequestActivity, { kind: 'review' }>
+  comments: ReviewCommentThread[]
+  issueReferences: GitHubIssueReference[]
+  resolvedTheme: ResolvedTheme
+  onNavigate(activity: PullRequestActivity): void
+  onReply?(body: string, replyToId?: string | null): Promise<void>
+} ) {
+  return (
+    <div className="pr-review-group">
+      <ActivityItem
+        activity={review}
+        count={1}
+        issueReferences={issueReferences}
+        resolvedTheme={resolvedTheme}
+        onNavigate={onNavigate}
+      />
+      <ReviewCommentThreadList
+        comments={comments}
+        issueReferences={issueReferences}
+        resolvedTheme={resolvedTheme}
+        onNavigate={onNavigate}
+        onReply={onReply}
+      />
+    </div>
+  )
+}
+
+function ReviewCommentThreadList({
+  comments,
+  issueReferences,
+  resolvedTheme,
+  onNavigate,
+  onReply,
+}: {
+  comments: ReviewCommentThread[]
+  issueReferences: GitHubIssueReference[]
+  resolvedTheme: ResolvedTheme
+  onNavigate(activity: PullRequestActivity): void
+  onReply?(body: string, replyToId?: string | null): Promise<void>
+} ) {
+  if (comments.length === 0) return null
+  return (
+    <div className="pr-review-comments">
+      {comments.map((thread) => (
+        <ReviewCommentThreadItem
+          key={thread.comment.id}
+          thread={thread}
+          issueReferences={issueReferences}
+          resolvedTheme={resolvedTheme}
+          onNavigate={onNavigate}
+          onReply={onReply}
+        />
+      ))}
+    </div>
+  )
+}
+
+function ReviewCommentThreadItem({
+  thread,
+  issueReferences,
+  resolvedTheme,
+  onNavigate,
+  onReply,
+}: {
+  thread: ReviewCommentThread
+  issueReferences: GitHubIssueReference[]
+  resolvedTheme: ResolvedTheme
+  onNavigate(activity: PullRequestActivity): void
+  onReply?(body: string, replyToId?: string | null): Promise<void>
+} ) {
+  return (
+    <div className="pr-review-thread">
+      <ActivityItem
+        activity={thread.comment}
+        count={1}
+        issueReferences={issueReferences}
+        resolvedTheme={resolvedTheme}
+        onNavigate={onNavigate}
+        onReply={onReply}
+      />
+      {thread.replies.length > 0 && (
+        <div className="pr-review-replies">
+          {thread.replies.map((reply) => (
+            <ActivityItem
+              key={reply.id}
+              activity={reply}
+              count={1}
+              issueReferences={issueReferences}
+              resolvedTheme={resolvedTheme}
+              onNavigate={onNavigate}
+              showTarget={false}
+              onReply={onReply}
+              replyToId={thread.comment.id}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function ActivityItem({
@@ -2201,12 +2378,18 @@ function ActivityItem({
   issueReferences,
   resolvedTheme,
   onNavigate,
+  showTarget = true,
+  onReply,
+  replyToId,
 }: {
   activity: PullRequestActivity
   count: number
   issueReferences: GitHubIssueReference[]
   resolvedTheme: ResolvedTheme
   onNavigate(activity: PullRequestActivity): void
+  showTarget?: boolean
+  onReply?(body: string, replyToId?: string | null): Promise<void>
+  replyToId?: string
 }) {
   if (activity.kind === 'timeline') {
     return (
@@ -2227,23 +2410,29 @@ function ActivityItem({
       />
     )
   }
+  const reviewComment = activity.kind === 'review-comment' && showTarget ? activity : null
+  const canReply = onReply != null && (activity.kind === 'comment' || activity.kind === 'review-comment')
   return (
     <ConversationItem
       eyebrow={activityLabel(activity)}
       author={activity.author}
       body={activity.body}
       timestamp={activity.createdAt}
-      target={activity.kind === 'review-comment'
-        ? `${activity.path}${activity.line == null ? '' : `:${activity.line}`}`
-        : undefined}
-      diffHunk={activity.kind === 'review-comment' ? activity.diffHunk : undefined}
-      diffPath={activity.kind === 'review-comment' ? activity.path : undefined}
+      target={reviewComment == null
+        ? undefined
+        : `${reviewComment.path}${reviewComment.line == null ? '' : `:${reviewComment.line}`}`}
+      diffHunk={reviewComment?.diffHunk}
+      diffPath={reviewComment?.path}
       resolvedTheme={resolvedTheme}
-      onTarget={activity.kind === 'review-comment' && activity.line != null
-        ? () => onNavigate(activity)
+      onTarget={reviewComment != null && reviewComment.line != null
+        ? () => onNavigate(reviewComment)
         : undefined}
       url={activity.url}
       issueReferences={issueReferences}
+      minimizedReason={'minimizedReason' in activity ? activity.minimizedReason : null}
+      onReply={canReply
+        ? (body) => onReply(body, replyToId ?? activity.id)
+        : undefined}
     />
   )
 }
@@ -2258,7 +2447,7 @@ function TimelineItem({
   timestamp: string
   count?: number
   icon?: ReactNode
-}) {
+} ) {
   return (
     <div className="pr-timeline-item">
       {icon}
@@ -2302,6 +2491,8 @@ function ConversationItem({
   resolvedTheme,
   url,
   issueReferences,
+  minimizedReason,
+  onReply,
 }: {
   eyebrow: string
   author: GitHubUser
@@ -2314,31 +2505,78 @@ function ConversationItem({
   resolvedTheme: ResolvedTheme
   url?: string | null
   issueReferences: GitHubIssueReference[]
-}) {
+  minimizedReason?: MinimizedCommentReason | null
+  onReply?(body: string): Promise<void>
+} ) {
+  const [expanded, setExpanded] = useState(false)
+  const [replyOpen, setReplyOpen] = useState(false)
+  const minimized = minimizedReason != null && !expanded
   return (
-    <article className="conversation-item">
+    <article className={`conversation-item${minimized ? ' is-minimized' : ''}`}>
       <header className="conversation-item-header">
         <UserAvatar user={author} />
         <div className="conversation-item-heading">
-          <div><strong>{author.login}</strong><span>{eyebrow}</span></div>
+          <div>
+            <strong>{author.login}</strong>
+            <span>{minimized ? minimizedCommentLabel(minimizedReason) : eyebrow}</span>
+          </div>
           <div className="conversation-item-meta">
             <time title={formatTimestamp(timestamp)}>{relativeTime(timestamp)}</time>
             {url != null && <a href={url} target="_blank" rel="noreferrer">GitHub ↗</a>}
           </div>
         </div>
       </header>
-      {target != null && (
-        <div className="conversation-target">
-          <ReviewCommentDiff
-            target={target}
-            filePath={diffPath}
-            diffHunk={diffHunk}
-            resolvedTheme={resolvedTheme}
-            onTarget={onTarget}
-          />
-        </div>
-      )}
-      <MarkdownBody body={body} issueReferences={issueReferences} />
+      {minimized
+        ? (
+            <button
+              className="conversation-hidden-toggle"
+              type="button"
+              onClick={() => setExpanded(true)}
+            >
+              Show comment
+            </button>
+          )
+        : (
+            <>
+              {target != null && (
+                <div className="conversation-target">
+                  <ReviewCommentDiff
+                    target={target}
+                    filePath={diffPath}
+                    diffHunk={diffHunk}
+                    resolvedTheme={resolvedTheme}
+                    onTarget={onTarget}
+                  />
+                </div>
+              )}
+              <MarkdownBody body={body} issueReferences={issueReferences} />
+              {onReply != null && (
+                replyOpen
+                  ? (
+                      <PullRequestCommentComposer
+                        compact
+                        heading="Reply"
+                        placeholder="Reply to this comment…"
+                        submitLabel="Reply"
+                        ariaLabel="Reply to comment"
+                        onAddComment={async (comment) => {
+                          await onReply(comment)
+                          setReplyOpen(false)
+                        }}
+                      />
+                    )
+                  : (
+                      <button
+                        className="conversation-reply-button"
+                        type="button"
+                        onClick={() => setReplyOpen(true)}
+                      >
+                        Reply
+                      </button>
+                    )
+              )}
+            </>
+          )}
     </article>
   )
 }
@@ -2393,25 +2631,6 @@ function ReviewCommentDiff({
       )}
     </>
   )
-}
-
-function parseReviewCommentDiff(filePath: string, diffHunk: string): FileDiffMetadata | null {
-  if (!diffHunk.trim()) return null
-  const oldPath = JSON.stringify(`a/${filePath}`)
-  const newPath = JSON.stringify(`b/${filePath}`)
-  const patch = [
-    `diff --git ${oldPath} ${newPath}`,
-    `--- ${oldPath}`,
-    `+++ ${newPath}`,
-    diffHunk,
-    '',
-  ].join('\n')
-  try {
-    return parsePatchFiles(patch, `review-comment:${filePath}`, true).at(0)?.files.at(0) ?? null
-  } catch (caught) {
-    console.error(`Could not parse review comment diff for ${filePath}`, caught)
-    return null
-  }
 }
 
 function MarkdownBody({
@@ -2796,6 +3015,14 @@ function LocalReviewPicker({
               detail="git diff HEAD"
               onClick={() => void choose({ kind: 'worktree' })}
             />
+            {repository?.defaultBranchRef != null && (
+              <TargetOption
+                selected={currentSession?.target.kind === 'branch-worktree'}
+                label="Current branch + working tree"
+                detail={`git diff --merge-base ${repository.defaultBranchRef}`}
+                onClick={() => void choose({ kind: 'branch-worktree' })}
+              />
+            )}
             <TargetOption
               selected={currentSession?.target.kind === 'unstaged'}
               label="Unstaged changes"
@@ -2967,6 +3194,9 @@ function CommitPicker({
                       <small>
                         <code>{commit.shortOid}</code>
                         <span>{commit.author}</span>
+                        {commit.authoredAt !== '' && (
+                          <time dateTime={commit.authoredAt}>{formatTimestamp(commit.authoredAt)}</time>
+                        )}
                       </small>
                     </span>
                   </label>
@@ -3132,6 +3362,27 @@ function ChangedFileTree({
     />
   )
 }
+
+function FileCopyButton({ filePath }: { filePath: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      className="file-copy-button"
+      type="button"
+      aria-label={copied ? `Copied ${filePath}` : `Copy ${filePath}`}
+      title={copied ? 'Copied' : 'Copy file name'}
+      onClick={async (event) => {
+        event.stopPropagation()
+        await navigator.clipboard.writeText(filePath)
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 1200)
+      }}
+    >
+      {copied ? <CheckIcon /> : <CopyIcon />}
+    </button>
+  )
+}
+
 
 function FileStageButton({
   filePath,
@@ -3956,6 +4207,8 @@ function checkStatusLabel(status: PullRequestSummary['checkStatus']): string {
   switch (status) {
     case 'none':
       return 'No checks'
+    case 'unknown':
+      return 'Unknown'
     case 'pending':
       return 'Pending'
     case 'pass':
@@ -3972,40 +4225,12 @@ function activityLabel(activity: PullRequestActivity): string {
   return titleCase(activity.event.replaceAll('_', ' '))
 }
 
+
+function minimizedCommentLabel(reason: MinimizedCommentReason): string {
+  return `Hidden as ${reason.replaceAll('-', ' ')}`
+}
+
 type TimelineActivity = Extract<PullRequestActivity, { kind: 'timeline' }>
-
-type GroupedPullRequestActivity = {
-  activity: PullRequestActivity
-  count: number
-}
-
-function groupTimelineActivities(activities: PullRequestActivity[]): GroupedPullRequestActivity[] {
-  return activities.reduce<GroupedPullRequestActivity[]>((groups, activity) => {
-    const previous = groups.at(-1)
-    if (
-      activity.kind === 'timeline' &&
-      previous?.activity.kind === 'timeline' &&
-      timelineGroupKey(previous.activity) === timelineGroupKey(activity)
-    ) {
-      previous.count += 1
-      return groups
-    }
-    groups.push({ activity, count: 1 })
-    return groups
-  }, [])
-}
-
-function timelineGroupKey(activity: TimelineActivity): string {
-  return JSON.stringify({
-    event: activity.event,
-    author: activity.author?.login ?? null,
-    label: activity.label,
-    subject: activity.subject,
-    commitId: activity.commitId,
-    previousTitle: activity.previousTitle,
-    currentTitle: activity.currentTitle,
-  })
-}
 
 function timelineActivityIcon(activity: TimelineActivity): ReactNode {
   switch (activity.event) {

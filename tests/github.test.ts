@@ -9,16 +9,22 @@ import {
   extractIssueReferenceTargets,
   remarkIssueReferences,
 } from '../src/shared/markdown.js'
+import { pullRequestAllowsReviewEvent } from '../src/shared/pull-request.js'
+import { parseReviewCommentDiff } from '../src/shared/reviewCommentDiff.js'
 
 import { parseGitHubAttachmentUrl } from '../src/server/api.js'
 import {
   aggregateCheckStatus,
   addPullRequestComment,
+  listPullRequests,
+  parseCheckRollupState,
   parsePullRequestChecks,
   parsePullRequestMergeable,
   parsePullRequestReviewers,
   pendingReviewComments,
   parsePullRequestTimelineEvents,
+  parseMinimizedComments,
+  parseReview,
   parseReviewComment,
   squashMergePullRequest,
   submitPullRequestReview,
@@ -33,11 +39,14 @@ describe('GitHub pull request actions', () => {
     const input = path.join(directory, 'input.json')
     mkdirSync(bin)
     const gh = path.join(bin, 'gh')
+    const replyInput = path.join(directory, 'reply.json')
     writeFileSync(gh, `#!/bin/sh
 printf '%s\\n' '---' >> "$GH_TEST_OUTPUT"
 printf '<%s>\\n' "$@" >> "$GH_TEST_OUTPUT"
-cat >> "$GH_TEST_INPUT"
-printf '%s\\n' '{"merged":true,"message":"Pull Request successfully merged"}'
+if [ "$GH_TEST_INPUT" != '' ]; then
+  cat >> "$GH_TEST_INPUT"
+fi
+printf '%s\\n' '{\"merged\":true,\"message\":\"Pull Request successfully merged\"}'
 `)
     chmodSync(gh, 0o755)
     const originalPath = process.env.PATH
@@ -45,9 +54,12 @@ printf '%s\\n' '{"merged":true,"message":"Pull Request successfully merged"}'
     const originalInput = process.env.GH_TEST_INPUT
     process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`
     process.env.GH_TEST_OUTPUT = calls
-    process.env.GH_TEST_INPUT = input
     try {
+      process.env.GH_TEST_INPUT = ''
       await addPullRequestComment(directory, 42, 'A conversation comment')
+      process.env.GH_TEST_INPUT = replyInput
+      await addPullRequestComment(directory, 42, 'A review reply', '88')
+      process.env.GH_TEST_INPUT = input
       await submitPullRequestReview(
         directory,
         42,
@@ -65,10 +77,14 @@ printf '%s\\n' '{"merged":true,"message":"Pull Request successfully merged"}'
       const output = readFileSync(calls, 'utf8')
       expect(output).toContain('<repos/{owner}/{repo}/issues/42/comments>')
       expect(output).toContain('<body=A conversation comment>')
+      expect(output).toContain('<repos/{owner}/{repo}/pulls/42/comments>')
       expect(output).toContain('<repos/{owner}/{repo}/pulls/42/reviews>')
       expect(output).toContain('<--input>')
-      const review = JSON.parse(readFileSync(input, 'utf8'))
-      expect(review).toEqual({
+      expect(JSON.parse(readFileSync(replyInput, 'utf8'))).toEqual({
+        body: 'A review reply',
+        in_reply_to: 88,
+      })
+      expect(JSON.parse(readFileSync(input, 'utf8'))).toEqual({
         event: 'REQUEST_CHANGES',
         body: 'Please revise this',
         commit_id: 'def456',
@@ -145,6 +161,24 @@ printf '%s\\n' '{"merged":true,"message":"Pull Request successfully merged"}'
   })
 })
 
+
+describe('closed and merged pull request reviews', () => {
+  test.each(['CLOSED', 'MERGED'] as const)(
+    'lets %s pull requests post a comment review but not a decision',
+    (state) => {
+      expect(pullRequestAllowsReviewEvent(state, 'COMMENT')).toBe(true)
+      expect(pullRequestAllowsReviewEvent(state, 'APPROVE')).toBe(false)
+      expect(pullRequestAllowsReviewEvent(state, 'REQUEST_CHANGES')).toBe(false)
+    },
+  )
+
+  test('lets open pull requests approve or request changes', () => {
+    expect(pullRequestAllowsReviewEvent('OPEN', 'COMMENT')).toBe(true)
+    expect(pullRequestAllowsReviewEvent('OPEN', 'APPROVE')).toBe(true)
+    expect(pullRequestAllowsReviewEvent('OPEN', 'REQUEST_CHANGES')).toBe(true)
+  })
+})
+
 describe('GitHub issue attachments', () => {
   test.each([
     'https://github.com/user-attachments/assets/12345678-abcd',
@@ -174,6 +208,8 @@ describe('GitHub pull request review comments', () => {
       path: 'src/example.ts',
       line: 18,
       side: 'RIGHT',
+      pull_request_review_id: 80,
+      in_reply_to_id: null,
       diff_hunk: '@@ -16,2 +16,3 @@\n context\n+selected code',
       created_at: '2026-03-01T10:00:00Z',
       updated_at: '2026-03-01T10:01:00Z',
@@ -183,7 +219,131 @@ describe('GitHub pull request review comments', () => {
       path: 'src/example.ts',
       line: 18,
       side: 'new',
+      reviewId: '80',
+      replyToId: null,
       diffHunk: '@@ -16,2 +16,3 @@\n context\n+selected code',
+      minimizedReason: null,
+    })
+  })
+
+
+  test('parses a submitted REST review with a numeric id', () => {
+    expect(parseReview({
+      id: 80,
+      user: { login: 'reviewer', avatar_url: 'https://example.com/avatar.png' },
+      body: 'Looks good overall.',
+      state: 'COMMENTED',
+      submitted_at: '2026-03-01T10:05:00Z',
+      html_url: 'https://github.com/acme/repo/pull/1#pullrequestreview-80',
+    })).toMatchObject({
+      kind: 'review',
+      id: '80',
+      body: 'Looks good overall.',
+      state: 'COMMENTED',
+      createdAt: '2026-03-01T10:05:00Z',
+      url: 'https://github.com/acme/repo/pull/1#pullrequestreview-80',
+    })
+  })
+
+
+  test('maps GraphQL minimized review comments onto numeric ids', () => {
+    expect([...parseMinimizedComments({
+      data: {
+        repository: {
+          pullRequest: {
+            comments: {
+              nodes: [{ databaseId: 11, isMinimized: true, minimizedReason: 'off-topic' }],
+            },
+            reviewThreads: {
+              nodes: [{
+                comments: {
+                  nodes: [{ databaseId: 42, isMinimized: true, minimizedReason: 'resolved' }],
+                },
+              }],
+            },
+          },
+        },
+      },
+    })]).toEqual([
+      ['11', 'off-topic'],
+      ['42', 'resolved'],
+    ])
+  })
+
+  test('parses a truncated GitHub review hunk into a renderable file diff', () => {
+    const fileDiff = parseReviewCommentDiff(
+      'src/example.ts',
+      '@@ -16,2 +16,3 @@\n context\n+selected code',
+    )
+    expect(fileDiff).toMatchObject({
+      name: 'src/example.ts',
+      type: 'change',
+      isPartial: true,
+      additionLines: ['context\n', 'selected code\n'],
+      deletionLines: ['context\n'],
+    })
+    expect(fileDiff?.hunks).toHaveLength(1)
+    expect(fileDiff?.hunks[0]).toMatchObject({
+      additionStart: 16,
+      additionCount: 2,
+      deletionStart: 16,
+      deletionCount: 1,
+      collapsedBefore: 0,
+      unifiedLineCount: 2,
+    })
+  })
+
+  test('keeps a trailing whitespace-only context line from a truncated hunk', () => {
+    const fileDiff = parseReviewCommentDiff(
+      'src/example.ts',
+      '@@ -1,1 +1,1 @@\n ',
+    )
+    expect(fileDiff).toMatchObject({
+      name: 'src/example.ts',
+      additionLines: ['\n'],
+      deletionLines: ['\n'],
+    })
+    expect(fileDiff?.hunks[0]).toMatchObject({
+      additionStart: 1,
+      additionCount: 1,
+      deletionStart: 1,
+      deletionCount: 1,
+    })
+  })
+
+  test('keeps only the last eight lines of a long review hunk', () => {
+    const context = Array.from({ length: 12 }, (_, index) => ` line ${index + 1}`)
+    const fileDiff = parseReviewCommentDiff(
+      'src/example.ts',
+      ['@@ -10,13 +10,13 @@', ...context, '+selected code'].join('\n'),
+    )
+    expect(fileDiff).toMatchObject({
+      additionLines: [
+        'line 6\n',
+        'line 7\n',
+        'line 8\n',
+        'line 9\n',
+        'line 10\n',
+        'line 11\n',
+        'line 12\n',
+        'selected code\n',
+      ],
+      deletionLines: [
+        'line 6\n',
+        'line 7\n',
+        'line 8\n',
+        'line 9\n',
+        'line 10\n',
+        'line 11\n',
+        'line 12\n',
+      ],
+    })
+    expect(fileDiff?.hunks[0]).toMatchObject({
+      additionStart: 15,
+      additionCount: 8,
+      deletionStart: 15,
+      deletionCount: 7,
+      unifiedLineCount: 8,
     })
   })
 })
@@ -292,6 +452,26 @@ describe('GitHub pull request sidebar data', () => {
       },
     ])
   })
+
+  test('skips reviews whose author is missing', () => {
+    expect(parsePullRequestReviewers(
+      [{ __typename: 'User', login: 'octocat' }],
+      [{ author: null }, { author: { login: 'hubot' } }],
+    )).toEqual([
+      {
+        kind: 'user',
+        login: 'octocat',
+        name: null,
+        avatarUrl: 'https://github.com/octocat.png?size=64',
+      },
+      {
+        kind: 'user',
+        login: 'hubot',
+        name: null,
+        avatarUrl: 'https://github.com/hubot.png?size=64',
+      },
+    ])
+  })
 })
 
 describe('GitHub pull request checks', () => {
@@ -358,6 +538,15 @@ describe('GitHub pull request checks', () => {
       { name: 'security', workflowName: null, status: 'fail', url: null },
     ])
   })
+
+  test('maps a GitHub rollup state to the list badge', () => {
+    expect(parseCheckRollupState('SUCCESS')).toBe('pass')
+    expect(parseCheckRollupState('FAILURE')).toBe('fail')
+    expect(parseCheckRollupState('ERROR')).toBe('fail')
+    expect(parseCheckRollupState('PENDING')).toBe('pending')
+    expect(parseCheckRollupState('EXPECTED')).toBe('pending')
+    expect(parseCheckRollupState(null)).toBe('none')
+  })
 })
 
 describe('GitHub pull request timeline', () => {
@@ -408,5 +597,159 @@ describe('GitHub pull request timeline', () => {
         currentTitle: null,
       },
     ])
+  })
+})
+
+
+describe('GitHub pull request list', () => {
+  test('loads summaries without statusCheckRollup and fills badges from rollup state', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-github-list-'))
+    const bin = path.join(directory, 'bin')
+    mkdirSync(bin)
+    writeFileSync(path.join(bin, 'gh'), [
+      '#!/usr/bin/env node',
+      'const args = process.argv.slice(2)',
+      "if (args[0] === 'pr' && args[1] === 'list') {",
+      "  if (args.some((arg) => arg.includes('statusCheckRollup'))) {",
+      "    process.stderr.write('list should not request statusCheckRollup')",
+      '    process.exit(1)',
+      '  }',
+      "  process.stdout.write(process.env.GH_TEST_LIST_JSON)",
+      '  process.exit(0)',
+      '}',
+      "if (args[0] === 'api' && args[1] === 'graphql') {",
+      "  const query = args.find((arg) => arg.startsWith('query=')) ?? ''",
+      "  if (!query.includes('statusCheckRollup { state }')) {",
+      "    process.stderr.write('expected rollup state query')",
+      '    process.exit(1)',
+      '  }',
+      "  process.stdout.write(process.env.GH_TEST_GRAPHQL_JSON)",
+      '  process.exit(0)',
+      '}',
+      "process.stderr.write('unexpected gh ' + args.join(' '))",
+      'process.exit(1)',
+    ].join('\n'))
+    chmodSync(path.join(bin, 'gh'), 0o755)
+    const originalPath = process.env.PATH
+    const originalList = process.env.GH_TEST_LIST_JSON
+    const originalGraphql = process.env.GH_TEST_GRAPHQL_JSON
+    process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`
+    process.env.GH_TEST_LIST_JSON = JSON.stringify([
+      {
+        number: 12,
+        title: 'Fast list',
+        url: 'https://github.com/acme/repo/pull/12',
+        state: 'OPEN',
+        isDraft: false,
+        baseRefName: 'main',
+        headRefName: 'feature',
+        additions: 3,
+        deletions: 1,
+        createdAt: '2026-03-01T10:00:00Z',
+        updatedAt: '2026-03-01T11:00:00Z',
+        author: { login: 'octocat' },
+        assignees: [],
+        reviewRequests: [{ __typename: 'User', login: 'hubot' }],
+        latestReviews: [{ author: { login: 'reviewer' } }],
+        labels: [],
+      },
+      {
+        number: 13,
+        title: 'No checks',
+        url: 'https://github.com/acme/repo/pull/13',
+        state: 'OPEN',
+        isDraft: true,
+        baseRefName: 'main',
+        headRefName: 'other',
+        additions: 0,
+        deletions: 0,
+        createdAt: '2026-03-01T10:00:00Z',
+        updatedAt: '2026-03-01T11:00:00Z',
+        author: { login: 'hubot' },
+        assignees: [],
+        reviewRequests: [],
+        latestReviews: [],
+        labels: [],
+      },
+    ])
+    process.env.GH_TEST_GRAPHQL_JSON = JSON.stringify({
+      data: {
+        repository: {
+          pr0: { commits: { nodes: [{ commit: { statusCheckRollup: { state: 'FAILURE' } } }] } },
+          pr1: { commits: { nodes: [{ commit: { statusCheckRollup: null } }] } },
+        },
+      },
+    })
+    try {
+      await expect(listPullRequests(directory, 'open')).resolves.toMatchObject([
+        {
+          number: 12,
+          title: 'Fast list',
+          checkStatus: 'fail',
+          reviewers: [
+            { login: 'hubot', kind: 'user' },
+            { login: 'reviewer', kind: 'user' },
+          ],
+        },
+        { number: 13, title: 'No checks', checkStatus: 'none', reviewers: [] },
+      ])
+    } finally {
+      process.env.PATH = originalPath
+      if (originalList == null) delete process.env.GH_TEST_LIST_JSON
+      else process.env.GH_TEST_LIST_JSON = originalList
+      if (originalGraphql == null) delete process.env.GH_TEST_GRAPHQL_JSON
+      else process.env.GH_TEST_GRAPHQL_JSON = originalGraphql
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test('keeps the list when check status lookup fails', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-github-list-fail-'))
+    const bin = path.join(directory, 'bin')
+    mkdirSync(bin)
+    writeFileSync(path.join(bin, 'gh'), [
+      '#!/usr/bin/env node',
+      'const args = process.argv.slice(2)',
+      "if (args[0] === 'pr' && args[1] === 'list') {",
+      "  process.stdout.write(process.env.GH_TEST_LIST_JSON)",
+      '  process.exit(0)',
+      '}',
+      "process.stderr.write('stream error: stream ID 1; CANCEL; received from peer')",
+      'process.exit(1)',
+    ].join('\n'))
+    chmodSync(path.join(bin, 'gh'), 0o755)
+    const originalPath = process.env.PATH
+    const originalList = process.env.GH_TEST_LIST_JSON
+    process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`
+    process.env.GH_TEST_LIST_JSON = JSON.stringify([
+      {
+        number: 12,
+        title: 'Fast list',
+        url: 'https://github.com/acme/repo/pull/12',
+        state: 'OPEN',
+        isDraft: false,
+        baseRefName: 'main',
+        headRefName: 'feature',
+        additions: 3,
+        deletions: 1,
+        createdAt: '2026-03-01T10:00:00Z',
+        updatedAt: '2026-03-01T11:00:00Z',
+        author: { login: 'octocat' },
+        assignees: [],
+        reviewRequests: [],
+        latestReviews: [],
+        labels: [],
+      },
+    ])
+    try {
+      await expect(listPullRequests(directory, 'open')).resolves.toMatchObject([
+        { number: 12, checkStatus: 'unknown' },
+      ])
+    } finally {
+      process.env.PATH = originalPath
+      if (originalList == null) delete process.env.GH_TEST_LIST_JSON
+      else process.env.GH_TEST_LIST_JSON = originalList
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 })

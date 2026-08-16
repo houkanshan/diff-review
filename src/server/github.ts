@@ -15,6 +15,7 @@ import type {
   PullRequestListView,
   PullRequestState,
   PullRequestSummary,
+  MinimizedCommentReason,
   SessionAnnotation,
 } from '../shared/types.js'
 import {
@@ -27,6 +28,7 @@ export interface PullRequestRevisionDetails {
   number: number
   title: string
   url: string
+  state: PullRequestState
   baseRefName: string
   headRefName: string
   baseRefOid: string
@@ -47,22 +49,43 @@ const SUMMARY_FIELDS = [
   'updatedAt',
   'author',
   'assignees',
+  'reviewRequests',
+  'latestReviews',
   'labels',
-  'statusCheckRollup',
 ].join(',')
 
 const DETAILS_FIELDS = [
   SUMMARY_FIELDS,
+  'statusCheckRollup',
   'body',
   'baseRefOid',
   'headRefOid',
   'comments',
   'reviews',
   'mergeable',
-  'reviewRequests',
   'mergedBy',
 ].join(',')
 
+
+const MINIMIZED_COMMENTS_QUERY = `
+  query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        comments(first: 100, after: $endCursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes { databaseId isMinimized minimizedReason }
+        }
+        reviewThreads(first: 100) {
+          nodes {
+            comments(first: 100) {
+              nodes { databaseId isMinimized minimizedReason }
+            }
+          }
+        }
+      }
+    }
+  }
+`.trim()
 const MAX_OUTPUT_BYTES = 128 * 1024 * 1024
 type ResolvedIssueReference = Omit<GitHubIssueReference, 'token' | 'label'>
 type ResolvedIssueReferenceTarget = GitHubIssueReferenceTarget & { owner: string; repository: string }
@@ -92,7 +115,18 @@ export async function listPullRequests(
     ],
     root,
   )
-  return expectArray(parseJson(output, 'GitHub pull request list')).map(parsePullRequestSummary)
+  const summaries = expectArray(parseJson(output, 'GitHub pull request list')).map((row) => (
+    parsePullRequestSummary(row, 'unknown')
+  ))
+  const checkStatuses = await listPullRequestCheckStatuses(root, summaries).catch((error: unknown) => {
+    console.error(`diff-review: could not load pull request checks: ${errorMessage(error)}`)
+    return null
+  })
+  if (checkStatuses == null) return summaries
+  return summaries.map((summary) => ({
+    ...summary,
+    checkStatus: checkStatuses.get(summary.number) ?? 'none',
+  }))
 }
 
 export async function getPullRequestDetails(
@@ -100,8 +134,17 @@ export async function getPullRequestDetails(
   number: number,
 ): Promise<PullRequestDetails> {
   validatePullRequestNumber(number)
-  const [detailsOutput, reviewCommentsOutput, timelineOutput] = await Promise.all([
+  const [detailsOutput, reviewsOutput, reviewCommentsOutput, timelineOutput] = await Promise.all([
     runGitHub(['pr', 'view', String(number), '--json', DETAILS_FIELDS], root),
+    runGitHub(
+      [
+        'api',
+        `repos/{owner}/{repo}/pulls/${number}/reviews?per_page=100`,
+        '--paginate',
+        '--slurp',
+      ],
+      root,
+    ),
     runGitHub(
       [
         'api',
@@ -126,7 +169,13 @@ export async function getPullRequestDetails(
   const body = optionalString(raw.body) ?? ''
   const activity = [
     ...expectArray(raw.comments).map(parseConversationComment),
-    ...expectArray(raw.reviews).map(parseReview),
+    ...parsePaginatedArray(
+      parseJson(reviewsOutput, `GitHub PR #${number} reviews`),
+    ).flatMap((value) => {
+      const rawReview = expectObject(value)
+      if ((optionalString(rawReview.state) ?? '').toUpperCase() === 'PENDING') return []
+      return [parseReview(rawReview)]
+    }),
     ...parsePaginatedArray(
       parseJson(reviewCommentsOutput, `GitHub PR #${number} review comments`),
     ).map(parseReviewComment),
@@ -134,6 +183,8 @@ export async function getPullRequestDetails(
       parseJson(timelineOutput, `GitHub PR #${number} timeline`),
     ),
   ].sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+  const minimizedComments = await listMinimizedComments(root, summary.url, number).catch(() => new Map())
+  applyMinimizedComments(activity, minimizedComments)
   const issueReferences = await resolveIssueReferences(
     root,
     summary.url,
@@ -277,20 +328,39 @@ export async function addPullRequestComment(
   root: string,
   number: number,
   body: string,
+  replyToId?: string | null,
 ): Promise<void> {
   validatePullRequestNumber(number)
   const comment = body.trim()
   if (!comment) throw new AppError('INVALID_PULL_REQUEST_COMMENT', 'Comment must not be empty')
+  if (replyToId == null || replyToId === '') {
+    await runGitHub(
+      [
+        'api',
+        '--method',
+        'POST',
+        `repos/{owner}/{repo}/issues/${number}/comments`,
+        '--raw-field',
+        `body=${comment}`,
+      ],
+      root,
+    )
+    return
+  }
+  if (!/^[1-9]\d*$/.test(replyToId)) {
+    throw new AppError('INVALID_PULL_REQUEST_COMMENT', 'Reply target is invalid')
+  }
   await runGitHub(
     [
       'api',
       '--method',
       'POST',
-      `repos/{owner}/{repo}/issues/${number}/comments`,
-      '--raw-field',
-      `body=${comment}`,
+      `repos/{owner}/{repo}/pulls/${number}/comments`,
+      '--input',
+      '-',
     ],
     root,
+    JSON.stringify({ body: comment, in_reply_to: Number(replyToId) }),
   )
 }
 
@@ -410,7 +480,7 @@ export async function getPullRequestRevisionDetails(
       'view',
       String(number),
       '--json',
-      'number,title,url,baseRefName,headRefName,baseRefOid,headRefOid',
+      'number,title,url,state,baseRefName,headRefName,baseRefOid,headRefOid',
     ],
     root,
   )
@@ -419,6 +489,7 @@ export async function getPullRequestRevisionDetails(
     number: expectPositiveInteger(raw.number, 'number'),
     title: expectString(raw.title, 'title'),
     url: expectString(raw.url, 'url'),
+    state: parsePullRequestState(raw.state),
     baseRefName: expectString(raw.baseRefName, 'baseRefName'),
     headRefName: expectString(raw.headRefName, 'headRefName'),
     baseRefOid: expectString(raw.baseRefOid, 'baseRefOid'),
@@ -452,9 +523,9 @@ export function parsePullRequestReviewers(
     }
     throw invalidGitHubResponse(`Unknown review request type: ${kind}`)
   })
-  const completed = expectArray(reviewsValue).map((reviewValue): GitHubReviewer => {
-    const review = expectObject(reviewValue)
-    return { ...parseUser(review.author), kind: 'user' }
+  const completed = expectArray(reviewsValue).flatMap((reviewValue): GitHubReviewer[] => {
+    const author = parseOptionalUser(expectObject(reviewValue).author)
+    return author == null ? [] : [{ ...author, kind: 'user' }]
   })
   return [...new Map(
     [...requested, ...completed].map((reviewer) => [reviewer.login.toLowerCase(), reviewer]),
@@ -529,17 +600,65 @@ function pullRequestListFilter(
   }
 }
 
-function parsePullRequestSummary(value: unknown): PullRequestSummary {
-  const raw = expectObject(value)
-  const state = expectString(raw.state, 'state').toUpperCase()
+async function listPullRequestCheckStatuses(
+  root: string,
+  summaries: PullRequestSummary[],
+): Promise<Map<number, PullRequestCheckStatus>> {
+  if (summaries.length === 0) return new Map()
+  const repository = parseGitHubRepositoryUrl(summaries[0].url)
+  const selections = summaries.map((summary, index) =>
+    `pr${index}: pullRequest(number: ${summary.number}) { commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } }`,
+  ).join('\n')
+  const query = `query { repository(owner: ${JSON.stringify(repository.owner)}, name: ${JSON.stringify(repository.name)}) { ${selections} } }`
+  const output = await runGitHub(['api', 'graphql', '-f', `query=${query}`], root)
+  const response = expectObject(parseJson(output, 'GitHub pull request checks'))
+  const repositoryResult = expectObject(expectObject(response.data).repository)
+  return new Map(summaries.map((summary, index) => [
+    summary.number,
+    parseCheckRollupState(checkRollupState(repositoryResult[`pr${index}`])),
+  ]))
+}
+
+function checkRollupState(value: unknown): string | null {
+  const nodes = optionalObject(optionalObject(value)?.commits)?.nodes
+  const commit = optionalObject(Array.isArray(nodes) ? nodes[0] : null)?.commit
+  return optionalString(optionalObject(optionalObject(commit)?.statusCheckRollup)?.state)
+}
+
+export function parseCheckRollupState(state: string | null): PullRequestCheckStatus {
+  switch (state?.toUpperCase()) {
+    case 'SUCCESS':
+      return 'pass'
+    case 'FAILURE':
+    case 'ERROR':
+      return 'fail'
+    case 'PENDING':
+    case 'EXPECTED':
+      return 'pending'
+    default:
+      return 'none'
+  }
+}
+
+
+export function parsePullRequestState(value: unknown): PullRequestState {
+  const state = expectString(value, 'state').toUpperCase()
   if (state !== 'OPEN' && state !== 'CLOSED' && state !== 'MERGED') {
     throw invalidGitHubResponse(`Unknown pull request state: ${state}`)
   }
+  return state
+}
+
+function parsePullRequestSummary(
+  value: unknown,
+  checkStatus?: PullRequestCheckStatus,
+): PullRequestSummary {
+  const raw = expectObject(value)
   return {
     number: expectPositiveInteger(raw.number, 'number'),
     title: expectString(raw.title, 'title'),
     url: expectString(raw.url, 'url'),
-    state: state as PullRequestState,
+    state: parsePullRequestState(raw.state),
     isDraft: expectBoolean(raw.isDraft, 'isDraft'),
     baseRefName: expectString(raw.baseRefName, 'baseRefName'),
     headRefName: expectString(raw.headRefName, 'headRefName'),
@@ -549,12 +668,13 @@ function parsePullRequestSummary(value: unknown): PullRequestSummary {
     updatedAt: expectString(raw.updatedAt, 'updatedAt'),
     author: parseUser(raw.author),
     assignees: expectArray(raw.assignees).map(parseUser),
+    reviewers: parsePullRequestReviewers(raw.reviewRequests, raw.latestReviews ?? raw.reviews),
     labels: expectArray(raw.labels).map(parseLabel),
-    checkStatus: aggregateCheckStatus(raw.statusCheckRollup),
+    checkStatus: checkStatus ?? aggregateCheckStatus(raw.statusCheckRollup),
   }
 }
 
-function parseConversationComment(value: unknown): PullRequestActivity {
+export function parseConversationComment(value: unknown): PullRequestActivity {
   const raw = expectObject(value)
   return {
     kind: 'comment',
@@ -564,21 +684,24 @@ function parseConversationComment(value: unknown): PullRequestActivity {
     createdAt: expectString(raw.createdAt, 'comment.createdAt'),
     updatedAt: optionalString(raw.updatedAt) ?? expectString(raw.createdAt, 'comment.createdAt'),
     url: optionalString(raw.url),
+    minimizedReason: parseMinimizedReason(raw.minimized),
   }
 }
 
-function parseReview(value: unknown): PullRequestActivity {
+export function parseReview(value: unknown): PullRequestActivity {
   const raw = expectObject(value)
-  const submittedAt = expectString(raw.submittedAt, 'review.submittedAt')
+  const submittedAt = optionalString(raw.submitted_at)
+    ?? optionalString(raw.submittedAt)
+    ?? expectString(raw.created_at, 'review.submittedAt')
   return {
     kind: 'review',
     id: String(raw.id),
-    author: parseUser(raw.author),
+    author: parseUser(raw.user ?? raw.author),
     body: optionalString(raw.body) ?? '',
     state: optionalString(raw.state) ?? 'COMMENTED',
     createdAt: submittedAt,
     updatedAt: submittedAt,
-    url: null,
+    url: optionalString(raw.html_url),
   }
 }
 
@@ -595,12 +718,100 @@ export function parseReviewComment(value: unknown): PullRequestActivity {
     path: expectString(raw.path, 'reviewComment.path'),
     line,
     side,
+    reviewId: raw.pull_request_review_id == null ? null : String(raw.pull_request_review_id),
     replyToId: raw.in_reply_to_id == null ? null : String(raw.in_reply_to_id),
     createdAt: expectString(raw.created_at, 'reviewComment.created_at'),
     updatedAt: expectString(raw.updated_at, 'reviewComment.updated_at'),
     url: optionalString(raw.html_url),
     diffHunk: optionalString(raw.diff_hunk) ?? '',
+    minimizedReason: parseMinimizedReason(raw.minimized),
   }
+}
+
+export function applyMinimizedComments(
+  activities: PullRequestActivity[],
+  minimizedComments: Map<string, MinimizedCommentReason>,
+): void {
+  for (const activity of activities) {
+    if (activity.kind !== 'comment' && activity.kind !== 'review-comment') continue
+    activity.minimizedReason = minimizedComments.get(activity.id) ?? activity.minimizedReason
+  }
+}
+
+export function parseMinimizedReason(value: unknown): MinimizedCommentReason | null {
+  const reason = typeof value === 'string'
+    ? value
+    : optionalString(optionalObject(value)?.reason)
+  if (reason == null) return null
+  switch (reason.toLowerCase().replaceAll('_', '-')) {
+    case 'abuse':
+    case 'off-topic':
+    case 'outdated':
+    case 'resolved':
+    case 'duplicate':
+    case 'spam':
+    case 'low-quality':
+      return reason.toLowerCase().replaceAll('_', '-') as MinimizedCommentReason
+    default:
+      return null
+  }
+}
+
+async function listMinimizedComments(
+  root: string,
+  repositoryUrl: string,
+  number: number,
+): Promise<Map<string, MinimizedCommentReason>> {
+  const repository = parseGitHubRepositoryUrl(repositoryUrl)
+  const output = await runGitHub(
+    [
+      'api',
+      'graphql',
+      '--paginate',
+      '--slurp',
+      '-F',
+      `owner=${repository.owner}`,
+      '-F',
+      `name=${repository.name}`,
+      '-F',
+      `number=${number}`,
+      '-f',
+      `query=${MINIMIZED_COMMENTS_QUERY}`,
+    ],
+    root,
+  )
+  return parseMinimizedComments(parseJson(output, `GitHub PR #${number} minimized comments`))
+}
+
+export function parseMinimizedComments(value: unknown): Map<string, MinimizedCommentReason> {
+  const minimized = new Map<string, MinimizedCommentReason>()
+  for (const page of parseGraphqlPages(value)) {
+    const pullRequest = optionalObject(optionalObject(optionalObject(page.data)?.repository)?.pullRequest)
+    if (pullRequest == null) continue
+    collectMinimizedComments(optionalObject(pullRequest.comments)?.nodes, minimized)
+    for (const thread of expectArray(optionalObject(pullRequest.reviewThreads)?.nodes ?? [])) {
+      collectMinimizedComments(optionalObject(expectObject(thread).comments)?.nodes, minimized)
+    }
+  }
+  return minimized
+}
+
+function collectMinimizedComments(
+  nodes: unknown,
+  minimized: Map<string, MinimizedCommentReason>,
+): void {
+  for (const node of nodes == null ? [] : expectArray(nodes)) {
+    const raw = expectObject(node)
+    if (raw.isMinimized !== true) continue
+    const reason = parseMinimizedReason(raw.minimizedReason) ?? 'resolved'
+    const databaseId = raw.databaseId
+    if (databaseId != null) minimized.set(String(databaseId), reason)
+  }
+}
+
+function parseGraphqlPages(value: unknown): Record<string, unknown>[] {
+  if (Array.isArray(value)) return value.map(expectObject)
+  return [expectObject(value)]
 }
 
 export function parsePullRequestTimelineEvents(value: unknown): PullRequestActivity[] {

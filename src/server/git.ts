@@ -79,6 +79,8 @@ export async function resolveTarget(
   switch (target.kind) {
     case 'worktree':
       return resolveWorktree(root, ignoreWhitespace)
+    case 'branch-worktree':
+      return resolveBranchWorktree(root, ignoreWhitespace)
     case 'unstaged':
       return resolveUnstaged(root, ignoreWhitespace)
     case 'staged':
@@ -196,96 +198,6 @@ export async function validateAnnotationTarget(
   }
 }
 
-export function validateReviewCommentTarget(
-  patch: string,
-  filePath: string,
-  side: 'old' | 'new',
-  startLine: number,
-  endLine: number,
-): void {
-  const normalizedPath = validateReviewFilePath(patch, filePath)
-  const commentableLines = reviewCommentLines(patch, normalizedPath, side)
-  const hunk = commentableLines.get(startLine)
-  if (
-    hunk == null ||
-    commentableLines.get(endLine) !== hunk ||
-    Array.from({ length: endLine - startLine + 1 }, (_, index) => startLine + index)
-      .some((line) => commentableLines.get(line) !== hunk)
-  ) {
-    throw new AppError(
-      'REVIEW_COMMENT_LINE_NOT_FOUND',
-      `${filePath}:${startLine}${endLine === startLine ? '' : `-${endLine}`} is not a commentable range in the pull request diff`,
-    )
-  }
-}
-
-function reviewCommentLines(
-  patch: string,
-  filePath: string,
-  side: 'old' | 'new',
-): Map<number, number> {
-  const lines = new Map<number, number>()
-  let oldPath: string | null = null
-  let currentFile = false
-  let oldLine = 0
-  let newLine = 0
-  let oldRemaining = 0
-  let newRemaining = 0
-  let hunk = 0
-  for (const line of patch.split('\n')) {
-    if (oldRemaining > 0 || newRemaining > 0) {
-      if (line.startsWith('\\ No newline at end of file')) continue
-      if (line.startsWith(' ')) {
-        lines.set(side === 'old' ? oldLine : newLine, hunk)
-        oldLine += 1
-        newLine += 1
-        oldRemaining -= 1
-        newRemaining -= 1
-      } else if (line.startsWith('-')) {
-        if (side === 'old') lines.set(oldLine, hunk)
-        oldLine += 1
-        oldRemaining -= 1
-      } else if (line.startsWith('+')) {
-        if (side === 'new') lines.set(newLine, hunk)
-        newLine += 1
-        newRemaining -= 1
-      }
-      continue
-    }
-    if (line.startsWith('diff --git ')) {
-      oldPath = null
-      currentFile = false
-      continue
-    }
-    if (line.startsWith('--- ')) {
-      const rawPath = line.slice(4).split('\t')[0] ?? ''
-      const parsedPath = stripPatchPrefix(rawPath)
-      oldPath = parsedPath === '/dev/null' ? null : parsedPath
-      continue
-    }
-    if (line.startsWith('+++ ')) {
-      const rawPath = line.slice(4).split('\t')[0] ?? ''
-      const parsedPath = stripPatchPrefix(rawPath)
-      const newPath = parsedPath === '/dev/null' ? null : parsedPath
-      currentFile = oldPath === filePath || newPath === filePath
-      continue
-    }
-    const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line)
-    if (header != null) {
-      oldLine = Number(header[1])
-      newLine = Number(header[3])
-      oldRemaining = Number(header[2] ?? 1)
-      newRemaining = Number(header[4] ?? 1)
-      hunk += 1
-      if (!currentFile) {
-        oldRemaining = 0
-        newRemaining = 0
-      }
-    }
-  }
-  return lines
-}
-
 export function validateReviewFilePath(patch: string, filePath: string): string {
   const normalizedPath = filePath.replace(/^\.\//, '')
   if (!filePathsFromPatch(patch).has(normalizedPath)) {
@@ -320,6 +232,32 @@ async function resolveWorktree(root: string, ignoreWhitespace: boolean): Promise
     gitCommand: `git diff${ignoreWhitespace ? ' --ignore-all-space' : ''} HEAD`,
     patch,
     oldSnapshot: { kind: 'commit', id: head },
+    newSnapshot: { kind: 'worktree', id: contentId(patch) },
+    commits: [],
+  }
+}
+
+async function resolveBranchWorktree(
+  root: string,
+  ignoreWhitespace: boolean,
+): Promise<ResolvedReview> {
+  const defaultBranch = await resolveDefaultBranch(root)
+  if (defaultBranch == null) {
+    throw new AppError(
+      'INVALID_REVIEW_TARGET',
+      'Could not find an origin default branch for the current branch review',
+    )
+  }
+
+  const head = await resolveCommit(root, 'HEAD')
+  const base = (await runGit(root, ['merge-base', defaultBranch, head])).stdout.trim()
+  const trackedPatch = await gitDiff(root, [base], ignoreWhitespace)
+  const patch = trackedPatch + (await untrackedPatch(root, ignoreWhitespace))
+  return {
+    label: 'Current branch + working tree',
+    gitCommand: `git diff${ignoreWhitespace ? ' --ignore-all-space' : ''} --merge-base ${shellQuote(defaultBranch)}`,
+    patch,
+    oldSnapshot: { kind: 'commit', id: base },
     newSnapshot: { kind: 'worktree', id: contentId(patch) },
     commits: [],
   }

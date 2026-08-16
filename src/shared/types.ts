@@ -4,10 +4,24 @@ export type AnnotationIntent = 'annotation' | 'review-comment'
 
 export type ReviewTarget =
   | { kind: 'worktree' }
+  | { kind: 'branch-worktree' }
   | { kind: 'unstaged' }
   | { kind: 'staged' }
   | { kind: 'range'; expression: string }
   | { kind: 'pr'; number: number }
+
+export function targetSupportsStaging(target: ReviewTarget): boolean {
+  switch (target.kind) {
+    case 'worktree':
+    case 'branch-worktree':
+    case 'unstaged':
+      return true
+    case 'staged':
+    case 'range':
+    case 'pr':
+      return false
+  }
+}
 
 export interface CommitSummary {
   oid: string
@@ -66,7 +80,7 @@ export interface RepositoryInfo {
 
 export type PullRequestListView = 'open' | 'additional-review' | 'merged'
 export type PullRequestState = 'OPEN' | 'CLOSED' | 'MERGED'
-export type PullRequestCheckStatus = 'none' | 'pending' | 'pass' | 'fail'
+export type PullRequestCheckStatus = 'none' | 'unknown' | 'pending' | 'pass' | 'fail'
 export type PullRequestCheckRunStatus = 'pending' | 'pass' | 'fail' | 'skipped'
 export type PullRequestMergeable = 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN'
 
@@ -117,9 +131,19 @@ export interface PullRequestSummary {
   updatedAt: string
   author: GitHubUser
   assignees: GitHubUser[]
+  reviewers: GitHubReviewer[]
   labels: GitHubLabel[]
   checkStatus: PullRequestCheckStatus
 }
+
+export type MinimizedCommentReason =
+  | 'abuse'
+  | 'off-topic'
+  | 'outdated'
+  | 'resolved'
+  | 'duplicate'
+  | 'spam'
+  | 'low-quality'
 
 export type PullRequestActivity =
   | {
@@ -130,6 +154,7 @@ export type PullRequestActivity =
       createdAt: string
       updatedAt: string
       url: string | null
+      minimizedReason: MinimizedCommentReason | null
     }
   | {
       kind: 'review'
@@ -149,11 +174,13 @@ export type PullRequestActivity =
       path: string
       line: number | null
       side: DiffSide | null
+      reviewId: string | null
       replyToId: string | null
       createdAt: string
       updatedAt: string
       url: string | null
       diffHunk: string
+      minimizedReason: MinimizedCommentReason | null
     }
   | {
       kind: 'timeline'
@@ -172,7 +199,6 @@ export interface PullRequestDetails extends PullRequestSummary {
   body: string
   mergedBy: GitHubUser | null
   mergeable: PullRequestMergeable
-  reviewers: GitHubReviewer[]
   issueReferences: GitHubIssueReference[]
   baseRefOid: string
   headRefOid: string
@@ -247,6 +273,7 @@ export interface UpdatePullRequestLabelInput {
 export interface AddPullRequestCommentInput {
   repositoryPath: string
   body: string
+  replyToId?: string | null
 }
 
 export type PullRequestReviewEvent = 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES'
