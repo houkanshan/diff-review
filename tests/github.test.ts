@@ -190,7 +190,7 @@ describe('GitHub pull request review comments', () => {
 
 
 describe('GitHub issue references in Markdown', () => {
-  test('extracts list references without treating CommonMark code as content', () => {
+  test('extracts references from list text without treating CommonMark code as content', () => {
     const markdown = [
       '    - #12',
       '- #13',
@@ -200,11 +200,16 @@ describe('GitHub issue references in Markdown', () => {
       '- #15',
       '```',
       '- acme/other#16',
+      '- close #17 and **acme/other#18**, but not `#19` or [#20](https://example.com)',
+      '',
+      'close #21',
     ].join('\n')
 
     expect(extractIssueReferenceTargets([markdown])).toEqual([
       { token: '#13', owner: null, repository: null, number: 13 },
       { token: 'acme/other#16', owner: 'acme', repository: 'other', number: 16 },
+      { token: '#17', owner: null, repository: null, number: 17 },
+      { token: 'acme/other#18', owner: 'acme', repository: 'other', number: 18 },
     ])
   })
 
@@ -232,7 +237,7 @@ describe('GitHub issue references in Markdown', () => {
           url: 'https://github.com/acme/repo/issues/11160',
         }],
       })
-    const tree = processor.runSync(processor.parse('- #11160'))
+    const tree = processor.runSync(processor.parse('- close #11160 after'))
 
     expect(tree).toMatchObject({
       children: [{
@@ -241,11 +246,15 @@ describe('GitHub issue references in Markdown', () => {
           type: 'listItem',
           children: [{
             type: 'paragraph',
-            children: [{
-              type: 'link',
-              url: 'https://github.com/acme/repo/issues/11160',
-              children: [{ type: 'text', value: `#11160 ${title}` }],
-            }],
+            children: [
+              { type: 'text', value: 'close ' },
+              {
+                type: 'link',
+                url: 'https://github.com/acme/repo/issues/11160',
+                children: [{ type: 'text', value: `#11160 ${title}` }],
+              },
+              { type: 'text', value: ' after' },
+            ],
           }],
         }],
       }],
