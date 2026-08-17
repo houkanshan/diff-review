@@ -128,6 +128,7 @@ import {
   updateGlobalComment,
 } from './api'
 import { applyImportance } from './importance'
+import { formatTimestamp, relativeTime, relativeTimeAgo } from './time'
 import { DifftasticView } from './DifftasticView'
 import {
   EMPTY_COMPOSER_DRAFT,
@@ -358,7 +359,7 @@ function RootRedirect({
   useEffect(() => {
     void getSessions()
       .then((sessions) => {
-        const latest = sessions.at(0)
+        const latest = sessions.find((session) => session.target.kind !== 'pr') ?? sessions.at(0)
         if (latest == null) setEmpty(true)
         else onOpenSession(latest.id, true)
       })
@@ -710,6 +711,7 @@ function ReviewWorkspace({
     diff: 0,
   })
   const [selection, setSelection] = useState<CodeViewLineSelection | null>(null)
+  const [activeFilePath, setActiveFilePath] = useState<string | null>(null)
   const [composerSelection, setComposerSelection] = useAtom(composerSelectionAtom)
   const setComposerDraft = useSetAtom(composerDraftAtom)
   const setReviewCommentAvailable = useSetAtom(reviewCommentAvailableAtom)
@@ -745,6 +747,7 @@ function ReviewWorkspace({
     setSelection(null)
     setComposerSelection(null)
     setComposerDraft(EMPTY_COMPOSER_DRAFT)
+    setActiveFilePath(null)
   }, [session.patch, setComposerDraft, setComposerSelection])
 
   useEffect(() => {
@@ -1029,6 +1032,7 @@ function ReviewWorkspace({
   const difftastic = difftasticQuery.data
   const difftasticReady = difftastic?.available === true
   const selectFile = useCallback((id: string) => {
+    setActiveFilePath(id)
     setFileCollapsed(id, false)
     window.requestAnimationFrame(() => {
       if (renderer === 'difftastic') {
@@ -1236,6 +1240,7 @@ function ReviewWorkspace({
           <FileRail
             files={parsedFiles}
             resolvedTheme={resolvedTheme}
+            activeFilePath={activeFilePath}
             onSelect={selectFile}
           />
           <PanelResizeHandle
@@ -1279,6 +1284,7 @@ function ReviewWorkspace({
                   setFileCollapsed(filePath, !collapsedFiles.has(filePath))
                 }}
                 onSetViewed={setViewed}
+                onVisibleFileChange={setActiveFilePath}
               />
             ) : (
               <CodeView<ReviewLineAnnotation>
@@ -1289,6 +1295,12 @@ function ReviewWorkspace({
                 options={diffOptions}
                 selectedLines={selection}
                 onSelectedLinesChange={handleSelection}
+                onScroll={(scrollTop, viewer) => {
+                  const next = fileIdAtCodeViewScroll(viewer, items, scrollTop)
+                  if (next != null) {
+                    setActiveFilePath((current) => current === next ? current : next)
+                  }
+                }}
                 renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
                 renderHeaderMetadata={renderHeaderMetadata}
                 renderAnnotation={renderAnnotation}
@@ -1309,6 +1321,7 @@ function ReviewWorkspace({
           <Inspector
             session={session}
             files={parsedFiles}
+            activeFilePath={activeFilePath}
             piStatus={pullRequest?.piStatus}
             onSetArchived={setArchived}
             onUpdateComment={editAnnotation}
@@ -1316,12 +1329,14 @@ function ReviewWorkspace({
             allowGlobalComment={pullRequest == null}
             onArchiveAll={archiveAll}
             onNavigate={(annotation) => {
+              const fileId = fileIdForAnnotation(annotation, parsedFiles)
+              setActiveFilePath(fileId)
               viewerRef.current?.scrollTo({
                 type: 'line',
-                id: annotation.filePath,
+                id: fileId,
                 lineNumber: annotation.endLine,
                 side: annotation.side === 'new' ? 'additions' : 'deletions',
-                align: 'start',
+                align: 'center',
                 behavior: 'smooth-auto',
               })
             }}
@@ -3335,10 +3350,12 @@ function CommitPicker({
 function FileRail({
   files,
   resolvedTheme,
+  activeFilePath,
   onSelect,
 }: {
   files: FileDiffMetadata[]
   resolvedTheme: ResolvedTheme
+  activeFilePath: string | null
   onSelect(id: string): void
 }) {
   const [query, setQuery] = useState('')
@@ -3385,6 +3402,7 @@ function FileRail({
           files={filteredFiles}
           stats={stats}
           resolvedTheme={resolvedTheme}
+          activeFilePath={activeFilePath}
           onSelect={onSelect}
         />
       )}
@@ -3399,13 +3417,18 @@ function ChangedFileTree({
   files,
   stats,
   resolvedTheme,
+  activeFilePath,
   onSelect,
 }: {
   files: FileDiffMetadata[]
   stats: Map<string, FileChangeStats>
   resolvedTheme: ResolvedTheme
+  activeFilePath: string | null
   onSelect(id: string): void
 }) {
+  const syncingSelectionRef = useRef(false)
+  const activeFilePathRef = useRef(activeFilePath)
+  activeFilePathRef.current = activeFilePath
   const filePaths = new Set(files.map((file) => file.name))
   const gitStatus: GitStatusEntry[] = files.map((file) => ({
     path: file.name,
@@ -3422,6 +3445,7 @@ function ChangedFileTree({
     paths: files.map((file) => file.name),
     flattenEmptyDirectories: true,
     initialExpansion: 'open',
+    initialSelectedPaths: activeFilePath != null ? [activeFilePath] : undefined,
     density: 'compact',
     icons: { set: 'standard', colored: false },
     unsafeCSS: `
@@ -3441,8 +3465,9 @@ function ChangedFileTree({
     `,
     gitStatus,
     onSelectionChange(selectedPaths) {
+      if (syncingSelectionRef.current) return
       const selectedFile = selectedPaths.find((path) => filePaths.has(path))
-      if (selectedFile != null) onSelect(selectedFile)
+      if (selectedFile != null && selectedFile !== activeFilePathRef.current) onSelect(selectedFile)
     },
     renderRowDecoration({ item }) {
       if (item.kind !== 'file') return null
@@ -3472,6 +3497,22 @@ function ChangedFileTree({
       }
     },
   })
+
+  useEffect(() => {
+    if (activeFilePath == null) return
+    const item = model.getItem(activeFilePath)
+    if (item == null) return
+    syncingSelectionRef.current = true
+    try {
+      for (const path of model.getSelectedPaths()) {
+        if (path !== activeFilePath) model.getItem(path)?.deselect()
+      }
+      if (!item.isSelected()) item.select()
+      model.scrollToPath(activeFilePath, { offset: 'nearest' })
+    } finally {
+      syncingSelectionRef.current = false
+    }
+  }, [activeFilePath, model])
 
   return (
     <FileTree
@@ -3607,6 +3648,7 @@ function FileViewedToggle({
 function Inspector({
   session,
   files,
+  activeFilePath,
   piStatus,
   onSetArchived,
   onUpdateComment,
@@ -3617,6 +3659,7 @@ function Inspector({
 }: {
   session: ReviewSession
   files: FileDiffMetadata[]
+  activeFilePath: string | null
   piStatus?: PiReviewStatus
   onSetArchived(annotationId: string, archived: boolean): Promise<void>
   onUpdateComment(annotationId: string, comment: string, intent?: AnnotationIntent): Promise<void>
@@ -3632,6 +3675,7 @@ function Inspector({
   const [commentsCopied, setCommentsCopied] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [globalEditing, setGlobalEditing] = useState(false)
+  const notesListRef = useRef<HTMLDivElement>(null)
   const active = session.annotations.filter((annotation) => annotation.archivedAt == null)
   const archived = session.annotations.filter((annotation) => annotation.archivedAt != null)
   const myComments = active.filter(
@@ -3644,6 +3688,14 @@ function Inspector({
     (session.globalComment != null || globalEditing)
   const piRun = piStatus == null || piStatus.state === 'idle' ? null : piStatus
   const showPiReviewDetails = view === 'active' && piRun != null
+
+  useEffect(() => {
+    if (activeFilePath == null) return
+    const card = notesListRef.current?.querySelector<HTMLElement>(
+      `[data-file-path="${cssEscape(activeFilePath)}"]`,
+    )
+    card?.scrollIntoView({ block: 'nearest' })
+  }, [activeFilePath, view])
 
   return (
     <aside className="inspector">
@@ -3719,7 +3771,7 @@ function Inspector({
               : 'Archived annotations will remain available here.'}
           </p>
         ) : (
-          <div className="notes-list">
+          <div className="notes-list" ref={notesListRef}>
             {showPiReviewDetails && piRun != null && <PiRunCard run={piRun} />}
             {showGlobalComment && (
               <article className="note-card global-comment-card">
@@ -3752,7 +3804,11 @@ function Inspector({
               const viewed = session.viewedFiles.includes(annotation.filePath)
               const editing = editingId === annotation.id
               return (
-                <article key={annotation.id} className="note-card">
+                <article
+                  key={annotation.id}
+                  className={`note-card${fileIdForAnnotation(annotation, files) === activeFilePath ? ' is-active' : ''}`}
+                  data-file-path={fileIdForAnnotation(annotation, files)}
+                >
                   <button className="note-target" onClick={() => onNavigate(annotation)}>
                     <span
                       className={`note-viewed-status ${viewed ? 'viewed' : ''}`}
@@ -3788,6 +3844,9 @@ function Inspector({
                   <footer>
                     <div className="note-source">
                       <span className={`source ${annotation.source}`}>{annotation.source}</span>
+                      <time className="note-time" title={formatTimestamp(annotation.createdAt)}>
+                        {relativeTimeAgo(annotation.createdAt)}
+                      </time>
                       {annotation.intent === 'review-comment' && annotation.submittedAt == null && annotation.archivedAt == null && (
                         <span className="review-comment-source">pending review</span>
                       )}
@@ -4143,6 +4202,9 @@ function InlineAnnotation({
               : annotation.intent === 'review-comment'
                 ? 'Pending review comment'
                 : 'Annotation'}</span>
+          <time className="note-time" title={formatTimestamp(annotation.createdAt)}>
+            {relativeTimeAgo(annotation.createdAt)}
+          </time>
           <code>{lineLabel(annotation)}</code>
         </div>
         <div>
@@ -4326,7 +4388,25 @@ function selectionSideToDiffSide(side: 'deletions' | 'additions' | undefined): D
   return side === 'deletions' ? 'old' : 'new'
 }
 
+function fileIdForAnnotation(annotation: SessionAnnotation, files: FileDiffMetadata[]): string {
+  const renamed = files.find((file) => file.prevName === annotation.filePath)
+  return renamed?.name ?? annotation.filePath
+}
 
+function fileIdAtCodeViewScroll(
+  viewer: { getTopForItem(id: string): number | null | undefined },
+  items: readonly { id: string }[],
+  scrollTop: number,
+): string | null {
+  let current: string | null = null
+  for (const item of items) {
+    const top = viewer.getTopForItem(item.id)
+    if (top == null) continue
+    if (top > scrollTop + 24) break
+    current = item.id
+  }
+  return current ?? items[0]?.id ?? null
+}
 function fileHeaderIdFromEvent(event: MouseEvent): string | null {
   const path = event.composedPath()
   const clickedHeader = path.some(
@@ -4402,21 +4482,6 @@ function cssEscape(value: string): string {
 function compactPath(filePath: string): string {
   const parts = filePath.split('/')
   return parts.length <= 2 ? filePath : `…/${parts.slice(-2).join('/')}`
-}
-
-function relativeTime(value: string): string {
-  const minutes = Math.max(0, Math.round((Date.now() - Date.parse(value)) / 60_000))
-  if (minutes < 1) return 'now'
-  if (minutes < 60) return `${minutes}m`
-  const hours = Math.round(minutes / 60)
-  return hours < 24 ? `${hours}h` : `${Math.round(hours / 24)}d`
-}
-
-function formatTimestamp(value: string): string {
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(new Date(value))
 }
 
 function repositoryNameFromPath(repositoryPath: string): string {

@@ -16,6 +16,7 @@ import {
   visibleAnnotationsForFile,
 } from './annotationComposer'
 import { highlightFileLines, syntaxLanguageFor } from './syntaxHighlight'
+import { formatTimestamp, relativeTimeAgo } from './time'
 import type {
   DifftasticFileDiff,
   DifftasticHunkLine,
@@ -33,6 +34,7 @@ export function DifftasticView({
   viewedFiles,
   onToggleCollapsed,
   onSetViewed,
+  onVisibleFileChange,
 }: {
   session: ReviewSession
   files: FileDiffMetadata[]
@@ -42,9 +44,16 @@ export function DifftasticView({
   viewedFiles: Set<string>
   onToggleCollapsed(filePath: string): void
   onSetViewed(filePath: string, viewed: boolean): Promise<void>
+  onVisibleFileChange?(filePath: string): void
 }) {
   return (
-    <div className="diff-view difftastic-view">
+    <div
+      className="diff-view difftastic-view"
+      onScroll={(event) => {
+        const next = fileIdAtDifftasticScroll(event.currentTarget)
+        if (next != null) onVisibleFileChange?.(next)
+      }}
+    >
       {files.map((file) => (
         <DifftasticFile
           key={file.name}
@@ -376,6 +385,9 @@ function ReadOnlyAnnotations({ annotations }: { annotations: SessionAnnotation[]
           <div className="inline-source">
             <div>
               <span>{annotationSourceLabel(annotation)}</span>
+              <time className="note-time" title={formatTimestamp(annotation.createdAt)}>
+                {relativeTimeAgo(annotation.createdAt)}
+              </time>
               <code>{lineLabel(annotation)}</code>
             </div>
           </div>
@@ -606,6 +618,16 @@ function useNearViewport(target: { current: HTMLElement | null }, enabled: boole
   }, [enabled, target])
 
   return near
+}
+
+function fileIdAtDifftasticScroll(scroller: HTMLElement): string | null {
+  const marker = scroller.scrollTop + 24
+  let current: string | null = null
+  for (const node of scroller.querySelectorAll<HTMLElement>('[data-file-id]')) {
+    if (node.offsetTop > marker) break
+    current = node.dataset.fileId ?? current
+  }
+  return current
 }
 
 function formatLineNumber(line: number | null): string {

@@ -3024,6 +3024,11 @@ body.resizing-panels * {
   background: var(--surface-subtle);
 }
 
+.note-card.is-active {
+  border-color: var(--accent-border);
+  background: var(--selected);
+}
+
 .global-comment-card {
   border-color: var(--border-strong);
   background: var(--surface-raised);
@@ -3266,6 +3271,12 @@ body.resizing-panels * {
   color: var(--accent);
   font-size: 8px;
   font-weight: 700;
+}
+
+.note-time {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 650;
 }
 
 .importance-inline {

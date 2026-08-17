@@ -87,6 +87,12 @@ const MINIMIZED_COMMENTS_QUERY = `
   }
 `.trim()
 const MAX_OUTPUT_BYTES = 128 * 1024 * 1024
+type GitHubCommandKind = 'read' | 'page' | 'mutate'
+const GITHUB_COMMAND_TIMEOUT_MS = {
+  read: 15_000,
+  page: 45_000,
+  mutate: 90_000,
+} as const
 type ResolvedIssueReference = Omit<GitHubIssueReference, 'token' | 'label'>
 type ResolvedIssueReferenceTarget = GitHubIssueReferenceTarget & { owner: string; repository: string }
 
@@ -144,6 +150,8 @@ export async function getPullRequestDetails(
         '--slurp',
       ],
       root,
+      undefined,
+      'page',
     ),
     runGitHub(
       [
@@ -153,6 +161,8 @@ export async function getPullRequestDetails(
         '--slurp',
       ],
       root,
+      undefined,
+      'page',
     ),
     runGitHub(
       [
@@ -162,6 +172,8 @@ export async function getPullRequestDetails(
         '--slurp',
       ],
       root,
+      undefined,
+      'page',
     ),
   ])
   const raw = expectObject(parseJson(detailsOutput, `GitHub PR #${number}`))
@@ -314,6 +326,8 @@ export async function removePullRequestLabel(
         `repos/{owner}/{repo}/issues/${number}/labels/${encodeURIComponent(label)}`,
       ],
       root,
+      undefined,
+      'mutate',
     )
   } catch (error) {
     const labelWasAlreadyAbsent =
@@ -344,6 +358,8 @@ export async function addPullRequestComment(
         `body=${comment}`,
       ],
       root,
+      undefined,
+      'mutate',
     )
     return
   }
@@ -361,6 +377,7 @@ export async function addPullRequestComment(
     ],
     root,
     JSON.stringify({ body: comment, in_reply_to: Number(replyToId) }),
+    'mutate',
   )
 }
 
@@ -433,6 +450,7 @@ export async function submitPullRequestReview(
     ],
     root,
     JSON.stringify({ event, body: comment, commit_id: revision, comments }),
+    'mutate',
   )
 }
 
@@ -456,6 +474,8 @@ export async function squashMergePullRequest(
       `sha=${headOid}`,
     ],
     root,
+    undefined,
+    'mutate',
   )
   const response = expectObject(parseJson(output, `GitHub PR #${number} squash merge`))
   if (response.merged !== true) {
@@ -781,6 +801,8 @@ async function listMinimizedComments(
       `query=${MINIMIZED_COMMENTS_QUERY}`,
     ],
     root,
+    undefined,
+    'page',
   )
   return parseMinimizedComments(parseJson(output, `GitHub PR #${number} minimized comments`))
 }
@@ -981,7 +1003,13 @@ function invalidGitHubResponse(message: string): AppError {
   return new AppError('GITHUB_RESPONSE_INVALID', message)
 }
 
-async function runGitHub(args: string[], cwd: string, input?: string): Promise<string> {
+async function runGitHub(
+  args: string[],
+  cwd: string,
+  input?: string,
+  kind: GitHubCommandKind = 'read',
+): Promise<string> {
+  const timeoutMs = GITHUB_COMMAND_TIMEOUT_MS[kind]
   const result = await new Promise<{ stdout: string; stderr: string; exitCode: number }>(
     (resolve, reject) => {
       const child = spawn('gh', args, {
@@ -992,22 +1020,41 @@ async function runGitHub(args: string[], cwd: string, input?: string): Promise<s
       const stdout: Buffer[] = []
       const stderr: Buffer[] = []
       let outputBytes = 0
+      let settled = false
+      const finish = (error?: unknown, value?: { stdout: string; stderr: string; exitCode: number }) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        if (error != null) reject(error)
+        else resolve(value!)
+      }
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL')
+        finish(new AppError(
+          kind === 'mutate' ? 'GITHUB_TIMEOUT_INDETERMINATE' : 'GITHUB_TIMEOUT',
+          kind === 'mutate'
+            ? 'GitHub may have already applied this change. Refresh before retrying.'
+            : 'GitHub request timed out',
+          504,
+          { args, kind },
+        ))
+      }, timeoutMs)
       const collect = (target: Buffer[]) => (chunk: Buffer) => {
         outputBytes += chunk.length
         if (outputBytes > MAX_OUTPUT_BYTES) {
           child.kill()
-          reject(new AppError('COMMAND_OUTPUT_TOO_LARGE', 'gh output exceeded 128 MiB'))
+          finish(new AppError('COMMAND_OUTPUT_TOO_LARGE', 'gh output exceeded 128 MiB'))
           return
         }
         target.push(chunk)
       }
       child.stdout.on('data', collect(stdout))
       child.stderr.on('data', collect(stderr))
-      child.on('error', reject)
+      child.on('error', (error) => finish(error))
       child.stdin.on('error', () => undefined)
       child.stdin.end(input)
       child.on('close', (exitCode) => {
-        resolve({
+        finish(undefined, {
           stdout: Buffer.concat(stdout).toString('utf8'),
           stderr: Buffer.concat(stderr).toString('utf8'),
           exitCode: exitCode ?? 1,

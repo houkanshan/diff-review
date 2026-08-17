@@ -30,19 +30,25 @@ export class ClientError extends Error {
   }
 }
 
+const BOOTSTRAP_TIMEOUT_MS = 20_000
+const GITHUB_READ_TIMEOUT_MS = 25_000
+const GITHUB_OPEN_TIMEOUT_MS = 60_000
+
 export function getSession(id: string): Promise<ReviewSession> {
-  return request(`/api/sessions/${encodeURIComponent(id)}`)
+  return request(`/api/sessions/${encodeURIComponent(id)}`, { timeoutMs: BOOTSTRAP_TIMEOUT_MS })
 }
 
 export function getSessions(repositoryPath?: string): Promise<ReviewSession[]> {
   const query = repositoryPath == null
     ? ''
     : `?repositoryPath=${encodeURIComponent(repositoryPath)}`
-  return request(`/api/sessions${query}`)
+  return request(`/api/sessions${query}`, { timeoutMs: BOOTSTRAP_TIMEOUT_MS })
 }
 
 export function getRepositoryInfo(repositoryPath: string): Promise<RepositoryInfo> {
-  return request(`/api/repository?path=${encodeURIComponent(repositoryPath)}`)
+  return request(`/api/repository?path=${encodeURIComponent(repositoryPath)}`, {
+    timeoutMs: BOOTSTRAP_TIMEOUT_MS,
+  })
 }
 
 export function getPullRequests(
@@ -51,6 +57,7 @@ export function getPullRequests(
 ): Promise<PullRequestSummary[]> {
   return request(
     `/api/pull-requests?repositoryPath=${encodeURIComponent(repositoryPath)}&view=${view}`,
+    { timeoutMs: GITHUB_READ_TIMEOUT_MS },
   )
 }
 
@@ -61,6 +68,7 @@ export function openPullRequest(
   return request(`/api/pull-requests/${number}/open`, {
     method: 'POST',
     body: JSON.stringify(input),
+    timeoutMs: GITHUB_OPEN_TIMEOUT_MS,
   })
 }
 
@@ -111,6 +119,7 @@ export function getPullRequestRevisions(
 ): Promise<PullRequestRevision[]> {
   return request(
     `/api/pull-requests/${number}/revisions?repositoryPath=${encodeURIComponent(repositoryPath)}`,
+    { timeoutMs: GITHUB_READ_TIMEOUT_MS },
   )
 }
 
@@ -253,10 +262,19 @@ export function getDifftasticFile(
   )
 }
 
-async function request<T>(pathname: string, init?: RequestInit): Promise<T> {
+type RequestOptions = RequestInit & { timeoutMs?: number }
+
+async function request<T>(pathname: string, init?: RequestOptions): Promise<T> {
+  const { timeoutMs, ...fetchInit } = init ?? {}
   const response = await fetch(pathname, {
-    ...init,
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    ...fetchInit,
+    signal: fetchInit.signal ?? (timeoutMs == null ? undefined : AbortSignal.timeout(timeoutMs)),
+    headers: { 'Content-Type': 'application/json', ...fetchInit.headers },
+  }).catch((error: unknown) => {
+    if (error instanceof DOMException && error.name === 'TimeoutError') {
+      throw new ClientError('REQUEST_TIMEOUT', 'Request timed out')
+    }
+    throw error
   })
   if (response.status === 204) return undefined as T
   const body = (await response.json()) as T | ApiErrorShape

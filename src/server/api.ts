@@ -1067,7 +1067,7 @@ function sendJson(response: ServerResponse, status: number, body: unknown): void
 }
 
 async function fetchAvatar(url: URL): Promise<CachedMedia> {
-  const response = await fetch(url, { redirect: 'follow' })
+  const response = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(8_000) })
   if (!response.ok) {
     throw new AppError('AVATAR_FETCH_FAILED', `Avatar request failed with ${response.status}`, 502)
   }
@@ -1111,6 +1111,7 @@ async function fetchGitHubAttachment(url: URL): Promise<CachedMedia> {
   for (let redirect = 0; redirect <= 5; redirect += 1) {
     response = await fetch(currentUrl, {
       redirect: 'manual',
+      signal: AbortSignal.timeout(8_000),
       headers: {
         Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
         ...(redirect === 0 && token != null ? { Authorization: `Bearer ${token}` } : {}),
