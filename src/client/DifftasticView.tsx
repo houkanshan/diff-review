@@ -25,6 +25,87 @@ import type {
   SessionAnnotation,
 } from '../shared/types'
 
+export type DifftasticScrollTarget = {
+  line: number
+  side: 'old' | 'new'
+  annotationId?: string
+}
+
+export function scrollDifftasticTarget(
+  root: HTMLElement | null,
+  fileId: string,
+  target?: DifftasticScrollTarget,
+): boolean {
+  if (root == null) return false
+  const scroller = root.classList.contains('diff-view')
+    ? root
+    : root.querySelector<HTMLElement>('.diff-view')
+  if (scroller == null) return false
+  const file = scroller.querySelector<HTMLElement>(
+    `article[data-file-id="${cssEscape(fileId)}"]`,
+  )
+  if (file == null) return false
+  const ready = file.dataset.dftReady === 'true'
+  const node = target == null ? file : resolveDifftasticLine(file, target)
+  if (target != null && node == null && !ready) {
+    snapDifftasticScroll(scroller, file, 8)
+    return false
+  }
+  const focus = node ?? file
+  const offset = target != null && node != null
+    ? Math.max(0, (scroller.clientHeight - focus.getBoundingClientRect().height) / 2)
+    : 8
+  snapDifftasticScroll(scroller, focus, offset)
+  if (!ready) return false
+  const aligned =
+    Math.abs(
+      focus.getBoundingClientRect().top - scroller.getBoundingClientRect().top - offset,
+    ) < 2
+  return aligned
+}
+
+function resolveDifftasticLine(
+  file: HTMLElement,
+  target: DifftasticScrollTarget,
+): HTMLElement | null {
+  if (target.annotationId != null) {
+    const note = file.querySelector<HTMLElement>(
+      `[data-dft-note="${cssEscape(target.annotationId)}"]`,
+    )
+    if (note != null) return note
+  }
+  const exact = file.querySelector<HTMLElement>(
+    `[data-dft-${target.side}="${String(target.line)}"]`,
+  )
+  if (exact != null) return exact
+  return nearestDifftasticLine(file, target.side, target.line)
+}
+
+function nearestDifftasticLine(
+  file: HTMLElement,
+  side: 'old' | 'new',
+  line: number,
+): HTMLElement | null {
+  const attr = side === 'old' ? 'data-dft-old' : 'data-dft-new'
+  let best: HTMLElement | null = null
+  let bestDist = Infinity
+  for (const node of file.querySelectorAll<HTMLElement>(`[${attr}]`)) {
+    const value = Number(node.getAttribute(attr))
+    if (!Number.isFinite(value)) continue
+    const dist = Math.abs(value - line)
+    if (dist < bestDist) {
+      best = node
+      bestDist = dist
+    }
+  }
+  return best
+}
+
+function snapDifftasticScroll(scroller: HTMLElement, node: HTMLElement, offset: number): void {
+  scroller.scrollTop =
+    node.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop - offset
+}
+
 export function DifftasticView({
   session,
   files,
@@ -110,6 +191,7 @@ function DifftasticFile({
       className="difftastic-file"
       data-file-id={file.name}
       data-collapsed={collapsed ? 'true' : undefined}
+      data-dft-ready={collapsed || query.isFetched || query.isError ? 'true' : undefined}
     >
       <header className="difftastic-file-header" data-diffs-header="default">
         <div className="difftastic-file-title">
@@ -288,7 +370,8 @@ function DifftasticLine({
       <>
         <UnifiedLine
           kind="delete"
-          lineNumber={line.oldLine}
+          oldLine={line.oldLine}
+          newLine={null}
           text={line.oldText ?? ''}
           spans={line.oldSpans}
           tokens={oldTokens}
@@ -296,7 +379,8 @@ function DifftasticLine({
         />
         <UnifiedLine
           kind="insert"
-          lineNumber={line.newLine}
+          oldLine={null}
+          newLine={line.newLine}
           text={line.newText ?? ''}
           spans={line.newSpans}
           tokens={newTokens}
@@ -309,7 +393,8 @@ function DifftasticLine({
   return (
     <UnifiedLine
       kind={line.kind}
-      lineNumber={line.newLine ?? line.oldLine}
+      oldLine={line.oldLine}
+      newLine={line.newLine}
       text={line.newText ?? line.oldText ?? ''}
       spans={line.newText != null ? line.newSpans : line.oldSpans}
       tokens={line.newText != null ? newTokens : oldTokens}
@@ -320,21 +405,28 @@ function DifftasticLine({
 
 function UnifiedLine({
   kind,
-  lineNumber,
+  oldLine,
+  newLine,
   text,
   spans,
   tokens,
   annotations,
 }: {
   kind: DifftasticHunkLine['kind']
-  lineNumber: number | null
+  oldLine: number | null
+  newLine: number | null
   text: string
   spans: DifftasticSpan[]
   tokens: ThemedToken[] | null
   annotations: SessionAnnotation[]
 }) {
+  const lineNumber = newLine ?? oldLine
   return (
-    <div className={`difftastic-row is-${kind}`}>
+    <div
+      className={`difftastic-row is-${kind}`}
+      data-dft-old={oldLine ?? undefined}
+      data-dft-new={newLine ?? undefined}
+    >
       <span className={`difftastic-gutter is-${kind}`}>{formatLineNumber(lineNumber)}</span>
       <div className="difftastic-line-body">
         <code className="difftastic-code">
@@ -364,7 +456,11 @@ function LineSide({
   annotations: SessionAnnotation[]
 } ) {
   return (
-    <div className={`difftastic-side is-${side} is-${kind}`}>
+    <div
+      className={`difftastic-side is-${side} is-${kind}`}
+      data-dft-old={side === 'old' ? lineNumber ?? undefined : undefined}
+      data-dft-new={side === 'new' ? lineNumber ?? undefined : undefined}
+    >
       <span className={`difftastic-gutter is-${kind}`}>{formatLineNumber(lineNumber)}</span>
       <div className="difftastic-line-body">
         <code className="difftastic-code">
@@ -381,7 +477,11 @@ function ReadOnlyAnnotations({ annotations }: { annotations: SessionAnnotation[]
   return (
     <div className="difftastic-annotations">
       {annotations.map((annotation) => (
-        <div key={annotation.id} className={`inline-annotation ${annotation.source}`}>
+        <div
+          key={annotation.id}
+          className={`inline-annotation ${annotation.source}`}
+          data-dft-note={annotation.id}
+        >
           <div className="inline-source">
             <div>
               <span>{annotationSourceLabel(annotation)}</span>
@@ -621,13 +721,20 @@ function useNearViewport(target: { current: HTMLElement | null }, enabled: boole
 }
 
 function fileIdAtDifftasticScroll(scroller: HTMLElement): string | null {
-  const marker = scroller.scrollTop + 24
+  const marker = scroller.getBoundingClientRect().top + 24
   let current: string | null = null
-  for (const node of scroller.querySelectorAll<HTMLElement>('[data-file-id]')) {
-    if (node.offsetTop > marker) break
+  const files = scroller.querySelectorAll<HTMLElement>('article[data-file-id]')
+  for (const node of files) {
+    if (node.getBoundingClientRect().top > marker) break
     current = node.dataset.fileId ?? current
   }
-  return current
+  return current ?? files[0]?.dataset.fileId ?? null
+}
+
+function cssEscape(value: string): string {
+  return typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+    ? CSS.escape(value)
+    : value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
 }
 
 function formatLineNumber(line: number | null): string {

@@ -50,7 +50,6 @@ import {
   UserMinus as UserMinusIcon,
   UserPlus as UserPlusIcon,
   TextWrap as WrapIcon,
-  Spline as DifftasticIcon,
   CircleCheck,
 } from 'lucide-react'
 import Markdown from 'react-markdown'
@@ -129,7 +128,7 @@ import {
 } from './api'
 import { applyImportance } from './importance'
 import { formatTimestamp, relativeTime, relativeTimeAgo } from './time'
-import { DifftasticView } from './DifftasticView'
+import { DifftasticView, scrollDifftasticTarget } from './DifftasticView'
 import {
   EMPTY_COMPOSER_DRAFT,
   areCodeViewSelectionsEqual,
@@ -1034,15 +1033,11 @@ function ReviewWorkspace({
   const selectFile = useCallback((id: string) => {
     setActiveFilePath(id)
     setFileCollapsed(id, false)
+    if (renderer === 'difftastic') {
+      scheduleDifftasticScroll(diffWorkspaceRef.current, id)
+      return
+    }
     window.requestAnimationFrame(() => {
-      if (renderer === 'difftastic') {
-        const scroller = diffWorkspaceRef.current?.querySelector<HTMLElement>('.diff-view')
-        const node = scroller?.querySelector<HTMLElement>(
-          `[data-file-id="${cssEscape(id)}"]`,
-        )
-        if (scroller != null && node != null) scroller.scrollTop = node.offsetTop - 8
-        return
-      }
       viewerRef.current?.scrollTo({ type: 'item', id, align: 'start', offset: 8 })
     })
   }, [renderer, setFileCollapsed])
@@ -1074,19 +1069,28 @@ function ReviewWorkspace({
     if (activity.kind !== 'review-comment' || activity.line == null) return
     const lineNumber = activity.line
     switchPullRequestView('diff')
+    const fileId = activity.path
+    if (fileId == null) return
+    setActiveFilePath(fileId)
+    setFileCollapsed(fileId, false)
+    const side = activity.side === 'old' ? 'old' : 'new'
+    if (renderer === 'difftastic') {
+      scheduleDifftasticScroll(diffWorkspaceRef.current, fileId, { line: lineNumber, side })
+      return
+    }
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         viewerRef.current?.scrollTo({
           type: 'line',
-          id: activity.path,
+          id: fileId,
           lineNumber,
-          side: activity.side === 'old' ? 'deletions' : 'additions',
+          side: side === 'old' ? 'deletions' : 'additions',
           align: 'start',
           behavior: 'smooth-auto',
         })
       })
     })
-  }, [pullRequest, switchPullRequestView])
+  }, [pullRequest, renderer, setFileCollapsed, switchPullRequestView])
 
   const workspaceStyle = {
     '--left-panel-width': `${leftPanelWidth}px`,
@@ -1151,13 +1155,11 @@ function ReviewWorkspace({
                 Split
               </Toggle>
             </ToggleGroup>
-            <DifftasticToggle
-              active={renderer === 'difftastic' && difftasticReady}
-              available={difftasticReady}
+            <RendererSwitch
+              value={renderer === 'difftastic' && difftasticReady ? 'difftastic' : 'pierre'}
+              structuralDisabled={difftasticQuery.isPending || !difftasticReady}
               hint={difftastic?.installHint ?? 'Install difftastic and make sure `difft` is on PATH.'}
-              loading={difftasticQuery.isPending}
-              onToggle={() => {
-                const next = renderer === 'difftastic' ? 'pierre' : 'difftastic'
+              onChange={(next) => {
                 setRenderer(next)
                 storeDiffRenderer(next)
               }}
@@ -1331,6 +1333,15 @@ function ReviewWorkspace({
             onNavigate={(annotation) => {
               const fileId = fileIdForAnnotation(annotation, parsedFiles)
               setActiveFilePath(fileId)
+              setFileCollapsed(fileId, false)
+              if (renderer === 'difftastic') {
+                scheduleDifftasticScroll(diffWorkspaceRef.current, fileId, {
+                  line: annotation.endLine,
+                  side: annotation.endSide ?? annotation.side,
+                  annotationId: annotation.id,
+                })
+                return
+              }
               viewerRef.current?.scrollTo({
                 type: 'line',
                 id: fileId,
@@ -1450,47 +1461,47 @@ function ThemePicker({
   )
 }
 
-function DifftasticToggle({
-  active,
-  available,
+function RendererSwitch({
+  value,
+  structuralDisabled,
   hint,
-  loading,
-  onToggle,
+  onChange,
 }: {
-  active: boolean
-  available: boolean
+  value: 'pierre' | 'difftastic'
+  structuralDisabled: boolean
   hint: string
-  loading: boolean
-  onToggle(): void
+  onChange(next: 'pierre' | 'difftastic'): void
 }) {
-  const disabled = loading || !available
-  const label = disabled
-    ? hint
-    : active
-      ? 'Use line diff'
-      : 'Use structural diff'
   return (
-    <Tooltip.Root>
-      <Tooltip.Trigger
-        render={
-          <button
-            type="button"
-            className={`icon-button${active ? ' is-active' : ''}`}
-            aria-label={label}
-            aria-pressed={active}
-            disabled={disabled}
-            onClick={onToggle}
-          >
-            <DifftasticIcon />
-          </button>
-        }
-      />
-      <Tooltip.Portal>
-        <Tooltip.Positioner className="tooltip-positioner" sideOffset={6}>
-          <Tooltip.Popup className="tooltip-popup">{label}</Tooltip.Popup>
-        </Tooltip.Positioner>
-      </Tooltip.Portal>
-    </Tooltip.Root>
+    <ToggleGroup
+      className="layout-switch"
+      aria-label="Diff renderer"
+      value={[value]}
+      onValueChange={(nextValue) => {
+        const next = nextValue.at(0)
+        if (next === 'pierre' || next === 'difftastic') onChange(next)
+      }}
+    >
+      <Toggle value="pierre">Line</Toggle>
+      {structuralDisabled ? (
+        <Tooltip.Root>
+          <Tooltip.Trigger
+            render={
+              <Toggle value="difftastic" disabled>
+                Structural
+              </Toggle>
+            }
+          />
+          <Tooltip.Portal>
+            <Tooltip.Positioner className="tooltip-positioner" sideOffset={6}>
+              <Tooltip.Popup className="tooltip-popup">{hint}</Tooltip.Popup>
+            </Tooltip.Positioner>
+          </Tooltip.Portal>
+        </Tooltip.Root>
+      ) : (
+        <Toggle value="difftastic">Structural</Toggle>
+      )}
+    </ToggleGroup>
   )
 }
 
@@ -4395,17 +4406,20 @@ function fileIdForAnnotation(annotation: SessionAnnotation, files: FileDiffMetad
 
 function fileIdAtCodeViewScroll(
   viewer: { getTopForItem(id: string): number | null | undefined },
-  items: readonly { id: string }[],
+  items: readonly { id: string; collapsed?: boolean }[],
   scrollTop: number,
 ): string | null {
   let current: string | null = null
+  let firstExpanded: string | null = null
   for (const item of items) {
+    if (item.collapsed) continue
+    firstExpanded ??= item.id
     const top = viewer.getTopForItem(item.id)
     if (top == null) continue
     if (top > scrollTop + 24) break
     current = item.id
   }
-  return current ?? items[0]?.id ?? null
+  return current ?? firstExpanded
 }
 function fileHeaderIdFromEvent(event: MouseEvent): string | null {
   const path = event.composedPath()
@@ -4471,6 +4485,19 @@ function storedDiffRenderer(): DiffRenderer {
 function storeDiffRenderer(renderer: DiffRenderer): void {
   if (renderer === 'pierre') window.localStorage.removeItem('diff-review-renderer')
   else window.localStorage.setItem('diff-review-renderer', renderer)
+}
+
+function scheduleDifftasticScroll(
+  root: HTMLElement | null,
+  fileId: string,
+  target?: { line: number; side: 'old' | 'new'; annotationId?: string },
+): void {
+  let frames = 0
+  const tick = () => {
+    if (scrollDifftasticTarget(root, fileId, target)) return
+    if (++frames < 90) window.requestAnimationFrame(tick)
+  }
+  window.requestAnimationFrame(tick)
 }
 
 function cssEscape(value: string): string {
