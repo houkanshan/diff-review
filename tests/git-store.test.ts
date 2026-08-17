@@ -609,6 +609,105 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
     ])
   })
 
+  test('reuses a local session for the same repository target', async () => {
+    const store = new ReviewStore(path.join(fixture.directory, 'reuse-local.db'))
+    const handler = new ApiHandler(store, null)
+    const server = createServer(handler.handle)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address() as AddressInfo
+    const baseUrl = `http://127.0.0.1:${port}`
+
+    try {
+      const body = JSON.stringify({
+        repositoryPath: fixture.repository,
+        target: { kind: 'range', expression: 'origin/main...HEAD' },
+      })
+      const firstResponse = await fetch(`${baseUrl}/api/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      })
+      const secondResponse = await fetch(`${baseUrl}/api/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      })
+      expect(firstResponse.status).toBe(201)
+      expect(secondResponse.status).toBe(201)
+      const first = await firstResponse.json() as { id: string; annotations: unknown[] }
+      const second = await secondResponse.json() as { id: string }
+      expect(second.id).toBe(first.id)
+
+      store.addAnnotation(first.id, {
+        filePath: 'tracked.txt',
+        side: 'new',
+        startLine: 5,
+        endLine: 5,
+        comment: 'Keep this note',
+        source: 'agent',
+      })
+      const thirdResponse = await fetch(`${baseUrl}/api/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      })
+      const third = await thirdResponse.json() as {
+        id: string
+        annotations: Array<{ comment: string | null }>
+      }
+      expect(third.id).toBe(first.id)
+      expect(third.annotations).toMatchObject([{ comment: 'Keep this note' }])
+    } finally {
+      handler.close()
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error == null ? resolve() : reject(error))
+      })
+    }
+  })
+
+  test('opens a new pull request session when the revision changes', async () => {
+    const review = await resolveTarget(
+      fixture.repository,
+      { kind: 'range', expression: 'origin/main...HEAD' },
+      true,
+    )
+    expect(review.oldSnapshot.kind).toBe('commit')
+    expect(review.newSnapshot.kind).toBe('commit')
+    const store = new ReviewStore(path.join(fixture.directory, 'reuse-pr.db'))
+    const first = store.createSession(
+      fixture.repository,
+      'repo',
+      { kind: 'pr', number: 42 },
+      review,
+      true,
+    )
+    const nextHead = 'c'.repeat(40)
+    const updated = store.createSession(
+      fixture.repository,
+      'repo',
+      { kind: 'pr', number: 42 },
+      {
+        ...review,
+        newSnapshot: { kind: 'commit', id: nextHead },
+      },
+      true,
+    )
+
+    expect(updated.id).not.toBe(first.id)
+    expect(store.findPullRequestRevision(
+      fixture.repository,
+      42,
+      review.oldSnapshot.id,
+      review.newSnapshot.id,
+    )?.id).toBe(first.id)
+    expect(store.findPullRequestRevision(
+      fixture.repository,
+      42,
+      review.oldSnapshot.id,
+      nextHead,
+    )?.id).toBe(updated.id)
+  })
+
   test('persists Pi review runs and selects the latest run', async () => {
     const review = await resolveTarget(fixture.repository, {
       kind: 'range',

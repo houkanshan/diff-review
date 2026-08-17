@@ -1857,6 +1857,12 @@ body.resizing-panels * {
   color: var(--red);
 }
 
+.difftastic-line-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .difftastic-code {
   min-width: 0;
   padding: 0 10px;
@@ -1865,14 +1871,16 @@ body.resizing-panels * {
 }
 
 .difftastic-row.is-insert,
-.difftastic-row.is-insert .difftastic-code,
-.difftastic-side.is-insert {
+ .difftastic-row.is-insert .difftastic-code,
+ .difftastic-row.is-insert .difftastic-line-body,
+ .difftastic-side.is-insert {
   background: var(--diffs-bg-addition);
 }
 
 .difftastic-row.is-delete,
-.difftastic-row.is-delete .difftastic-code,
-.difftastic-side.is-delete {
+ .difftastic-row.is-delete .difftastic-code,
+ .difftastic-row.is-delete .difftastic-line-body,
+ .difftastic-side.is-delete {
   background: var(--diffs-bg-deletion);
 }
 

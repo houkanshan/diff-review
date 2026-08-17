@@ -7,7 +7,7 @@ import type {
   FileDiffMetadata,
 } from '@pierre/diffs'
 
-import type { AnnotationIntent, SessionAnnotation } from '../shared/types'
+import type { AnnotationIntent, DifftasticHunk, SessionAnnotation } from '../shared/types'
 
 export type ReviewLineAnnotation =
   | { kind: 'saved'; annotation: SessionAnnotation }
@@ -34,23 +34,33 @@ export const fileViewedAtom = atomFamily((filePath: string) => atom(false))
 export const composerSessionIdAtom = atom<string | null>(null)
 export const reviewCommentAvailableAtom = atom(false)
 
+export function visibleAnnotationsForFile(
+  annotations: SessionAnnotation[],
+  filePath: string,
+  prevName?: string | null,
+): SessionAnnotation[] {
+  return annotations.filter(
+    (annotation) =>
+      annotation.comment != null &&
+      annotation.archivedAt == null &&
+      (annotation.filePath === filePath || annotation.filePath === prevName),
+  )
+}
+
 export function annotationsForFile(
   annotations: SessionAnnotation[],
   fileDiff: FileDiffMetadata,
   selection: CodeViewLineSelection | null,
 ): DiffLineAnnotation<ReviewLineAnnotation>[] {
-  const result: DiffLineAnnotation<ReviewLineAnnotation>[] = annotations
-    .filter(
-      (annotation) =>
-        annotation.comment != null &&
-        annotation.archivedAt == null &&
-        (annotation.filePath === fileDiff.name || annotation.filePath === fileDiff.prevName),
-    )
-    .map((annotation) => ({
-      side: (annotation.endSide ?? annotation.side) === 'new' ? 'additions' : 'deletions',
-      lineNumber: annotation.endLine,
-      metadata: { kind: 'saved', annotation },
-    }))
+  const result: DiffLineAnnotation<ReviewLineAnnotation>[] = visibleAnnotationsForFile(
+    annotations,
+    fileDiff.name,
+    fileDiff.prevName,
+  ).map((annotation) => ({
+    side: (annotation.endSide ?? annotation.side) === 'new' ? 'additions' : 'deletions',
+    lineNumber: annotation.endLine,
+    metadata: { kind: 'saved', annotation },
+  }))
 
   if (
     selection != null &&
@@ -67,6 +77,75 @@ export function annotationsForFile(
     })
   }
   return result
+}
+
+export function annotationAnchorSide(annotation: SessionAnnotation): 'old' | 'new' {
+  return annotation.endSide ?? annotation.side
+}
+
+export function placeDifftasticAnnotations(
+  annotations: SessionAnnotation[],
+  hunks: DifftasticHunk[],
+): Map<string, SessionAnnotation[]> {
+  const oldSlots: Array<{ key: string; line: number }> = []
+  const newSlots: Array<{ key: string; line: number }> = []
+  hunks.forEach((hunk, hunkIndex) => {
+    hunk.lines.forEach((line, lineIndex) => {
+      if (line.oldLine != null) {
+        oldSlots.push({ key: difftasticRowKey(hunkIndex, lineIndex, 'old'), line: line.oldLine })
+      }
+      if (line.newLine != null) {
+        newSlots.push({ key: difftasticRowKey(hunkIndex, lineIndex, 'new'), line: line.newLine })
+      }
+    })
+  })
+
+  const byRow = new Map<string, SessionAnnotation[]>()
+  for (const annotation of annotations) {
+    const preferred = annotationAnchorSide(annotation)
+    const sameSide = preferred === 'new' ? newSlots : oldSlots
+    const otherSide = preferred === 'new' ? oldSlots : newSlots
+    const hit = nearestVisibleSlot(annotation.endLine, sameSide)
+      ?? nearestVisibleSlot(annotation.endLine, otherSide)
+    if (hit == null) continue
+    const existing = byRow.get(hit.key)
+    if (existing == null) byRow.set(hit.key, [annotation])
+    else existing.push(annotation)
+  }
+  return byRow
+}
+
+export function annotationsAtDifftasticRow(
+  placed: Map<string, SessionAnnotation[]>,
+  hunkIndex: number,
+  lineIndex: number,
+  side: 'old' | 'new',
+): SessionAnnotation[] {
+  return placed.get(difftasticRowKey(hunkIndex, lineIndex, side)) ?? []
+}
+
+function difftasticRowKey(hunkIndex: number, lineIndex: number, side: 'old' | 'new'): string {
+  return `${hunkIndex}:${lineIndex}:${side}`
+}
+
+function nearestVisibleSlot(
+  target: number,
+  candidates: Array<{ key: string; line: number }>,
+): { key: string; line: number } | null {
+  let best: { key: string; line: number } | null = null
+  let bestDistance = Infinity
+  for (const candidate of candidates) {
+    const distance = Math.abs(candidate.line - target)
+    if (
+      best == null ||
+      distance < bestDistance ||
+      (distance === bestDistance && candidate.line < best.line)
+    ) {
+      best = candidate
+      bestDistance = distance
+    }
+  }
+  return best
 }
 
 export function areCodeViewSelectionsEqual(

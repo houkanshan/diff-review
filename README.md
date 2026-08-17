@@ -30,11 +30,13 @@ The command starts the loopback-only daemon when needed and opens the review in 
 
 ## Agent annotations
 
-An already-running agent can create a session without opening the browser:
+An already-running agent can open a session without opening the browser:
 
 ```bash
 diff-review session create --repo . origin/master...HEAD
 ```
+
+The same repository and local target reuse the existing session, so later `session create` calls keep the same ID and annotations. Pull requests still open a new session when the base or head revision changes.
 
 Alternatively, copy the session ID from the browser. The agent can keep inspecting changes with ordinary `git diff`, then annotate lines in changed files with one command:
 

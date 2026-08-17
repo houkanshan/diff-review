@@ -14,6 +14,7 @@ import type {
   ReviewTarget,
   SessionAnnotation,
 } from '../shared/types.js'
+import { reviewTargetsEqual } from '../shared/types.js'
 import type { ResolvedReview } from './git.js'
 import { AppError } from './errors.js'
 
@@ -230,6 +231,21 @@ export class ReviewStore {
       return target.kind === 'pr' && target.number === number
     })
     return row == null ? null : this.sessionFromRow(row)
+  }
+
+  findSessionByTarget(repositoryRoot: string, target: ReviewTarget): ReviewSession | null {
+    const rows = this.database
+      .prepare(`
+        SELECT id, target_json FROM sessions
+        WHERE repository_root = ?
+        ORDER BY updated_at DESC
+      `)
+      .all(repositoryRoot) as unknown as Pick<SessionRow, 'id' | 'target_json'>[]
+    const row = rows.find((candidate) => {
+      const existing = JSON.parse(candidate.target_json) as ReviewTarget
+      return reviewTargetsEqual(existing, target)
+    })
+    return row == null ? null : this.getSession(row.id)
   }
 
   listPullRequestRevisions(repositoryRoot: string, number: number): PullRequestRevision[] {

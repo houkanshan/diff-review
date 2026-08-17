@@ -69,6 +69,15 @@ export function targetSupportsStaging(target: ReviewTarget): boolean {
   }
 }
 
+export function reviewTargetsEqual(left: ReviewTarget, right: ReviewTarget): boolean {
+  if (left.kind !== right.kind) return false
+  if (left.kind === 'range' && right.kind === 'range') {
+    return left.expression.trim() === right.expression.trim()
+  }
+  if (left.kind === 'pr' && right.kind === 'pr') return left.number === right.number
+  return true
+}
+
 export interface CommitSummary {
   oid: string
   shortOid: string

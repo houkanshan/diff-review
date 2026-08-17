@@ -731,6 +731,18 @@ export class ApiHandler {
         resolved.newSnapshot.id,
       )
       if (existing != null) return existing
+    } else {
+      const existing = this.store.findSessionByTarget(root, target)
+      if (existing != null) {
+        return this.store.updateResolvedReview(
+          existing.id,
+          resolved,
+          resolved.commits.at(0)?.oid ?? null,
+          resolved.commits.at(-1)?.oid ?? null,
+          resolved.commits,
+          ignoreWhitespace,
+        )
+      }
     }
     return this.store.createSession(
       root,

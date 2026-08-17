@@ -6,16 +6,22 @@ import {
   ChevronDown as ChevronIcon,
   Copy as CopyIcon,
 } from 'lucide-react'
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import type { ThemedToken } from 'shiki'
 
 import { ClientError, getDifftasticFile, getFileContents } from './api'
+import {
+  annotationsAtDifftasticRow,
+  placeDifftasticAnnotations,
+  visibleAnnotationsForFile,
+} from './annotationComposer'
 import { highlightFileLines, syntaxLanguageFor } from './syntaxHighlight'
 import type {
   DifftasticFileDiff,
   DifftasticHunkLine,
   DifftasticSpan,
   ReviewSession,
+  SessionAnnotation,
 } from '../shared/types'
 
 export function DifftasticView({
@@ -44,6 +50,7 @@ export function DifftasticView({
           key={file.name}
           sessionId={session.id}
           updatedAt={session.updatedAt}
+          annotations={session.annotations}
           file={file}
           layout={layout}
           resolvedTheme={resolvedTheme}
@@ -60,6 +67,7 @@ export function DifftasticView({
 function DifftasticFile({
   sessionId,
   updatedAt,
+  annotations,
   file,
   layout,
   resolvedTheme,
@@ -70,6 +78,7 @@ function DifftasticFile({
 }: {
   sessionId: string
   updatedAt: string
+  annotations: SessionAnnotation[]
   file: FileDiffMetadata
   layout: 'unified' | 'split'
   resolvedTheme: 'light' | 'dark'
@@ -128,6 +137,7 @@ function DifftasticFile({
           resolvedTheme={resolvedTheme}
           filePath={file.name}
           oldFilePath={file.prevName ?? file.name}
+          annotations={visibleAnnotationsForFile(annotations, file.name, file.prevName)}
           file={query.data}
           loading={nearViewport && query.isPending}
           error={query.error}
@@ -145,6 +155,7 @@ function DifftasticFileBody({
   resolvedTheme,
   filePath,
   oldFilePath,
+  annotations,
   file,
   loading,
   error,
@@ -156,6 +167,7 @@ function DifftasticFileBody({
   resolvedTheme: 'light' | 'dark'
   filePath: string
   oldFilePath: string
+  annotations: SessionAnnotation[]
   file: DifftasticFileDiff | undefined
   loading: boolean
   error: unknown
@@ -181,6 +193,10 @@ function DifftasticFileBody({
     resolvedTheme,
     highlightReady,
   )
+  const placed = useMemo(
+    () => placeDifftasticAnnotations(annotations, file?.hunks ?? []),
+    [annotations, file],
+  )
 
   if (waiting) return <div className="difftastic-status">Waiting to render…</div>
   if (loading) return <div className="difftastic-status">Rendering structural diff…</div>
@@ -198,13 +214,15 @@ function DifftasticFileBody({
 
   return (
     <div className={`difftastic-hunks difftastic-${layout}`}>
-      {file.hunks.map((hunk, index) => (
-        <div key={index} className="difftastic-hunk">
+      {file.hunks.map((hunk, hunkIndex) => (
+        <div key={hunkIndex} className="difftastic-hunk">
           {hunk.lines.map((line, lineIndex) => (
             <DifftasticLine
               key={lineIndex}
               line={line}
               layout={layout}
+              oldNotes={annotationsAtDifftasticRow(placed, hunkIndex, lineIndex, 'old')}
+              newNotes={annotationsAtDifftasticRow(placed, hunkIndex, lineIndex, 'new')}
               oldTokens={line.oldLine == null ? null : oldTokens?.[line.oldLine - 1] ?? null}
               newTokens={line.newLine == null ? null : newTokens?.[line.newLine - 1] ?? null}
             />
@@ -218,14 +236,19 @@ function DifftasticFileBody({
 function DifftasticLine({
   line,
   layout,
+  oldNotes,
+  newNotes,
   oldTokens,
   newTokens,
 }: {
   line: DifftasticHunkLine
   layout: 'unified' | 'split'
+  oldNotes: SessionAnnotation[]
+  newNotes: SessionAnnotation[]
   oldTokens: ThemedToken[] | null
   newTokens: ThemedToken[] | null
-}) {
+} ) {
+
   if (layout === 'split') {
     return (
       <div className={`difftastic-row is-${line.kind}`}>
@@ -236,6 +259,7 @@ function DifftasticLine({
           spans={line.oldSpans}
           tokens={oldTokens}
           kind={line.kind === 'insert' ? 'empty' : line.kind}
+          annotations={oldNotes}
         />
         <LineSide
           side="new"
@@ -244,6 +268,7 @@ function DifftasticLine({
           spans={line.newSpans}
           tokens={newTokens}
           kind={line.kind === 'delete' ? 'empty' : line.kind}
+          annotations={newNotes}
         />
       </div>
     )
@@ -258,6 +283,7 @@ function DifftasticLine({
           text={line.oldText ?? ''}
           spans={line.oldSpans}
           tokens={oldTokens}
+          annotations={oldNotes}
         />
         <UnifiedLine
           kind="insert"
@@ -265,6 +291,7 @@ function DifftasticLine({
           text={line.newText ?? ''}
           spans={line.newSpans}
           tokens={newTokens}
+          annotations={newNotes}
         />
       </>
     )
@@ -277,6 +304,7 @@ function DifftasticLine({
       text={line.newText ?? line.oldText ?? ''}
       spans={line.newText != null ? line.newSpans : line.oldSpans}
       tokens={line.newText != null ? newTokens : oldTokens}
+      annotations={uniqueAnnotations(oldNotes, newNotes)}
     />
   )
 }
@@ -287,19 +315,24 @@ function UnifiedLine({
   text,
   spans,
   tokens,
+  annotations,
 }: {
   kind: DifftasticHunkLine['kind']
   lineNumber: number | null
   text: string
   spans: DifftasticSpan[]
   tokens: ThemedToken[] | null
+  annotations: SessionAnnotation[]
 }) {
   return (
     <div className={`difftastic-row is-${kind}`}>
       <span className={`difftastic-gutter is-${kind}`}>{formatLineNumber(lineNumber)}</span>
-      <code className="difftastic-code">
-        <HighlightedText text={text} spans={spans} tokens={tokens} />
-      </code>
+      <div className="difftastic-line-body">
+        <code className="difftastic-code">
+          <HighlightedText text={text} spans={spans} tokens={tokens} />
+        </code>
+        <ReadOnlyAnnotations annotations={annotations} />
+      </div>
     </div>
   )
 }
@@ -311,6 +344,7 @@ function LineSide({
   spans,
   tokens,
   kind,
+  annotations,
 }: {
   side: 'old' | 'new'
   lineNumber: number | null
@@ -318,15 +352,69 @@ function LineSide({
   spans: DifftasticSpan[]
   tokens: ThemedToken[] | null
   kind: DifftasticHunkLine['kind'] | 'empty'
-}) {
+  annotations: SessionAnnotation[]
+} ) {
   return (
     <div className={`difftastic-side is-${side} is-${kind}`}>
       <span className={`difftastic-gutter is-${kind}`}>{formatLineNumber(lineNumber)}</span>
-      <code className="difftastic-code">
-        {text == null ? null : <HighlightedText text={text} spans={spans} tokens={tokens} />}
-      </code>
+      <div className="difftastic-line-body">
+        <code className="difftastic-code">
+          {text == null ? null : <HighlightedText text={text} spans={spans} tokens={tokens} />}
+        </code>
+        <ReadOnlyAnnotations annotations={annotations} />
+      </div>
     </div>
   )
+}
+
+function ReadOnlyAnnotations({ annotations }: { annotations: SessionAnnotation[] }) {
+  if (annotations.length === 0) return null
+  return (
+    <div className="difftastic-annotations">
+      {annotations.map((annotation) => (
+        <div key={annotation.id} className={`inline-annotation ${annotation.source}`}>
+          <div className="inline-source">
+            <div>
+              <span>{annotationSourceLabel(annotation)}</span>
+              <code>{lineLabel(annotation)}</code>
+            </div>
+          </div>
+          <p>{annotation.comment}</p>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function annotationSourceLabel(annotation: SessionAnnotation): string {
+  if (annotation.source === 'agent') return 'Agent note'
+  if (annotation.submittedAt != null) return 'Submitted review comment'
+  if (annotation.intent === 'review-comment') return 'Pending review comment'
+  return 'Annotation'
+}
+
+function lineLabel(annotation: SessionAnnotation): string {
+  const prefix = annotation.side === 'new' ? '+' : '−'
+  if (annotation.endSide != null && annotation.endSide !== annotation.side) {
+    const endPrefix = annotation.endSide === 'new' ? '+' : '−'
+    return `${prefix}${annotation.startLine} → ${endPrefix}${annotation.endLine}`
+  }
+  return `${prefix}${annotation.startLine}${annotation.startLine === annotation.endLine ? '' : `–${annotation.endLine}`}`
+}
+
+function uniqueAnnotations(
+  ...groups: SessionAnnotation[][]
+): SessionAnnotation[] {
+  const seen = new Set<string>()
+  const result: SessionAnnotation[] = []
+  for (const group of groups) {
+    for (const annotation of group) {
+      if (seen.has(annotation.id)) continue
+      seen.add(annotation.id)
+      result.push(annotation)
+    }
+  }
+  return result
 }
 
 function HighlightedText({

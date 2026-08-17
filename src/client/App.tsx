@@ -75,7 +75,7 @@ import {
 } from 'react'
 
 import { remarkIssueReferences } from '../shared/markdown'
-import { targetSupportsStaging, type DiffRenderer } from '../shared/types'
+import { reviewTargetsEqual, targetSupportsStaging, type DiffRenderer } from '../shared/types'
 import type {
   AnnotationIntent,
   DiffSide,
@@ -3219,14 +3219,6 @@ function TargetOption({
   )
 }
 
-function reviewTargetsEqual(left: ReviewTarget, right: ReviewTarget): boolean {
-  if (left.kind !== right.kind) return false
-  if (left.kind === 'range' && right.kind === 'range') {
-    return left.expression.trim() === right.expression.trim()
-  }
-  if (left.kind === 'pr' && right.kind === 'pr') return left.number === right.number
-  return true
-}
 
 function reviewTargetKey(repositoryRoot: string, target: ReviewTarget): string {
   if (target.kind === 'range') return `${repositoryRoot}:range:${target.expression.trim()}`

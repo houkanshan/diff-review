@@ -3,10 +3,12 @@ import type { CodeViewLineSelection, FileDiffMetadata } from '@pierre/diffs'
 
 import {
   areReviewAnnotationsEqual,
+  annotationsAtDifftasticRow,
   annotationsForFile,
   buildCodeViewItems,
+  placeDifftasticAnnotations,
 } from '../src/client/annotationComposer.js'
-import type { SessionAnnotation } from '../src/shared/types.js'
+import type { DifftasticHunk, SessionAnnotation } from '../src/shared/types.js'
 
 function fileDiff(name: string, prevName?: string): FileDiffMetadata {
   return {
@@ -114,3 +116,90 @@ describe('annotation composer items', () => {
     expect(next[1]).toBe(initial[1])
   })
 })
+
+describe('difftastic annotation placement', () => {
+  test('anchors to the matching visible line when it exists', () => {
+    const placed = placeDifftasticAnnotations(
+      [annotation('src/a.ts', 'note-1')],
+      [hunk({ kind: 'insert', oldLine: null, newLine: 4 })],
+    )
+
+    expect(idsAt(placed, 0, 0, 'new')).toEqual(['note-1'])
+  })
+
+  test('falls back to the nearest same-side visible line', () => {
+    const note = annotation('src/a.ts', 'near')
+    note.endLine = 12
+    const placed = placeDifftasticAnnotations(
+      [note],
+      [hunk(
+        { kind: 'context', oldLine: 8, newLine: 8 },
+        { kind: 'insert', oldLine: null, newLine: 10 },
+        { kind: 'context', oldLine: 16, newLine: 17 },
+      )],
+    )
+
+    expect(idsAt(placed, 0, 1, 'new')).toEqual(['near'])
+    expect(idsAt(placed, 0, 2, 'new')).toEqual([])
+  })
+
+  test('uses the other side only when the preferred side is missing', () => {
+    const note = annotation('src/a.ts', 'cross')
+    note.side = 'old'
+    note.endLine = 9
+    const placed = placeDifftasticAnnotations(
+      [note],
+      [hunk({ kind: 'insert', oldLine: null, newLine: 11 })],
+    )
+
+    expect(idsAt(placed, 0, 0, 'new')).toEqual(['cross'])
+  })
+
+  test('places an overlapping line on only the first rendered row', () => {
+    const note = annotation('src/a.ts', 'once')
+    note.endLine = 12
+    const placed = placeDifftasticAnnotations(
+      [note],
+      [
+        hunk(
+          { kind: 'insert', oldLine: null, newLine: 10 },
+          { kind: 'context', oldLine: 12, newLine: 12 },
+          { kind: 'context', oldLine: 13, newLine: 13 },
+        ),
+        hunk(
+          { kind: 'context', oldLine: 11, newLine: 11 },
+          { kind: 'context', oldLine: 12, newLine: 12 },
+          { kind: 'insert', oldLine: null, newLine: 14 },
+        ),
+      ],
+    )
+
+    expect(idsAt(placed, 0, 1, 'new')).toEqual(['once'])
+    expect(idsAt(placed, 1, 1, 'new')).toEqual([])
+  })
+})
+
+function hunk(...lines: Array<{
+  kind: 'context' | 'delete' | 'insert' | 'change'
+  oldLine: number | null
+  newLine: number | null
+}>): DifftasticHunk {
+  return {
+    lines: lines.map((line) => ({
+      ...line,
+      oldText: line.oldLine == null ? null : 'old',
+      newText: line.newLine == null ? null : 'new',
+      oldSpans: [],
+      newSpans: [],
+    })),
+  }
+}
+
+function idsAt(
+  placed: Map<string, SessionAnnotation[]>,
+  hunkIndex: number,
+  lineIndex: number,
+  side: 'old' | 'new',
+): string[] {
+  return annotationsAtDifftasticRow(placed, hunkIndex, lineIndex, side).map((note) => note.id)
+}
