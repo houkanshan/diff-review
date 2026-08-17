@@ -1,4 +1,50 @@
 export type DiffSide = 'old' | 'new'
+export type DiffRenderer = 'pierre' | 'difftastic'
+export type DifftasticFileStatus = 'unchanged' | 'changed' | 'created' | 'deleted'
+export type DifftasticLineKind = 'context' | 'delete' | 'insert' | 'change'
+export type DifftasticHighlight =
+  | 'delimiter'
+  | 'normal'
+  | 'string'
+  | 'type'
+  | 'comment'
+  | 'keyword'
+  | 'tree_sitter_error'
+
+export interface DifftasticAvailability {
+  available: boolean
+  version: string | null
+  installHint: string
+}
+
+export interface DifftasticSpan {
+  start: number
+  end: number
+  content: string
+  highlight: DifftasticHighlight
+}
+
+export interface DifftasticHunkLine {
+  kind: DifftasticLineKind
+  oldLine: number | null
+  newLine: number | null
+  oldText: string | null
+  newText: string | null
+  oldSpans: DifftasticSpan[]
+  newSpans: DifftasticSpan[]
+}
+
+export interface DifftasticHunk {
+  lines: DifftasticHunkLine[]
+}
+
+export interface DifftasticFileDiff {
+  path: string
+  language: string
+  status: DifftasticFileStatus
+  hunks: DifftasticHunk[]
+}
+
 export type AnnotationIntent = 'annotation' | 'review-comment'
 
 
@@ -191,9 +237,18 @@ export type PullRequestActivity =
       label: string | null
       subject: string | null
       commitId: string | null
+      source: GitHubTimelineSource | null
       previousTitle: string | null
       currentTitle: string | null
     }
+
+export interface GitHubTimelineSource {
+  kind: 'issue' | 'pull-request'
+  number: number
+  title: string
+  url: string | null
+  repository: string | null
+}
 
 export interface PullRequestDetails extends PullRequestSummary {
   body: string
@@ -299,6 +354,11 @@ export interface AddAnnotationInput {
   comment?: string
   importance?: number
   source: 'user' | 'agent'
+  intent?: AnnotationIntent
+}
+
+export interface UpdateAnnotationInput {
+  comment: string
   intent?: AnnotationIntent
 }
 

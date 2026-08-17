@@ -64,7 +64,7 @@ printf '%s\\n' '{\"merged\":true,\"message\":\"Pull Request successfully merged\
         directory,
         42,
         'REQUEST_CHANGES',
-        'Please revise this',
+        '   ',
         'def456',
         [{
           path: 'src/example.ts',
@@ -86,7 +86,7 @@ printf '%s\\n' '{\"merged\":true,\"message\":\"Pull Request successfully merged\
       })
       expect(JSON.parse(readFileSync(input, 'utf8'))).toEqual({
         event: 'REQUEST_CHANGES',
-        body: 'Please revise this',
+        body: '',
         commit_id: 'def456',
         comments: [{
           path: 'src/example.ts',
@@ -106,6 +106,12 @@ printf '%s\\n' '{\"merged\":true,\"message\":\"Pull Request successfully merged\
       else process.env.GH_TEST_INPUT = originalInput
       rmSync(directory, { recursive: true, force: true })
     }
+  })
+
+  test('rejects an empty review with no summary or comments', async () => {
+    await expect(submitPullRequestReview('.', 42, 'COMMENT', '   ', 'def456', [])).rejects.toThrow(
+      'Review must include a summary or comments',
+    )
   })
 
   test('maps a user annotation to a multi-line GitHub review comment', () => {
@@ -562,8 +568,24 @@ describe('GitHub pull request timeline', () => {
       {
         sha: '1234567890abcdef',
         event: 'committed',
-        author: { date: '2026-03-01T11:00:00Z' },
+        author: { name: 'Mona', date: '2026-03-01T11:00:00Z' },
+        committer: { login: 'octocat', avatar_url: 'https://example.com/octocat.png' },
         message: 'Refine timeline\n\nDetails',
+      },
+      {
+        id: 4,
+        event: 'cross-referenced',
+        actor: { login: 'hubot', avatar_url: 'https://example.com/hubot.png' },
+        created_at: '2026-03-01T11:30:00Z',
+        source: {
+          type: 'issue',
+          issue: {
+            number: 88,
+            title: 'Follow-up crash',
+            html_url: 'https://github.com/acme/widgets/issues/88',
+            repository: { name: 'widgets', owner: { login: 'acme' } },
+          },
+        },
       },
       { id: 2, event: 'commented', created_at: '2026-03-01T12:00:00Z' },
       { id: 3, event: 'reviewed', submitted_at: '2026-03-01T13:00:00Z' },
@@ -581,6 +603,7 @@ describe('GitHub pull request timeline', () => {
         label: 'additional-review-needed',
         subject: null,
         commitId: null,
+        source: null,
         previousTitle: null,
         currentTitle: null,
       },
@@ -588,11 +611,39 @@ describe('GitHub pull request timeline', () => {
         kind: 'timeline',
         id: '1234567890abcdef',
         event: 'committed',
-        author: null,
+        author: {
+          login: 'octocat',
+          name: null,
+          avatarUrl: 'https://example.com/octocat.png',
+        },
         createdAt: '2026-03-01T11:00:00Z',
         label: null,
         subject: 'Refine timeline',
         commitId: '1234567890abcdef',
+        source: null,
+        previousTitle: null,
+        currentTitle: null,
+      },
+      {
+        kind: 'timeline',
+        id: '4',
+        event: 'cross-referenced',
+        author: {
+          login: 'hubot',
+          name: null,
+          avatarUrl: 'https://example.com/hubot.png',
+        },
+        createdAt: '2026-03-01T11:30:00Z',
+        label: null,
+        subject: 'Follow-up crash',
+        commitId: null,
+        source: {
+          kind: 'issue',
+          number: 88,
+          title: 'Follow-up crash',
+          url: 'https://github.com/acme/widgets/issues/88',
+          repository: 'acme/widgets',
+        },
         previousTitle: null,
         currentTitle: null,
       },

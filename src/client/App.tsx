@@ -20,6 +20,7 @@ import { ToggleGroup } from '@base-ui/react/toggle-group'
 import { Tooltip } from '@base-ui/react/tooltip'
 import type { GitStatusEntry } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
+import { Provider, createStore, useAtom, useAtomValue, useSetAtom, useStore } from 'jotai'
 import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useHotkey } from '@tanstack/react-hotkeys'
 import {
@@ -49,6 +50,7 @@ import {
   UserMinus as UserMinusIcon,
   UserPlus as UserPlusIcon,
   TextWrap as WrapIcon,
+  Spline as DifftasticIcon,
   CircleCheck,
 } from 'lucide-react'
 import Markdown from 'react-markdown'
@@ -60,18 +62,20 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type ButtonHTMLAttributes,
   type ComponentPropsWithoutRef,
   type CSSProperties,
+  type KeyboardEvent,
   type ReactNode,
   isValidElement,
 } from 'react'
 
 import { remarkIssueReferences } from '../shared/markdown'
-import { targetSupportsStaging } from '../shared/types'
+import { targetSupportsStaging, type DiffRenderer } from '../shared/types'
 import type {
   AnnotationIntent,
   DiffSide,
@@ -102,6 +106,7 @@ import {
   archiveAllAnnotations,
   createSession,
   getFileContents,
+  getDifftasticAvailability,
   getPiReviewStatus,
   getPullRequestRevisions,
   getPullRequests,
@@ -123,15 +128,25 @@ import {
   updateGlobalComment,
 } from './api'
 import { applyImportance } from './importance'
+import { DifftasticView } from './DifftasticView'
+import {
+  EMPTY_COMPOSER_DRAFT,
+  areCodeViewSelectionsEqual,
+  buildCodeViewItems,
+  composerDraftAtom,
+  composerSelectionAtom,
+  composerSessionIdAtom,
+  fileCollapsedAtom,
+  fileViewedAtom,
+  reviewCommentAvailableAtom,
+  type ReviewLineAnnotation,
+} from './annotationComposer'
 
 type DiffLayout = 'unified' | 'split'
 type DiffOverflow = 'wrap' | 'scroll'
 type PullRequestViewMode = 'overview' | 'diff'
 type ThemePreference = 'system' | 'light' | 'dark'
 type ResolvedTheme = 'light' | 'dark'
-type ReviewLineAnnotation =
-  | { kind: 'saved'; annotation: SessionAnnotation }
-  | { kind: 'composer'; selection: CodeViewLineSelection }
 
 type AppRoute =
   | { kind: 'root' }
@@ -150,6 +165,7 @@ interface PullRequestWorkspaceContext {
   list: ReactNode
   piStatus: PiReviewStatus
   onSelectRevision(sessionId: string): void
+  onOpenCommit(commitId: string): Promise<void>
   onStartPiReview(additionalInstructions: string): Promise<void>
   onRemoveAdditionalReviewLabel(): Promise<void>
   onAddComment(body: string, replyToId?: string | null): Promise<void>
@@ -169,6 +185,13 @@ function pullRequestWorkspaceQueryKey(
   revisionId: string | null,
 ) {
   return ['pull-request-workspace', repositoryPath, number, revisionId ?? 'current'] as const
+}
+
+function isAnnotationSubmitEnter(event: KeyboardEvent<HTMLTextAreaElement>) {
+  return event.key === 'Enter' &&
+    !event.shiftKey &&
+    !event.nativeEvent.isComposing &&
+    event.keyCode !== 229
 }
 
 function queryErrorMessage(error: unknown): string | null {
@@ -310,17 +333,19 @@ function SessionPage({
   if (session == null) return null
 
   return (
-    <ReviewWorkspace
-      session={session}
-      error={error}
-      onSessionChange={setSession}
-      onOpenSession={onOpenSession}
-      onOpenPullRequests={onOpenPullRequests}
-      onReload={() => loadSession(session.id, true)}
-      themePreference={themePreference}
-      resolvedTheme={resolvedTheme}
-      onThemeChange={onThemeChange}
-    />
+    <ReviewWorkspaceStore key={session.id} sessionId={session.id}>
+      <ReviewWorkspace
+        session={session}
+        error={error}
+        onSessionChange={setSession}
+        onOpenSession={onOpenSession}
+        onOpenPullRequests={onOpenPullRequests}
+        onReload={() => loadSession(session.id, true)}
+        themePreference={themePreference}
+        resolvedTheme={resolvedTheme}
+        onThemeChange={onThemeChange}
+      />
+    </ReviewWorkspaceStore>
   )
 }
 
@@ -531,6 +556,7 @@ function PullRequestsPage({
   }
 
   return (
+    <ReviewWorkspaceStore key={session.id} sessionId={session.id}>
     <ReviewWorkspace
       session={session}
       error={detailError}
@@ -563,6 +589,13 @@ function PullRequestsPage({
         list: rail,
         piStatus,
         onSelectRevision: (id) => onOpenPullRequests(route.repositoryPath, number, id),
+        onOpenCommit: async (commitId) => {
+          const next = await createSession({
+            repositoryPath: route.repositoryPath,
+            target: { kind: 'range', expression: commitId },
+          })
+          onOpenSession(next.id)
+        },
         onStartPiReview: async (additionalInstructions) => {
           const nextPiStatus = await startPiReview(session.id, { additionalInstructions })
           updateWorkspace((current) => ({ ...current, piStatus: nextPiStatus }))
@@ -620,7 +653,25 @@ function PullRequestsPage({
         },
       }}
     />
+    </ReviewWorkspaceStore>
   )
+}
+
+function ReviewWorkspaceStore({
+  sessionId,
+  children,
+}: {
+  sessionId: string
+  children: ReactNode
+}) {
+  const [store] = useState(() => {
+    const next = createStore()
+    next.set(composerSessionIdAtom, sessionId)
+    next.set(composerSelectionAtom, null)
+    next.set(composerDraftAtom, EMPTY_COMPOSER_DRAFT)
+    return next
+  })
+  return <Provider store={store}>{children}</Provider>
 }
 
 function ReviewWorkspace({
@@ -648,6 +699,7 @@ function ReviewWorkspace({
 }) {
   const viewerRef = useRef<CodeViewHandle<ReviewLineAnnotation>>(null)
   const [layout, setLayout] = useState<DiffLayout>('unified')
+  const [renderer, setRenderer] = useState<DiffRenderer>(() => storedDiffRenderer())
   const [overflow, setOverflow] = useState<DiffOverflow>('wrap')
   const [pullRequestView, setPullRequestView] = useState<PullRequestViewMode>('overview')
   const overviewScrollRef = useRef<HTMLElement>(null)
@@ -658,12 +710,9 @@ function ReviewWorkspace({
     diff: 0,
   })
   const [selection, setSelection] = useState<CodeViewLineSelection | null>(null)
-  const [composerSelection, setComposerSelection] = useState<CodeViewLineSelection | null>(null)
-  const [selectionRevision, setSelectionRevision] = useState(0)
-  const [comment, setComment] = useState('')
-  const [commentIntent, setCommentIntent] = useState<AnnotationIntent>('annotation')
-  const [commentBusy, setCommentBusy] = useState(false)
-  const [commentError, setCommentError] = useState<string | null>(null)
+  const [composerSelection, setComposerSelection] = useAtom(composerSelectionAtom)
+  const setComposerDraft = useSetAtom(composerDraftAtom)
+  const setReviewCommentAvailable = useSetAtom(reviewCommentAvailableAtom)
   const [leftPanelWidth, setLeftPanelWidth] = useState(() =>
     storedPanelWidth('left', 235, 160, 440),
   )
@@ -674,8 +723,15 @@ function ReviewWorkspace({
   const [copied, setCopied] = useState(false)
   const viewedFiles = useMemo(() => new Set(session.viewedFiles), [session.viewedFiles])
   const [collapsedFiles, setCollapsedFiles] = useState(() => new Set(session.viewedFiles))
+  const previousItemsRef = useRef<CodeViewItem<ReviewLineAnnotation>[]>([])
+  const store = useStore()
+  const composerSelectionRef = useRef(composerSelection)
+  const onReloadRef = useRef(onReload)
+  composerSelectionRef.current = composerSelection
+  onReloadRef.current = onReload
 
   const setFileCollapsed = useCallback((filePath: string, collapsed: boolean) => {
+    store.set(fileCollapsedAtom(filePath), collapsed)
     setCollapsedFiles((current) => {
       if (current.has(filePath) === collapsed) return current
       const next = new Set(current)
@@ -683,15 +739,19 @@ function ReviewWorkspace({
       else next.delete(filePath)
       return next
     })
-  }, [])
+  }, [store])
 
   useEffect(() => {
     setSelection(null)
     setComposerSelection(null)
-    setComment('')
-    setCommentIntent('annotation')
-    setCommentError(null)
-  }, [session.id, session.patch])
+    setComposerDraft(EMPTY_COMPOSER_DRAFT)
+  }, [session.patch, setComposerDraft, setComposerSelection])
+
+  useEffect(() => {
+    setReviewCommentAvailable(
+      pullRequest != null && session.id === pullRequest.currentSessionId,
+    )
+  }, [pullRequest, session.id, setReviewCommentAvailable])
 
   useEffect(() => {
     setCollapsedFiles(new Set(session.viewedFiles))
@@ -719,25 +779,40 @@ function ReviewWorkspace({
     }
   }, [session.id, session.patch, session.updatedAt])
 
+  useLayoutEffect(() => {
+    for (const file of parsedFiles) {
+      store.set(fileCollapsedAtom(file.name), collapsedFiles.has(file.name))
+      store.set(fileViewedAtom(file.name), viewedFiles.has(file.name))
+    }
+  }, [collapsedFiles, parsedFiles, store, viewedFiles])
+
   const items = useMemo<CodeViewItem<ReviewLineAnnotation>[]>(() => {
-    const annotationVersion = session.annotations.reduce(
-      (latest, annotation) => Math.max(latest, Date.parse(annotation.updatedAt)),
-      Date.parse(session.updatedAt),
+    const nextItems = buildCodeViewItems(
+      parsedFiles,
+      session.annotations,
+      composerSelection,
+      collapsedFiles,
+      session.id,
+      session.updatedAt,
+      previousItemsRef.current,
     )
-    const version = annotationVersion + session.annotations.length + selectionRevision
-    return parsedFiles.map((fileDiff) => {
-      fileDiff.cacheKey = `${session.id}:${session.updatedAt}:${fileDiff.name}`
-      const collapsed = collapsedFiles.has(fileDiff.name)
-      return {
-        id: fileDiff.name,
-        type: 'diff',
-        fileDiff,
-        version: version * 2 + Number(collapsed),
-        collapsed,
-        annotations: annotationsForFile(session.annotations, fileDiff, composerSelection),
-      }
-    })
-  }, [collapsedFiles, composerSelection, parsedFiles, selectionRevision, session.annotations, session.id, session.updatedAt])
+    previousItemsRef.current = nextItems
+    return nextItems
+  }, [collapsedFiles, composerSelection, parsedFiles, session.annotations, session.id, session.updatedAt])
+
+  const openComposer = useCallback((next: CodeViewLineSelection) => {
+    setSelection(next)
+    const current = composerSelectionRef.current
+    if (current != null && areCodeViewSelectionsEqual(current, next)) return
+    setComposerSelection(next)
+    setComposerDraft(EMPTY_COMPOSER_DRAFT)
+  }, [setComposerDraft, setComposerSelection])
+
+  const closeComposer = useCallback(() => {
+    setSelection(null)
+    setComposerSelection(null)
+    setComposerDraft(EMPTY_COMPOSER_DRAFT)
+  }, [setComposerDraft, setComposerSelection])
 
   const diffOptions = useMemo<CodeViewReactOptions<ReviewLineAnnotation>>(
     () => ({
@@ -758,11 +833,7 @@ function ReviewWorkspace({
       itemMetrics: { lineHeight: 16 },
       onLineSelectionEnd(range, context) {
         if (range == null) return
-        const next = { id: context.item.id, range }
-        setSelection(next)
-        setComposerSelection(next)
-        setCommentIntent('annotation')
-        setSelectionRevision((revision) => revision + 1)
+        openComposer({ id: context.item.id, range })
       },
       async loadDiffFiles(fileDiff) {
         const oldPath = fileDiff.prevName ?? fileDiff.name
@@ -803,67 +874,31 @@ function ReviewWorkspace({
         applyImportance(node, phase, context, session.annotations)
       },
     }),
-    [layout, overflow, resolvedTheme, session.annotations, session.id, session.updatedAt],
+    [layout, openComposer, overflow, resolvedTheme, session.annotations, session.id, session.updatedAt],
   )
 
   const handleSelection = useCallback((next: CodeViewLineSelection | null) => {
-    if (composerSelection != null && !areCodeViewSelectionsEqual(composerSelection, next)) {
+    if (next == null && composerSelectionRef.current != null) {
       setComposerSelection(null)
-      setComment('')
-      setCommentIntent('annotation')
-      setCommentError(null)
-      setSelectionRevision((revision) => revision + 1)
+      setComposerDraft(EMPTY_COMPOSER_DRAFT)
     }
     setSelection(next)
-  }, [composerSelection])
-
-  const submitComment = useCallback(async () => {
-    if (selection == null || !comment.trim()) return
-    const range = annotationRangeFromSelection(selection)
-    const effectiveIntent: AnnotationIntent =
-      commentIntent === 'review-comment' &&
-      pullRequest != null &&
-      session.id === pullRequest.currentSessionId &&
-      range.endSide == null
-        ? 'review-comment'
-        : 'annotation'
-    setCommentBusy(true)
-    setCommentError(null)
-    try {
-      await addAnnotation(session.id, {
-        filePath: selection.id,
-        ...range,
-        comment: comment.trim(),
-        source: 'user',
-        intent: effectiveIntent,
-      })
-      setComment('')
-      setCommentIntent('annotation')
-      setSelection(null)
-      setComposerSelection(null)
-      setSelectionRevision((revision) => revision + 1)
-      await onReload()
-    } catch (caught) {
-      setCommentError(caught instanceof Error ? caught.message : String(caught))
-    } finally {
-      setCommentBusy(false)
-    }
-  }, [
-    comment,
-    commentIntent,
-    onReload,
-    pullRequest,
-    selection,
-    session.id,
-  ])
+  }, [setComposerDraft, setComposerSelection])
 
   const setArchived = useCallback(async (annotationId: string, archived: boolean) => {
     await setAnnotationArchived(session.id, annotationId, archived)
     await onReload()
   }, [onReload, session.id])
 
-  const editAnnotation = useCallback(async (annotationId: string, nextComment: string) => {
-    await updateAnnotationComment(session.id, annotationId, nextComment)
+  const editAnnotation = useCallback(async (
+    annotationId: string,
+    nextComment: string,
+    intent?: AnnotationIntent,
+  ) => {
+    await updateAnnotationComment(session.id, annotationId, {
+      comment: nextComment,
+      intent,
+    })
     await onReload()
   }, [onReload, session.id])
 
@@ -877,9 +912,52 @@ function ReviewWorkspace({
 
   const setViewed = useCallback(async (filePath: string, viewed: boolean) => {
     const updated = await setFileViewed(session.id, filePath, viewed)
+    store.set(fileViewedAtom(filePath), viewed)
     setFileCollapsed(filePath, viewed)
     onSessionChange(updated)
-  }, [onSessionChange, session.id, setFileCollapsed])
+  }, [onSessionChange, session.id, setFileCollapsed, store])
+
+  const addFile = useCallback(async (filePath: string) => {
+    onSessionChange(await stageFile(session.id, filePath))
+  }, [onSessionChange, session.id])
+
+  const stagingEnabled = targetSupportsStaging(session.target)
+  const renderHeaderFilenameSuffix = useCallback((item: CodeViewItem<ReviewLineAnnotation>) => (
+    <FileCopyButton filePath={item.id} />
+  ), [])
+
+  const renderHeaderMetadata = useCallback((item: CodeViewItem<ReviewLineAnnotation>) => (
+    <FileHeaderControls
+      filePath={item.id}
+      stagingEnabled={stagingEnabled}
+      onToggleCollapsed={setFileCollapsed}
+      onAdd={addFile}
+      onSetViewed={setViewed}
+    />
+  ), [addFile, setFileCollapsed, setViewed, stagingEnabled])
+
+  const handleComposerSubmitted = useCallback(async () => {
+    closeComposer()
+    await onReloadRef.current()
+  }, [closeComposer])
+
+  const renderAnnotation = useCallback((annotation: DiffLineAnnotation<ReviewLineAnnotation>) => {
+    const metadata = annotation.metadata
+    if (metadata == null) return null
+    return metadata.kind === 'composer' ? (
+      <InlineComposer
+        selection={metadata.selection}
+        onCancel={closeComposer}
+        onSubmitted={handleComposerSubmitted}
+      />
+    ) : (
+      <InlineAnnotation
+        annotation={metadata.annotation}
+        onArchive={() => setArchived(metadata.annotation.id, true)}
+        onUpdateComment={(comment, intent) => editAnnotation(metadata.annotation.id, comment, intent)}
+      />
+    )
+  }, [closeComposer, editAnnotation, handleComposerSubmitted, setArchived])
 
   useHotkey('V', () => {
     const viewer = viewerRef.current?.getInstance()
@@ -908,10 +986,6 @@ function ReviewWorkspace({
       description: 'Toggle the current file as viewed',
     },
   })
-
-  const addFile = useCallback(async (filePath: string) => {
-    onSessionChange(await stageFile(session.id, filePath))
-  }, [onSessionChange, session.id])
 
   const refresh = useCallback(async () => {
     setBusy(true)
@@ -946,12 +1020,28 @@ function ReviewWorkspace({
     window.setTimeout(() => setCopied(false), 1600)
   }, [session])
 
+
+  const difftasticQuery = useQuery({
+    queryKey: ['difftastic-availability'],
+    queryFn: getDifftasticAvailability,
+    staleTime: 30_000,
+  })
+  const difftastic = difftasticQuery.data
+  const difftasticReady = difftastic?.available === true
   const selectFile = useCallback((id: string) => {
     setFileCollapsed(id, false)
     window.requestAnimationFrame(() => {
+      if (renderer === 'difftastic') {
+        const scroller = diffWorkspaceRef.current?.querySelector<HTMLElement>('.diff-view')
+        const node = scroller?.querySelector<HTMLElement>(
+          `[data-file-id="${cssEscape(id)}"]`,
+        )
+        if (scroller != null && node != null) scroller.scrollTop = node.offsetTop - 8
+        return
+      }
       viewerRef.current?.scrollTo({ type: 'item', id, align: 'start', offset: 8 })
     })
-  }, [setFileCollapsed])
+  }, [renderer, setFileCollapsed])
 
   const switchPullRequestView = useCallback((next: PullRequestViewMode) => {
     if (next === pullRequestView) return
@@ -973,6 +1063,10 @@ function ReviewWorkspace({
   }, [pullRequestView])
 
   const navigateToPullRequestActivity = useCallback((activity: PullRequestActivity) => {
+    if (activity.kind === 'timeline' && activity.event === 'committed' && activity.commitId != null) {
+      void pullRequest?.onOpenCommit(activity.commitId)
+      return
+    }
     if (activity.kind !== 'review-comment' || activity.line == null) return
     const lineNumber = activity.line
     switchPullRequestView('diff')
@@ -988,7 +1082,7 @@ function ReviewWorkspace({
         })
       })
     })
-  }, [switchPullRequestView])
+  }, [pullRequest, switchPullRequestView])
 
   const workspaceStyle = {
     '--left-panel-width': `${leftPanelWidth}px`,
@@ -1053,6 +1147,17 @@ function ReviewWorkspace({
                 Split
               </Toggle>
             </ToggleGroup>
+            <DifftasticToggle
+              active={renderer === 'difftastic' && difftasticReady}
+              available={difftasticReady}
+              hint={difftastic?.installHint ?? 'Install difftastic and make sure `difft` is on PATH.'}
+              loading={difftasticQuery.isPending}
+              onToggle={() => {
+                const next = renderer === 'difftastic' ? 'pierre' : 'difftastic'
+                setRenderer(next)
+                storeDiffRenderer(next)
+              }}
+            />
             <DiffOptionsMenu
               wrap={overflow === 'wrap'}
               ignoreWhitespace={session.ignoreWhitespace}
@@ -1162,6 +1267,19 @@ function ReviewWorkspace({
             {error != null && <div className="error-banner">{error}</div>}
             {items.length === 0 ? (
               <EmptyDiff onRefresh={refresh} />
+            ) : renderer === 'difftastic' && difftasticReady ? (
+              <DifftasticView
+                session={session}
+                files={parsedFiles}
+                layout={layout}
+                resolvedTheme={resolvedTheme}
+                collapsedFiles={collapsedFiles}
+                viewedFiles={viewedFiles}
+                onToggleCollapsed={(filePath) => {
+                  setFileCollapsed(filePath, !collapsedFiles.has(filePath))
+                }}
+                onSetViewed={setViewed}
+              />
             ) : (
               <CodeView<ReviewLineAnnotation>
                 ref={viewerRef}
@@ -1171,68 +1289,9 @@ function ReviewWorkspace({
                 options={diffOptions}
                 selectedLines={selection}
                 onSelectedLinesChange={handleSelection}
-                renderHeaderFilenameSuffix={(item) => (
-                  <FileCopyButton filePath={item.id} />
-                )}
-              renderHeaderMetadata={(item) => (
-                <div
-                  className="file-header-controls"
-                  data-file-id={item.id}
-                  onClick={(event) => event.stopPropagation()}
-                >
-                  <button
-                    className="file-collapse-button"
-                    aria-label={`${collapsedFiles.has(item.id) ? 'Expand' : 'Collapse'} ${item.id}`}
-                    aria-expanded={!collapsedFiles.has(item.id)}
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      setFileCollapsed(item.id, !collapsedFiles.has(item.id))
-                    }}
-                  >
-                    <ChevronIcon />
-                  </button>
-                  {targetSupportsStaging(session.target) && (
-                    <FileStageButton filePath={item.id} onAdd={() => addFile(item.id)} />
-                  )}
-                  <FileViewedToggle
-                    viewed={viewedFiles.has(item.id)}
-                    onChange={(viewed) => setViewed(item.id, viewed)}
-                  />
-                </div>
-              )}
-                renderAnnotation={(annotation) => {
-                  const metadata = annotation.metadata
-                  return metadata.kind === 'composer' ? (
-                    <InlineComposer
-                      comment={comment}
-                      error={commentError}
-                      busy={commentBusy}
-                      intent={commentIntent}
-                      reviewCommentAvailable={
-                        pullRequest != null &&
-                        session.id === pullRequest.currentSessionId &&
-                        annotationRangeFromSelection(metadata.selection).endSide == null
-                      }
-                      onIntentChange={setCommentIntent}
-                      onCommentChange={setComment}
-                      onCancel={() => {
-                        setComment('')
-                        setCommentIntent('annotation')
-                        setCommentError(null)
-                        setSelection(null)
-                        setComposerSelection(null)
-                        setSelectionRevision((revision) => revision + 1)
-                      }}
-                      onSubmit={submitComment}
-                    />
-                  ) : (
-                    <InlineAnnotation
-                      annotation={metadata.annotation}
-                      onArchive={() => setArchived(metadata.annotation.id, true)}
-                      onUpdateComment={(comment) => editAnnotation(metadata.annotation.id, comment)}
-                    />
-                  )
-                }}
+                renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
+                renderHeaderMetadata={renderHeaderMetadata}
+                renderAnnotation={renderAnnotation}
               />
             )}
           </section>
@@ -1373,6 +1432,50 @@ function ThemePicker({
         </Menu.Positioner>
       </Menu.Portal>
     </Menu.Root>
+  )
+}
+
+function DifftasticToggle({
+  active,
+  available,
+  hint,
+  loading,
+  onToggle,
+}: {
+  active: boolean
+  available: boolean
+  hint: string
+  loading: boolean
+  onToggle(): void
+}) {
+  const disabled = loading || !available
+  const label = disabled
+    ? hint
+    : active
+      ? 'Use line diff'
+      : 'Use structural diff'
+  return (
+    <Tooltip.Root>
+      <Tooltip.Trigger
+        render={
+          <button
+            type="button"
+            className={`icon-button${active ? ' is-active' : ''}`}
+            aria-label={label}
+            aria-pressed={active}
+            disabled={disabled}
+            onClick={onToggle}
+          >
+            <DifftasticIcon />
+          </button>
+        }
+      />
+      <Tooltip.Portal>
+        <Tooltip.Positioner className="tooltip-positioner" sideOffset={6}>
+          <Tooltip.Popup className="tooltip-popup">{label}</Tooltip.Popup>
+        </Tooltip.Positioner>
+      </Tooltip.Portal>
+    </Tooltip.Root>
   )
 }
 
@@ -1791,8 +1894,9 @@ function SubmitReviewPopover({
   const [body, setBody] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const canSubmit = Boolean(body.trim()) || comments.length > 0
   const submit = async () => {
-    if (!body.trim()) return
+    if (!canSubmit) return
     setBusy(true)
     setError(null)
     try {
@@ -1875,7 +1979,7 @@ function SubmitReviewPopover({
               <button type="button" disabled={busy} onClick={() => setOpen(false)}>Cancel</button>
               <button
                 type="button"
-                disabled={busy || !body.trim()}
+                disabled={busy || !canSubmit}
                 onClick={() => void submit()}
               >
                 {busy ? 'Submitting…' : 'Submit review'}
@@ -1949,7 +2053,6 @@ function PullRequestConversation({
                       issueReferences={details.issueReferences}
                       resolvedTheme={resolvedTheme}
                       onNavigate={onNavigate}
-                      onReply={oldRevision ? undefined : onAddComment}
                     />
                   )
                 }
@@ -2340,7 +2443,7 @@ function ReviewCommentThreadItem({
   resolvedTheme: ResolvedTheme
   onNavigate(activity: PullRequestActivity): void
   onReply?(body: string, replyToId?: string | null): Promise<void>
-} ) {
+}) {
   return (
     <div className="pr-review-thread">
       <ActivityItem
@@ -2349,7 +2452,6 @@ function ReviewCommentThreadItem({
         issueReferences={issueReferences}
         resolvedTheme={resolvedTheme}
         onNavigate={onNavigate}
-        onReply={onReply}
       />
       {thread.replies.length > 0 && (
         <div className="pr-review-replies">
@@ -2362,13 +2464,48 @@ function ReviewCommentThreadItem({
               resolvedTheme={resolvedTheme}
               onNavigate={onNavigate}
               showTarget={false}
-              onReply={onReply}
-              replyToId={thread.comment.id}
             />
           ))}
         </div>
       )}
+      {onReply != null && (
+        <ReviewCommentReplyComposer
+          onReply={(body) => onReply(body, thread.comment.id)}
+        />
+      )}
     </div>
+  )
+}
+
+function ReviewCommentReplyComposer({
+  onReply,
+}: {
+  onReply(body: string): Promise<void>
+}) {
+  const [open, setOpen] = useState(false)
+  if (!open) {
+    return (
+      <button
+        className="conversation-reply-button"
+        type="button"
+        onClick={() => setOpen(true)}
+      >
+        Reply
+      </button>
+    )
+  }
+  return (
+    <PullRequestCommentComposer
+      compact
+      heading="Reply"
+      placeholder="Reply to this comment…"
+      submitLabel="Reply"
+      ariaLabel="Reply to review comment"
+      onAddComment={async (comment) => {
+        await onReply(comment)
+        setOpen(false)
+      }}
+    />
   )
 }
 
@@ -2379,8 +2516,6 @@ function ActivityItem({
   resolvedTheme,
   onNavigate,
   showTarget = true,
-  onReply,
-  replyToId,
 }: {
   activity: PullRequestActivity
   count: number
@@ -2388,16 +2523,15 @@ function ActivityItem({
   resolvedTheme: ResolvedTheme
   onNavigate(activity: PullRequestActivity): void
   showTarget?: boolean
-  onReply?(body: string, replyToId?: string | null): Promise<void>
-  replyToId?: string
 }) {
   if (activity.kind === 'timeline') {
     return (
       <TimelineItem
-        text={timelineActivityText(activity)}
+        text={timelineActivityText(activity, onNavigate)}
         timestamp={activity.createdAt}
         icon={timelineActivityIcon(activity)}
         count={count}
+        author={activity.event === 'committed' ? activity.author : null}
       />
     )
   }
@@ -2411,7 +2545,6 @@ function ActivityItem({
     )
   }
   const reviewComment = activity.kind === 'review-comment' && showTarget ? activity : null
-  const canReply = onReply != null && (activity.kind === 'comment' || activity.kind === 'review-comment')
   return (
     <ConversationItem
       eyebrow={activityLabel(activity)}
@@ -2430,9 +2563,6 @@ function ActivityItem({
       url={activity.url}
       issueReferences={issueReferences}
       minimizedReason={'minimizedReason' in activity ? activity.minimizedReason : null}
-      onReply={canReply
-        ? (body) => onReply(body, replyToId ?? activity.id)
-        : undefined}
     />
   )
 }
@@ -2442,15 +2572,17 @@ function TimelineItem({
   timestamp,
   count = 1,
   icon = <BranchIcon />,
+  author = null,
 }: {
   text: ReactNode
   timestamp: string
   count?: number
   icon?: ReactNode
-} ) {
+  author?: GitHubUser | null
+}) {
   return (
-    <div className="pr-timeline-item">
-      {icon}
+    <div className={`pr-timeline-item${author == null ? '' : ' has-avatar'}`}>
+      {author == null ? icon : <UserAvatar user={author} />}
       <span className="pr-timeline-copy">
         {text}
         {count > 1 && ` × ${count}`}
@@ -2492,7 +2624,6 @@ function ConversationItem({
   url,
   issueReferences,
   minimizedReason,
-  onReply,
 }: {
   eyebrow: string
   author: GitHubUser
@@ -2506,10 +2637,8 @@ function ConversationItem({
   url?: string | null
   issueReferences: GitHubIssueReference[]
   minimizedReason?: MinimizedCommentReason | null
-  onReply?(body: string): Promise<void>
 } ) {
   const [expanded, setExpanded] = useState(false)
-  const [replyOpen, setReplyOpen] = useState(false)
   const minimized = minimizedReason != null && !expanded
   return (
     <article className={`conversation-item${minimized ? ' is-minimized' : ''}`}>
@@ -2550,31 +2679,6 @@ function ConversationItem({
                 </div>
               )}
               <MarkdownBody body={body} issueReferences={issueReferences} />
-              {onReply != null && (
-                replyOpen
-                  ? (
-                      <PullRequestCommentComposer
-                        compact
-                        heading="Reply"
-                        placeholder="Reply to this comment…"
-                        submitLabel="Reply"
-                        ariaLabel="Reply to comment"
-                        onAddComment={async (comment) => {
-                          await onReply(comment)
-                          setReplyOpen(false)
-                        }}
-                      />
-                    )
-                  : (
-                      <button
-                        className="conversation-reply-button"
-                        type="button"
-                        onClick={() => setReplyOpen(true)}
-                      >
-                        Reply
-                      </button>
-                    )
-              )}
             </>
           )}
     </article>
@@ -2836,15 +2940,38 @@ function MermaidDiagram({ source }: { source: string }) {
 }
 
 function UserAvatar({ user }: { user: GitHubUser }) {
-  return user.avatarUrl == null ? (
-    <span className="user-avatar fallback">{user.login.slice(0, 2).toUpperCase()}</span>
-  ) : (
+  const [failed, setFailed] = useState(false)
+  if (user.avatarUrl == null || failed || isGitHubActionsLogin(user.login)) {
+    return <span className="user-avatar fallback">{avatarFallback(user.login)}</span>
+  }
+  return (
     <img
       className="user-avatar"
       src={`/api/avatar?url=${encodeURIComponent(user.avatarUrl)}`}
       alt=""
       loading="lazy"
+      onError={() => setFailed(true)}
     />
+  )
+}
+
+function isGitHubActionsLogin(login: string): boolean {
+  return login === 'github-actions' || login.startsWith('github-actions[')
+}
+
+function avatarFallback(login: string): ReactNode {
+  if (isGitHubActionsLogin(login)) return <GitHubMarkIcon />
+  return login.slice(0, 2).toUpperCase()
+}
+
+function GitHubMarkIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8"
+      />
+    </svg>
   )
 }
 
@@ -3382,6 +3509,48 @@ function FileCopyButton({ filePath }: { filePath: string }) {
     </button>
   )
 }
+function FileHeaderControls({
+  filePath,
+  stagingEnabled,
+  onToggleCollapsed,
+  onAdd,
+  onSetViewed,
+}: {
+  filePath: string
+  stagingEnabled: boolean
+  onToggleCollapsed(filePath: string, collapsed: boolean): void
+  onAdd(filePath: string): Promise<void>
+  onSetViewed(filePath: string, viewed: boolean): Promise<void>
+}) {
+  const collapsed = useAtomValue(fileCollapsedAtom(filePath))
+  const viewed = useAtomValue(fileViewedAtom(filePath))
+  return (
+    <div
+      className="file-header-controls"
+      data-file-id={filePath}
+      onClick={(event) => event.stopPropagation()}
+    >
+      <button
+        className="file-collapse-button"
+        aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${filePath}`}
+        aria-expanded={!collapsed}
+        onClick={(event) => {
+          event.stopPropagation()
+          onToggleCollapsed(filePath, !collapsed)
+        }}
+      >
+        <ChevronIcon />
+      </button>
+      {stagingEnabled && (
+        <FileStageButton filePath={filePath} onAdd={() => onAdd(filePath)} />
+      )}
+      <FileViewedToggle
+        viewed={viewed}
+        onChange={(nextViewed) => onSetViewed(filePath, nextViewed)}
+      />
+    </div>
+  )
+}
 
 
 function FileStageButton({
@@ -3458,12 +3627,13 @@ function Inspector({
   files: FileDiffMetadata[]
   piStatus?: PiReviewStatus
   onSetArchived(annotationId: string, archived: boolean): Promise<void>
-  onUpdateComment(annotationId: string, comment: string): Promise<void>
+  onUpdateComment(annotationId: string, comment: string, intent?: AnnotationIntent): Promise<void>
   onUpdateGlobalComment(comment: string): Promise<void>
   allowGlobalComment: boolean
   onArchiveAll(): Promise<void>
   onNavigate(annotation: SessionAnnotation): void
 }) {
+  const reviewCommentAvailable = useAtomValue(reviewCommentAvailableAtom)
   const [view, setView] = useState<'active' | 'archived'>('active')
   const [busyId, setBusyId] = useState<string | null>(null)
   const [bulkBusy, setBulkBusy] = useState(false)
@@ -3607,9 +3777,16 @@ function Inspector({
                   {editing ? (
                     <CommentEditor
                       comment={annotation.comment ?? ''}
+                      intent={annotation.intent}
+                      reviewCommentAvailable={
+                        reviewCommentAvailable &&
+                        annotation.source === 'user' &&
+                        annotation.submittedAt == null &&
+                        annotation.endSide == null
+                      }
                       onCancel={() => setEditingId(null)}
-                      onSave={async (comment) => {
-                        await onUpdateComment(annotation.id, comment)
+                      onSave={async (comment, intent) => {
+                        await onUpdateComment(annotation.id, comment, intent)
                         setEditingId(null)
                       }}
                     />
@@ -3746,32 +3923,60 @@ function piCleanupLabel(run: PiReviewRun): string {
 
 function CommentEditor({
   comment,
+  intent,
+  reviewCommentAvailable = false,
   onCancel,
   onSave,
 }: {
   comment: string
+  intent?: AnnotationIntent
+  reviewCommentAvailable?: boolean
   onCancel(): void
-  onSave(comment: string): Promise<void>
+  onSave(comment: string, intent?: AnnotationIntent): Promise<void>
 }) {
   const [value, setValue] = useState(comment)
+  const [draftIntent, setDraftIntent] = useState<AnnotationIntent>(intent ?? 'annotation')
   const [busy, setBusy] = useState(false)
+  const save = async () => {
+    if (busy || !value.trim()) return
+    setBusy(true)
+    try {
+      await onSave(
+        value.trim(),
+        reviewCommentAvailable ? draftIntent : undefined,
+      )
+    } finally {
+      setBusy(false)
+    }
+  }
   return (
     <div className="note-editor">
-      <textarea autoFocus value={value} onChange={(event) => setValue(event.target.value)} />
+      <textarea
+        autoFocus
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => {
+          if (!isAnnotationSubmitEnter(event)) return
+          event.preventDefault()
+          void save()
+        }}
+      />
       <div>
+        {reviewCommentAvailable && (
+          <ReviewCommentToggle
+            checked={draftIntent === 'review-comment'}
+            disabled={busy}
+            onCheckedChange={(checked) => {
+              setDraftIntent(checked ? 'review-comment' : 'annotation')
+            }}
+          />
+        )}
         <button disabled={busy} onClick={onCancel}>
           Cancel
         </button>
         <button
           disabled={busy || !value.trim()}
-          onClick={async () => {
-            setBusy(true)
-            try {
-              await onSave(value.trim())
-            } finally {
-              setBusy(false)
-            }
-          }}
+          onClick={() => void save()}
         >
           Save
         </button>
@@ -3810,66 +4015,109 @@ function AnnotationIconButton({
   )
 }
 
-function InlineComposer({
-  comment,
-  error,
-  busy,
-  intent,
-  reviewCommentAvailable,
-  onCommentChange,
-  onIntentChange,
-  onCancel,
-  onSubmit,
+function ReviewCommentToggle({
+  checked,
+  disabled,
+  onCheckedChange,
 }: {
-  comment: string
-  error: string | null
-  busy: boolean
-  intent: AnnotationIntent
-  reviewCommentAvailable: boolean
-  onCommentChange(comment: string): void
-  onIntentChange(intent: AnnotationIntent): void
-  onCancel(): void
-  onSubmit(): Promise<void>
+  checked: boolean
+  disabled: boolean
+  onCheckedChange(checked: boolean): void
 }) {
+  return (
+    <Checkbox.Root
+      className="review-comment-toggle"
+      checked={checked}
+      disabled={disabled}
+      title="Include this comment when submitting the review"
+      onCheckedChange={(next) => onCheckedChange(next === true)}
+    >
+      <span className="review-comment-checkbox">
+        <Checkbox.Indicator><CheckIcon /></Checkbox.Indicator>
+      </span>
+      <span>Review comment</span>
+    </Checkbox.Root>
+  )
+}
+
+function InlineComposer({
+  selection,
+  onCancel,
+  onSubmitted,
+}: {
+  selection: CodeViewLineSelection
+  onCancel(): void
+  onSubmitted(): Promise<void>
+}) {
+  const [draft, setDraft] = useAtom(composerDraftAtom)
+  const sessionId = useAtomValue(composerSessionIdAtom)
+  const reviewCommentAvailable = useAtomValue(reviewCommentAvailableAtom) &&
+    annotationRangeFromSelection(selection).endSide == null
+
+  const submit = async () => {
+    if (sessionId == null || !draft.comment.trim()) return
+    const range = annotationRangeFromSelection(selection)
+    const effectiveIntent: AnnotationIntent =
+      draft.intent === 'review-comment' &&
+      reviewCommentAvailable &&
+      range.endSide == null
+        ? 'review-comment'
+        : 'annotation'
+    setDraft((current) => ({ ...current, busy: true, error: null }))
+    try {
+      await addAnnotation(sessionId, {
+        filePath: selection.id,
+        ...range,
+        comment: draft.comment.trim(),
+        source: 'user',
+        intent: effectiveIntent,
+      })
+      await onSubmitted()
+    } catch (caught) {
+      setDraft((current) => ({
+        ...current,
+        error: caught instanceof Error ? caught.message : String(caught),
+      }))
+    } finally {
+      setDraft((current) => ({ ...current, busy: false }))
+    }
+  }
+
   return (
     <section className="inline-composer">
       <div className="composer-heading">
-        <span><CommentIcon /> {intent === 'review-comment' ? 'Add review comment' : 'Add annotation'}</span>
+        <span><CommentIcon /> {draft.intent === 'review-comment' && reviewCommentAvailable ? 'Add review comment' : 'Add annotation'}</span>
         <button onClick={onCancel} aria-label="Cancel selection">
           <CloseIcon />
         </button>
       </div>
       <textarea
         autoFocus
-        value={comment}
-        onChange={(event) => onCommentChange(event.target.value)}
+        value={draft.comment}
+        onChange={(event) => setDraft((current) => ({ ...current, comment: event.target.value }))}
         placeholder="What should the reviewer know?"
         onKeyDown={(event) => {
-          if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') void onSubmit()
+          if (!isAnnotationSubmitEnter(event)) return
+          event.preventDefault()
+          void submit()
         }}
       />
-      {error != null && <div className="composer-error">{error}</div>}
+      {draft.error != null && <div className="composer-error">{draft.error}</div>}
       <div className="composer-actions">
-        <Checkbox.Root
-          className="review-comment-toggle"
-          checked={intent === 'review-comment'}
-          disabled={!reviewCommentAvailable || busy}
-          title={reviewCommentAvailable
-            ? 'Include this comment when submitting the review'
-            : 'Review comments require the current PR revision and a same-side selection'}
-          onCheckedChange={(checked) => onIntentChange(
-            checked === true ? 'review-comment' : 'annotation',
-          )}
-        >
-          <span className="review-comment-checkbox">
-            <Checkbox.Indicator><CheckIcon /></Checkbox.Indicator>
-          </span>
-          <span>Review comment</span>
-        </Checkbox.Root>
+        {reviewCommentAvailable ? (
+          <ReviewCommentToggle
+            checked={draft.intent === 'review-comment'}
+            disabled={draft.busy}
+            onCheckedChange={(checked) => setDraft((current) => ({
+              ...current,
+              intent: checked ? 'review-comment' : 'annotation',
+            }))}
+          />
+        ) : <span />}
         <div>
-          <small>⌘ Enter</small>
-          <button disabled={!comment.trim() || busy} onClick={() => void onSubmit()}>
-            {intent === 'review-comment' ? 'Add review comment' : 'Add annotation'}
+          <small>Enter · Shift Enter</small>
+          <button disabled={!draft.comment.trim() || draft.busy} onClick={() => void submit()}>
+            {draft.intent === 'review-comment' && reviewCommentAvailable ? 'Add review comment' : 'Add annotation'}
           </button>
         </div>
       </div>
@@ -3884,10 +4132,14 @@ function InlineAnnotation({
 }: {
   annotation: SessionAnnotation
   onArchive(): Promise<void>
-  onUpdateComment(comment: string): Promise<void>
+  onUpdateComment(comment: string, intent?: AnnotationIntent): Promise<void>
 }) {
   const [busy, setBusy] = useState(false)
   const [editing, setEditing] = useState(false)
+  const reviewCommentAvailable = useAtomValue(reviewCommentAvailableAtom) &&
+    annotation.endSide == null &&
+    annotation.source === 'user' &&
+    annotation.submittedAt == null
   return (
     <div className={`inline-annotation ${annotation.source}`}>
       <div className="inline-source">
@@ -3929,9 +4181,11 @@ function InlineAnnotation({
       {editing ? (
         <CommentEditor
           comment={annotation.comment ?? ''}
+          intent={annotation.intent}
+          reviewCommentAvailable={reviewCommentAvailable}
           onCancel={() => setEditing(false)}
-          onSave={async (comment) => {
-            await onUpdateComment(comment)
+          onSave={async (comment, intent) => {
+            await onUpdateComment(comment, intent)
             setEditing(false)
           }}
         />
@@ -3973,40 +4227,6 @@ function EmptyDiff({ onRefresh }: { onRefresh(): void }) {
   )
 }
 
-function annotationsForFile(
-  annotations: SessionAnnotation[],
-  fileDiff: FileDiffMetadata,
-  selection: CodeViewLineSelection | null,
-): DiffLineAnnotation<ReviewLineAnnotation>[] {
-  const result: DiffLineAnnotation<ReviewLineAnnotation>[] = annotations
-    .filter(
-      (annotation) =>
-        annotation.comment != null &&
-        annotation.archivedAt == null &&
-        (annotation.filePath === fileDiff.name || annotation.filePath === fileDiff.prevName),
-    )
-    .map((annotation) => ({
-      side: (annotation.endSide ?? annotation.side) === 'new' ? 'additions' : 'deletions',
-      lineNumber: annotation.endLine,
-      metadata: { kind: 'saved', annotation },
-    }))
-
-  if (
-    selection != null &&
-    (selection.id === fileDiff.name || selection.id === fileDiff.prevName)
-  ) {
-    const side = selection.range.endSide ?? selection.range.side ?? 'additions'
-    const lineNumber = selection.range.endSide == null
-      ? Math.max(selection.range.start, selection.range.end)
-      : selection.range.end
-    result.push({
-      side,
-      lineNumber,
-      metadata: { kind: 'composer', selection },
-    })
-  }
-  return result
-}
 
 function routeFromLocation(): AppRoute {
   const sessionMatch = /^\/s\/([^/]+)$/.exec(window.location.pathname)
@@ -4114,17 +4334,6 @@ function selectionSideToDiffSide(side: 'deletions' | 'additions' | undefined): D
   return side === 'deletions' ? 'old' : 'new'
 }
 
-function areCodeViewSelectionsEqual(
-  left: CodeViewLineSelection,
-  right: CodeViewLineSelection | null,
-): boolean {
-  return right != null &&
-    left.id === right.id &&
-    left.range.start === right.range.start &&
-    left.range.end === right.range.end &&
-    left.range.side === right.range.side &&
-    left.range.endSide === right.range.endSide
-}
 
 function fileHeaderIdFromEvent(event: MouseEvent): string | null {
   const path = event.composedPath()
@@ -4136,11 +4345,17 @@ function fileHeaderIdFromEvent(event: MouseEvent): string | null {
 }
 
 function fileIdFromEvent(event: MouseEvent): string | null {
-  const container = event.composedPath().find(
+  const path = event.composedPath()
+  const container = path.find(
     (target) => target instanceof HTMLElement && target.tagName === 'DIFFS-CONTAINER',
   )
-  if (!(container instanceof HTMLElement)) return null
-  return container.querySelector<HTMLElement>('[data-file-id]')?.dataset.fileId ?? null
+  if (container instanceof HTMLElement) {
+    return container.querySelector<HTMLElement>('[data-file-id]')?.dataset.fileId ?? null
+  }
+  const file = path.find(
+    (target) => target instanceof HTMLElement && target.dataset.fileId != null,
+  )
+  return file instanceof HTMLElement ? file.dataset.fileId ?? null : null
 }
 
 function fileChangeStats(file: FileDiffMetadata): FileChangeStats {
@@ -4173,6 +4388,23 @@ function storedPanelWidth(
 
 function storePanelWidth(side: 'left' | 'right', width: number): void {
   window.localStorage.setItem(`diff-review-${side}-panel-width`, String(width))
+}
+
+function storedDiffRenderer(): DiffRenderer {
+  return window.localStorage.getItem('diff-review-renderer') === 'difftastic'
+    ? 'difftastic'
+    : 'pierre'
+}
+
+function storeDiffRenderer(renderer: DiffRenderer): void {
+  if (renderer === 'pierre') window.localStorage.removeItem('diff-review-renderer')
+  else window.localStorage.setItem('diff-review-renderer', renderer)
+}
+
+function cssEscape(value: string): string {
+  return typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+    ? CSS.escape(value)
+    : value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
 }
 
 function compactPath(filePath: string): string {
@@ -4239,6 +4471,9 @@ function timelineActivityIcon(activity: TimelineActivity): ReactNode {
       return <TagIcon />
     case 'committed':
       return <CommitIcon />
+    case 'cross-referenced':
+    case 'cross_referenced':
+      return activity.source?.kind === 'issue' ? <IssueIcon /> : <PullRequestIcon />
     case 'merged':
       return <MergeIcon />
     case 'closed':
@@ -4276,7 +4511,10 @@ function timelineActivityIcon(activity: TimelineActivity): ReactNode {
   }
 }
 
-function timelineActivityText(activity: TimelineActivity): ReactNode {
+function timelineActivityText(
+  activity: TimelineActivity,
+  onNavigate: (activity: PullRequestActivity) => void,
+): ReactNode {
   const actor = activity.author?.login
   const prefix = actor == null ? null : <strong>{actor}</strong>
   switch (activity.event) {
@@ -4284,8 +4522,24 @@ function timelineActivityText(activity: TimelineActivity): ReactNode {
       return <>{prefix} added label <code>{activity.label ?? 'unknown'}</code></>
     case 'unlabeled':
       return <>{prefix} removed label <code>{activity.label ?? 'unknown'}</code></>
-    case 'committed':
-      return <>{prefix} committed <code>{activity.commitId?.slice(0, 7) ?? 'changes'}</code>{activity.subject == null ? null : ` · ${activity.subject}`}</>
+    case 'committed': {
+      const shortOid = activity.commitId?.slice(0, 7) ?? 'changes'
+      const commitLabel = activity.commitId == null
+        ? <code>{shortOid}</code>
+        : (
+            <button
+              className="pr-timeline-commit"
+              type="button"
+              onClick={() => onNavigate(activity)}
+            >
+              <code>{shortOid}</code>
+            </button>
+          )
+      return <>{prefix} committed {commitLabel}{activity.subject == null ? null : ` · ${activity.subject}`}</>
+    }
+    case 'cross-referenced':
+    case 'cross_referenced':
+      return <>{prefix} referenced {timelineSourceText(activity.source)}</>
     case 'merged':
       return <>{prefix} merged this pull request</>
     case 'closed':
@@ -4309,6 +4563,21 @@ function timelineActivityText(activity: TimelineActivity): ReactNode {
     default:
       return <>{prefix} {activity.event.replaceAll('_', ' ')}</>
   }
+}
+
+function timelineSourceText(source: Extract<PullRequestActivity, { kind: 'timeline' }>['source']): ReactNode {
+  if (source == null) return 'another issue'
+  const kind = source.kind === 'pull-request' ? 'pull request' : 'issue'
+  const label = source.repository == null ? `#${source.number}` : `${source.repository}#${source.number}`
+  const copy = (
+    <>
+      {kind} <code>{label}</code>
+      {source.title === '' ? null : ` · ${source.title}`}
+    </>
+  )
+  return source.url == null
+    ? copy
+    : <a href={source.url} target="_blank" rel="noreferrer">{copy}</a>
 }
 
 function reviewTimelineText(state: string): string {

@@ -129,7 +129,7 @@ function timelineGroupKey(activity: TimelineActivity): string {
     label: activity.label,
     subject: activity.subject,
     commitId: activity.commitId,
+    source: activity.source,
     previousTitle: activity.previousTitle,
-    currentTitle: activity.currentTitle,
   })
 }

@@ -5,6 +5,7 @@ import path from 'node:path'
 
 import type {
   AddAnnotationInput,
+  UpdateAnnotationInput,
   AddPullRequestCommentInput,
   ApiErrorShape,
   CreateSessionInput,
@@ -21,6 +22,7 @@ import type {
 import { targetSupportsStaging } from '../shared/types.js'
 import { pullRequestAllowsReviewEvent } from '../shared/pull-request.js'
 import { AppError, errorMessage } from './errors.js'
+import { getDifftasticAvailability, renderDifftasticFile } from './difftastic.js'
 import {
   getRepositoryInfo,
   readSnapshotFile,
@@ -32,6 +34,7 @@ import {
   stageReviewFile,
   validateAnnotationTarget,
   validateReviewFilePath,
+  reviewFileSides,
 } from './git.js'
 import {
   getGitHubToken,
@@ -117,6 +120,7 @@ export class ApiHandler {
     const fileStageMatch = /^\/api\/sessions\/([^/]+)\/files\/stage$/.exec(url.pathname)
     const fileViewedMatch = /^\/api\/sessions\/([^/]+)\/files\/viewed$/.exec(url.pathname)
     const fileMatch = /^\/api\/sessions\/([^/]+)\/file$/.exec(url.pathname)
+    const fileDifftasticMatch = /^\/api\/sessions\/([^/]+)\/difftastic$/.exec(url.pathname)
     const piReviewMatch = /^\/api\/sessions\/([^/]+)\/pi-review$/.exec(url.pathname)
     const piRunLeaseMatch = /^\/api\/pi-runs\/([^/]+)\/lease$/.exec(url.pathname)
     const pullRequestOpenMatch = /^\/api\/pull-requests\/(\d+)\/open$/.exec(url.pathname)
@@ -144,6 +148,11 @@ export class ApiHandler {
       sendJson(response, 200, { app: 'diff-review', ok: true })
       return
     }
+    if (method === 'GET' && url.pathname === '/api/difftastic') {
+      sendJson(response, 200, await getDifftasticAvailability())
+      return
+    }
+
 
     if (method === 'GET' && url.pathname === '/api/repository') {
       const repositoryPath = requiredQuery(url, 'path')
@@ -512,11 +521,27 @@ export class ApiHandler {
 
     if (method === 'PATCH' && annotationMatch != null) {
       const sessionId = annotationMatch[1] ?? ''
-      const { comment } = parseCommentInput(await readJson(request))
+      const input = parseAnnotationUpdateInput(await readJson(request))
+      const session = this.store.getSession(sessionId)
+      const existing = session.annotations.find((annotation) => annotation.id === annotationMatch[2])
+      if (existing == null) {
+        throw new AppError('ANNOTATION_NOT_FOUND', `Annotation not found: ${annotationMatch[2]}`, 404)
+      }
+      const intent = input.intent ?? existing.intent
+      if (
+        intent === 'review-comment' &&
+        (existing.source !== 'user' || session.target.kind !== 'pr' || existing.endSide != null)
+      ) {
+        throw new AppError(
+          'INVALID_REVIEW_COMMENT',
+          'Review comments must be user comments on one side of a pull request diff',
+        )
+      }
       const annotation = this.store.updateAnnotationComment(
         sessionId,
         annotationMatch[2] ?? '',
-        comment,
+        input.comment,
+        input.intent,
       )
       this.emitSessionUpdate(sessionId)
       sendJson(response, 200, annotation)
@@ -587,6 +612,27 @@ export class ApiHandler {
       sendJson(response, 200, { path: filePath, side, contents })
       return
     }
+    if (method === 'GET' && fileDifftasticMatch != null) {
+      const id = fileDifftasticMatch[1] ?? ''
+      const filePath = requiredQuery(url, 'path')
+      const session = this.store.getSession(id)
+      const resolved = this.store.getResolvedReview(id)
+      const normalizedPath = validateReviewFilePath(resolved.patch, filePath)
+      const file = reviewFileSides(resolved.patch, normalizedPath)
+      sendJson(
+        response,
+        200,
+        await renderDifftasticFile({
+          repositoryRoot: session.repositoryRoot,
+          review: resolved,
+          filePath: normalizedPath,
+          oldPath: file.old,
+          newPath: file.new,
+        }),
+      )
+      return
+    }
+
 
     if (method === 'GET' && url.pathname === '/api/events') {
       const sessionId = requiredQuery(url, 'session')
@@ -786,11 +832,14 @@ function parseSubmitPullRequestReviewInput(value: unknown): SubmitPullRequestRev
   if (event !== 'APPROVE' && event !== 'COMMENT' && event !== 'REQUEST_CHANGES') {
     throw new AppError('INVALID_INPUT', 'event must be APPROVE, COMMENT, or REQUEST_CHANGES')
   }
+  if (typeof object.body !== 'string') {
+    throw new AppError('INVALID_INPUT', 'body must be a string')
+  }
   return {
     repositoryPath: expectString(object.repositoryPath, 'repositoryPath'),
     event,
     sessionId: expectTrimmedString(object.sessionId, 'sessionId'),
-    body: expectTrimmedString(object.body, 'body'),
+    body: object.body.trim(),
   }
 }
 
@@ -924,6 +973,17 @@ function parseCommentInput(value: unknown): { comment: string } {
   const comment = expectString(object.comment, 'comment').trim()
   if (!comment) throw new AppError('INVALID_INPUT', 'comment must not be empty')
   return { comment }
+}
+
+function parseAnnotationUpdateInput(value: unknown): UpdateAnnotationInput {
+  const { comment } = parseCommentInput(value)
+  const object = expectObject(value)
+  if (object.intent == null) return { comment }
+  const intent = expectString(object.intent, 'intent')
+  if (intent !== 'annotation' && intent !== 'review-comment') {
+    throw new AppError('INVALID_INPUT', 'intent must be annotation or review-comment')
+  }
+  return { comment, intent }
 }
 
 function parseViewedFileInput(value: unknown): { filePath: string; viewed: boolean } {

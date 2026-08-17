@@ -417,7 +417,9 @@ export async function submitPullRequestReview(
 ): Promise<void> {
   validatePullRequestNumber(number)
   const comment = body.trim()
-  if (!comment) throw new AppError('INVALID_PULL_REQUEST_REVIEW', 'Review comment must not be empty')
+  if (!comment && comments.length === 0) {
+    throw new AppError('INVALID_PULL_REQUEST_REVIEW', 'Review must include a summary or comments')
+  }
   const revision = commitId.trim()
   if (!revision) throw new AppError('INVALID_PULL_REQUEST_REVIEW', 'Review commit must not be empty')
   await runGitHub(
@@ -829,13 +831,13 @@ export function parsePullRequestTimelineEvents(value: unknown): PullRequestActiv
     const requestedTeam = optionalObject(raw.requested_team)
     const assignee = optionalObject(raw.assignee)
     const milestone = optionalObject(raw.milestone)
-    const sourceIssue = optionalObject(optionalObject(raw.source)?.issue)
+    const source = parseTimelineSource(raw.source)
     const rename = optionalObject(raw.rename)
     const subject = optionalString(requestedReviewer?.login)
       ?? optionalString(requestedTeam?.name)
       ?? optionalString(assignee?.login)
       ?? optionalString(milestone?.title)
-      ?? optionalString(sourceIssue?.title)
+      ?? source?.title
       ?? optionalString(raw.deployment_environment)
       ?? optionalString(raw.ref)
       ?? optionalString(raw.message)?.split('\n', 1)[0]
@@ -845,15 +847,37 @@ export function parsePullRequestTimelineEvents(value: unknown): PullRequestActiv
       kind: 'timeline' as const,
       id,
       event,
-      author: parseOptionalUser(raw.actor) ?? parseOptionalUser(raw.user),
+      author: parseOptionalUser(raw.actor)
+        ?? parseOptionalUser(raw.user)
+        ?? parseOptionalUser(raw.author)
+        ?? parseOptionalUser(raw.committer),
       createdAt,
       label,
       subject,
       commitId: optionalString(raw.sha) ?? optionalString(raw.commit_id),
+      source,
       previousTitle: optionalString(rename?.from),
       currentTitle: optionalString(rename?.to),
     }]
   })
+}
+
+function parseTimelineSource(value: unknown): Extract<PullRequestActivity, { kind: 'timeline' }>['source'] {
+  const issue = optionalObject(optionalObject(value)?.issue) ?? optionalObject(optionalObject(value)?.pull_request)
+  if (issue == null) return null
+  const number = optionalPositiveInteger(issue.number)
+  const title = optionalString(issue.title)
+  if (number == null || title == null) return null
+  const repository = optionalObject(issue.repository)
+  const owner = optionalString(optionalObject(repository?.owner)?.login) ?? optionalString(repository?.owner)
+  const name = optionalString(repository?.name)
+  return {
+    kind: issue.pull_request != null || optionalString(issue.html_url)?.includes('/pull/') ? 'pull-request' : 'issue',
+    number,
+    title,
+    url: optionalString(issue.html_url) ?? optionalString(issue.url),
+    repository: owner != null && name != null ? `${owner}/${name}` : null,
+  }
 }
 
 function parseUser(value: unknown): GitHubUser {

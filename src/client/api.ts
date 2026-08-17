@@ -1,8 +1,11 @@
 import type {
   AddAnnotationInput,
+  UpdateAnnotationInput,
   AddPullRequestCommentInput,
   ApiErrorShape,
   CreateSessionInput,
+  DifftasticAvailability,
+  DifftasticFileDiff,
   OpenPullRequestInput,
   PiReviewStatus,
   PullRequestListView,
@@ -187,11 +190,11 @@ export function setAnnotationArchived(
 export function updateAnnotationComment(
   id: string,
   annotationId: string,
-  comment: string,
+  input: UpdateAnnotationInput,
 ): Promise<SessionAnnotation> {
   return request(`/api/sessions/${encodeURIComponent(id)}/annotations/${annotationId}`, {
     method: 'PATCH',
-    body: JSON.stringify({ comment }),
+    body: JSON.stringify(input),
   })
 }
 
@@ -235,6 +238,19 @@ export async function getFileContents(
     `/api/sessions/${encodeURIComponent(sessionId)}/file?path=${encodeURIComponent(filePath)}&side=${side}`,
   )
   return result.contents
+}
+
+export function getDifftasticAvailability(): Promise<DifftasticAvailability> {
+  return request('/api/difftastic')
+}
+
+export function getDifftasticFile(
+  sessionId: string,
+  filePath: string,
+): Promise<DifftasticFileDiff> {
+  return request(
+    `/api/sessions/${encodeURIComponent(sessionId)}/difftastic?path=${encodeURIComponent(filePath)}`,
+  )
 }
 
 async function request<T>(pathname: string, init?: RequestInit): Promise<T> {

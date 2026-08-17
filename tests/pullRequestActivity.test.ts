@@ -95,8 +95,8 @@ describe('groupConversationActivities', () => {
       label: 'bug',
       subject: null,
       commitId: null,
+      source: null,
       previousTitle: null,
-      currentTitle: null,
     })
 
     expect(groupConversationActivities([

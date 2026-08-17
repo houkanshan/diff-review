@@ -8,4 +8,4 @@ Use sentence case for UI labels; do not use all-caps labels.
 
 Minimize GitHub API and `gh` calls to avoid rate limits; cache and deduplicate requests when possible.
 
-Restart the Diff Review daemon only when a change affects the running server or the client it serves. If a restart is needed, stop the running server, build, and start from the new output. Do not restart for docs, tests, or other changes that do not require a new build.
+Rebuild after making code changes. Restart the Diff Review daemon when a change affects the running server or the client it serves. If a restart is needed, stop the running server, build, and start from the new output. 

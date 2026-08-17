@@ -297,11 +297,45 @@ describe('GitHub review comments', () => {
         }),
       })
       expect(created.status).toBe(201)
-      await expect(created.json()).resolves.toMatchObject({
+      const annotation = await created.json() as {
+        id: string
+        filePath: string
+        side: string
+        startLine: number
+        endLine: number
+        intent: string
+      }
+      expect(annotation).toMatchObject({
         filePath: 'example.ts',
         side: 'new',
         startLine: 1,
         endLine: 2,
+        intent: 'review-comment',
+      })
+      const updated = await fetch(`${annotationsUrl}/${annotation.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          comment: 'Keep this as a local note instead.',
+          intent: 'annotation',
+        }),
+      })
+      expect(updated.status).toBe(200)
+      await expect(updated.json()).resolves.toMatchObject({
+        comment: 'Keep this as a local note instead.',
+        intent: 'annotation',
+      })
+      const queued = await fetch(`${annotationsUrl}/${annotation.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          comment: 'Queue this for the review again.',
+          intent: 'review-comment',
+        }),
+      })
+      expect(queued.status).toBe(200)
+      await expect(queued.json()).resolves.toMatchObject({
+        comment: 'Queue this for the review again.',
         intent: 'review-comment',
       })
 
@@ -331,6 +365,60 @@ describe('GitHub review comments', () => {
         server.close((error) => error == null ? resolve() : reject(error))
       })
       rmSync(directory, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('difftastic API', () => {
+  test('probes availability and renders a session file', async () => {
+    const store = new ReviewStore(path.join(fixture.directory, 'difftastic-api.db'))
+    const handler = new ApiHandler(store, null)
+    const server = createServer(handler.handle)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address() as AddressInfo
+    const baseUrl = `http://127.0.0.1:${port}`
+
+    try {
+      const availabilityResponse = await fetch(`${baseUrl}/api/difftastic`)
+      expect(availabilityResponse.status).toBe(200)
+      const availability = await availabilityResponse.json() as {
+        available: boolean
+        version: string | null
+        installHint: string
+      }
+      expect(availability.installHint).toContain('difft')
+      if (!availability.available) return
+
+      const createdResponse = await fetch(`${baseUrl}/api/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repositoryPath: fixture.repository,
+          target: { kind: 'range', expression: 'origin/main...HEAD' },
+        }),
+      })
+      expect(createdResponse.status).toBe(201)
+      const session = await createdResponse.json() as { id: string }
+
+      const fileResponse = await fetch(
+        `${baseUrl}/api/sessions/${session.id}/difftastic?path=tracked.txt`,
+      )
+      expect(fileResponse.status).toBe(200)
+      const file = await fileResponse.json() as {
+        path: string
+        status: string
+        hunks: Array<{ lines: Array<{ kind: string; newText: string | null }> }>
+      }
+      expect(file.path).toBe('tracked.txt')
+      expect(file.status).toBe('changed')
+      expect(file.hunks.some((hunk) =>
+        hunk.lines.some((line) => line.newText?.includes('feature two')),
+      )).toBe(true)
+    } finally {
+      handler.close()
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error == null ? resolve() : reject(error))
+      })
     }
   })
 })
@@ -889,6 +977,33 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
     expect(
       store.updateAnnotationComment(session.id, crossSide.id, 'Updated review comment').comment,
     ).toBe('Updated review comment')
+    const localComment = store.addAnnotation(session.id, {
+      filePath: 'tracked.txt',
+      side: 'new',
+      startLine: 5,
+      endLine: 5,
+      comment: 'Keep this local for now',
+      source: 'user',
+    })
+    expect(
+      store.updateAnnotationComment(
+        session.id,
+        localComment.id,
+        'Publish this with the review',
+        'review-comment',
+      ),
+    ).toMatchObject({
+      comment: 'Publish this with the review',
+      intent: 'review-comment',
+    })
+    expect(
+      store.updateAnnotationComment(
+        session.id,
+        localComment.id,
+        'Keep this local after all',
+        'annotation',
+      ).intent,
+    ).toBe('annotation')
     const reviewComment = store.addAnnotation(session.id, {
       filePath: 'tracked.txt',
       side: 'new',
@@ -924,7 +1039,7 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
     const individuallyArchived = store.setAnnotationArchived(session.id, annotation.id, true)
     await new Promise((resolve) => setTimeout(resolve, 5))
     const archiveAll = store.archiveAllAnnotations(session.id)
-    expect(archiveAll.annotations).toHaveLength(3)
+    expect(archiveAll.annotations).toHaveLength(4)
     expect(archiveAll.annotations.every((item) => item.archivedAt !== null)).toBe(true)
     expect(
       archiveAll.annotations.find((item) => item.id === annotation.id)?.updatedAt,
