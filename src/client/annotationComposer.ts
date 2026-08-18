@@ -217,13 +217,10 @@ export function buildCodeViewItems(
   annotations: SessionAnnotation[],
   composerSelection: CodeViewLineSelection | null,
   collapsedFiles: Set<string>,
-  sessionId: string,
-  sessionUpdatedAt: string,
   previousItems: readonly CodeViewItem<ReviewLineAnnotation>[] = [],
 ): CodeViewItem<ReviewLineAnnotation>[] {
   const previousById = new Map(previousItems.map((item) => [item.id, item]))
   return parsedFiles.map((fileDiff) => {
-    fileDiff.cacheKey = `${sessionId}:${sessionUpdatedAt}:${fileDiff.name}`
     const collapsed = collapsedFiles.has(fileDiff.name)
     const nextAnnotations = annotationsForFile(annotations, fileDiff, composerSelection)
     const previous = previousById.get(fileDiff.name)

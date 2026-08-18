@@ -17,6 +17,7 @@ import {
 } from './annotationComposer'
 import { highlightFileLines, syntaxLanguageFor } from './syntaxHighlight'
 import { formatTimestamp, relativeTimeAgo } from './time'
+import { ShortcutTooltip } from './ShortcutTooltip'
 import type {
   DifftasticFileDiff,
   DifftasticHunkLine,
@@ -669,26 +670,28 @@ function ViewedToggle({
 }) {
   const [busy, setBusy] = useState(false)
   return (
-    <Checkbox.Root
-      className="file-viewed-toggle"
-      checked={viewed}
-      disabled={busy}
-      onCheckedChange={async (checked) => {
-        setBusy(true)
-        try {
-          await onChange(checked === true)
-        } finally {
-          setBusy(false)
-        }
-      }}
-    >
-      <span className="file-viewed-checkbox">
-        <Checkbox.Indicator>
-          <CheckIcon />
-        </Checkbox.Indicator>
-      </span>
-      <span>Viewed</span>
-    </Checkbox.Root>
+    <ShortcutTooltip label={viewed ? 'Mark as unread' : 'Mark as read'} shortcut="V">
+      <Checkbox.Root
+        className="file-viewed-toggle"
+        checked={viewed}
+        disabled={busy}
+        onCheckedChange={async (checked) => {
+          setBusy(true)
+          try {
+            await onChange(checked === true)
+          } finally {
+            setBusy(false)
+          }
+        }}
+      >
+        <span className="file-viewed-checkbox">
+          <Checkbox.Indicator>
+            <CheckIcon />
+          </Checkbox.Indicator>
+        </span>
+        <span>Viewed</span>
+      </Checkbox.Root>
+    </ShortcutTooltip>
   )
 }
 

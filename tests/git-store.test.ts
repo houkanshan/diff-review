@@ -423,6 +423,44 @@ describe('difftastic API', () => {
   })
 })
 
+describe('file pair API', () => {
+  test('returns both snapshot sides in one response', async () => {
+    const store = new ReviewStore(path.join(fixture.directory, 'file-pair-api.db'))
+    const handler = new ApiHandler(store, null)
+    const server = createServer(handler.handle)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address() as AddressInfo
+    const baseUrl = `http://127.0.0.1:${port}`
+
+    try {
+      const createdResponse = await fetch(`${baseUrl}/api/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repositoryPath: fixture.repository,
+          target: { kind: 'range', expression: 'origin/main...HEAD' },
+        }),
+      })
+      expect(createdResponse.status).toBe(201)
+      const session = await createdResponse.json() as { id: string }
+
+      const pairResponse = await fetch(
+        `${baseUrl}/api/sessions/${session.id}/file?old=tracked.txt&new=tracked.txt`,
+      )
+      expect(pairResponse.status).toBe(200)
+      const pair = await pairResponse.json() as { old: string | null; new: string | null }
+      expect(pair.old).toContain('one')
+      expect(pair.old).not.toContain('feature two')
+      expect(pair.new).toContain('feature two')
+    } finally {
+      handler.close()
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error == null ? resolve() : reject(error))
+      })
+    }
+  })
+})
+
 describe('local review storage', () => {
   test('defaults API sessions to ignore whitespace and preserves pinned PR snapshots', async () => {
     const store = new ReviewStore(path.join(fixture.directory, 'whitespace-api.db'))

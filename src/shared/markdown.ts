@@ -40,7 +40,7 @@ export const remarkIssueReferences: Plugin<
     references.map((reference) => [reference.token.toLowerCase(), reference]),
   )
   return (tree) => {
-    visitIssueReferenceText(tree, false, (text) => {
+    visitIssueReferenceText(tree, false, (text, insideListItem) => {
       const children: RootContent[] = []
       let cursor = 0
       for (const match of issueReferenceMatches(text.value)) {
@@ -52,7 +52,10 @@ export const remarkIssueReferences: Plugin<
         children.push({
           type: 'link',
           url: reference.url,
-          children: [{ type: 'text', value: `${reference.label} ${reference.title}` }],
+          children: [{
+            type: 'text',
+            value: insideListItem ? `${reference.label} ${reference.title}` : match.target.token,
+          }],
         })
         cursor = match.index + match.target.token.length
       }
@@ -78,13 +81,13 @@ function issueReferenceMatches(value: string): GitHubIssueReferenceMatch[] {
 function visitIssueReferenceText(
   parent: Parent,
   insideListItem: boolean,
-  visit: (text: Text) => RootContent[] | undefined,
+  visit: (text: Text, insideListItem: boolean) => RootContent[] | undefined,
 ): void {
-  const eligible = insideListItem || parent.type === 'listItem'
+  const nextInsideListItem = insideListItem || parent.type === 'listItem'
   parent.children = parent.children.flatMap((child) => {
     if (child.type === 'link' || child.type === 'linkReference') return child
-    if (child.type === 'text' && eligible) return visit(child) ?? child
-    if ('children' in child) visitIssueReferenceText(child, eligible, visit)
+    if (child.type === 'text') return visit(child, nextInsideListItem) ?? child
+    if ('children' in child) visitIssueReferenceText(child, nextInsideListItem, visit)
     return child
   })
 }

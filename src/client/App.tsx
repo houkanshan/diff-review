@@ -105,6 +105,7 @@ import {
   archiveAllAnnotations,
   createSession,
   getFileContents,
+  getFilePair,
   getDifftasticAvailability,
   getPiReviewStatus,
   getPullRequestRevisions,
@@ -129,6 +130,7 @@ import {
 import { applyImportance } from './importance'
 import { formatTimestamp, relativeTime, relativeTimeAgo } from './time'
 import { DifftasticView, scrollDifftasticTarget } from './DifftasticView'
+import { ShortcutTooltip } from './ShortcutTooltip'
 import {
   EMPTY_COMPOSER_DRAFT,
   areCodeViewSelectionsEqual,
@@ -728,8 +730,12 @@ function ReviewWorkspace({
   const store = useStore()
   const composerSelectionRef = useRef(composerSelection)
   const onReloadRef = useRef(onReload)
+  const annotationsRef = useRef(session.annotations)
+  const sessionContentsRef = useRef({ id: session.id, contentKey: patchContentKey(session.patch) })
   composerSelectionRef.current = composerSelection
   onReloadRef.current = onReload
+  annotationsRef.current = session.annotations
+  sessionContentsRef.current = { id: session.id, contentKey: patchContentKey(session.patch) }
 
   const setFileCollapsed = useCallback((filePath: string, collapsed: boolean) => {
     store.set(fileCollapsedAtom(filePath), collapsed)
@@ -772,14 +778,19 @@ function ReviewWorkspace({
   const parsedFiles = useMemo(() => {
     if (!session.patch.trim()) return []
     try {
-      return parsePatchFiles(session.patch, `${session.id}-${session.updatedAt}`, true).flatMap(
+      const contentKey = patchContentKey(session.patch)
+      const files = parsePatchFiles(session.patch, `${session.id}:${contentKey}`, true).flatMap(
         (patch) => patch.files,
       )
+      for (const file of files) {
+        file.cacheKey = `${session.id}:${contentKey}:${file.name}`
+      }
+      return files
     } catch (caught) {
       console.error('Could not parse diff', caught)
       return []
     }
-  }, [session.id, session.patch, session.updatedAt])
+  }, [session.id, session.patch])
 
   useLayoutEffect(() => {
     for (const file of parsedFiles) {
@@ -794,13 +805,11 @@ function ReviewWorkspace({
       session.annotations,
       composerSelection,
       collapsedFiles,
-      session.id,
-      session.updatedAt,
       previousItemsRef.current,
     )
     previousItemsRef.current = nextItems
     return nextItems
-  }, [collapsedFiles, composerSelection, parsedFiles, session.annotations, session.id, session.updatedAt])
+  }, [collapsedFiles, composerSelection, parsedFiles, session.annotations])
 
   const openComposer = useCallback((next: CodeViewLineSelection) => {
     setSelection(next)
@@ -838,45 +847,43 @@ function ReviewWorkspace({
         openComposer({ id: context.item.id, range })
       },
       async loadDiffFiles(fileDiff) {
+        const { id, contentKey } = sessionContentsRef.current
         const oldPath = fileDiff.prevName ?? fileDiff.name
         const newPath = fileDiff.name
         if (fileDiff.type === 'rename-pure') {
-          const contents = await getFileContents(session.id, newPath, 'new')
-          if (contents == null) throw new Error(`Could not load ${newPath}`)
+          const pair = await getFilePair(id, null, newPath)
+          if (pair.new == null) throw new Error(`Could not load ${newPath}`)
           return {
             oldFile: null,
             newFile: {
               name: newPath,
-              contents,
-              cacheKey: `${session.id}:${session.updatedAt}:new:${newPath}`,
+              contents: pair.new,
+              cacheKey: `${id}:${contentKey}:new:${newPath}`,
             },
           }
         }
-        const [oldContents, newContents] = await Promise.all([
-          getFileContents(session.id, oldPath, 'old'),
-          getFileContents(session.id, newPath, 'new'),
-        ])
-        if (oldContents == null || newContents == null) {
+        const pair = await getFilePair(id, oldPath, newPath)
+        if (pair.old == null || pair.new == null) {
           throw new Error(`Could not load both versions of ${newPath}`)
         }
         return {
           oldFile: {
             name: oldPath,
-            contents: oldContents,
-            cacheKey: `${session.id}:${session.updatedAt}:old:${oldPath}`,
+            contents: pair.old,
+            cacheKey: `${id}:${contentKey}:old:${oldPath}`,
           },
           newFile: {
             name: newPath,
-            contents: newContents,
-            cacheKey: `${session.id}:${session.updatedAt}:new:${newPath}`,
+            contents: pair.new,
+            cacheKey: `${id}:${contentKey}:new:${newPath}`,
           },
         }
       },
       onPostRender(node, _instance, phase, context) {
-        applyImportance(node, phase, context, session.annotations)
+        applyImportance(node, phase, context, annotationsRef.current)
       },
     }),
-    [layout, openComposer, overflow, resolvedTheme, session.annotations, session.id, session.updatedAt],
+    [layout, openComposer, overflow, resolvedTheme],
   )
 
   const handleSelection = useCallback((next: CodeViewLineSelection | null) => {
@@ -1157,7 +1164,7 @@ function ReviewWorkspace({
             </ToggleGroup>
             <RendererSwitch
               value={renderer === 'difftastic' && difftasticReady ? 'difftastic' : 'pierre'}
-              structuralDisabled={difftasticQuery.isPending || !difftasticReady}
+              structuralDisabled={!difftasticReady}
               hint={difftastic?.installHint ?? 'Install difftastic and make sure `difft` is on PATH.'}
               onChange={(next) => {
                 setRenderer(next)
@@ -3633,26 +3640,28 @@ function FileViewedToggle({
 }) {
   const [busy, setBusy] = useState(false)
   return (
-    <Checkbox.Root
-      className="file-viewed-toggle"
-      checked={viewed}
-      disabled={busy}
-      onCheckedChange={async (checked) => {
-        setBusy(true)
-        try {
-          await onChange(checked === true)
-        } finally {
-          setBusy(false)
-        }
-      }}
-    >
-      <span className="file-viewed-checkbox">
-        <Checkbox.Indicator>
-          <CheckIcon />
-        </Checkbox.Indicator>
-      </span>
-      <span>Viewed</span>
-    </Checkbox.Root>
+    <ShortcutTooltip label={viewed ? 'Mark as unread' : 'Mark as read'} shortcut="V">
+      <Checkbox.Root
+        className="file-viewed-toggle"
+        checked={viewed}
+        disabled={busy}
+        onCheckedChange={async (checked) => {
+          setBusy(true)
+          try {
+            await onChange(checked === true)
+          } finally {
+            setBusy(false)
+          }
+        }}
+      >
+        <span className="file-viewed-checkbox">
+          <Checkbox.Indicator>
+            <CheckIcon />
+          </Checkbox.Indicator>
+        </span>
+        <span>Viewed</span>
+      </Checkbox.Root>
+    </ShortcutTooltip>
   )
 }
 
@@ -4474,6 +4483,15 @@ function storedPanelWidth(
 
 function storePanelWidth(side: 'left' | 'right', width: number): void {
   window.localStorage.setItem(`diff-review-${side}-panel-width`, String(width))
+}
+
+function patchContentKey(patch: string): string {
+  let hash = 2166136261
+  for (let index = 0; index < patch.length; index += 1) {
+    hash ^= patch.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return `${patch.length.toString(36)}:${(hash >>> 0).toString(36)}`
 }
 
 function storedDiffRenderer(): DiffRenderer {

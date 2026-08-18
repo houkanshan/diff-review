@@ -356,7 +356,7 @@ describe('GitHub pull request review comments', () => {
 
 
 describe('GitHub issue references in Markdown', () => {
-  test('extracts references from list text without treating CommonMark code as content', () => {
+  test('extracts references from list and paragraph text without treating CommonMark code as content', () => {
     const markdown = [
       '    - #12',
       '- #13',
@@ -368,7 +368,7 @@ describe('GitHub issue references in Markdown', () => {
       '- acme/other#16',
       '- close #17 and **acme/other#18**, but not `#19` or [#20](https://example.com)',
       '',
-      'close #21',
+      'close #21 and acme/other#22',
     ].join('\n')
 
     expect(extractIssueReferenceTargets([markdown])).toEqual([
@@ -376,36 +376,36 @@ describe('GitHub issue references in Markdown', () => {
       { token: 'acme/other#16', owner: 'acme', repository: 'other', number: 16 },
       { token: '#17', owner: null, repository: null, number: 17 },
       { token: 'acme/other#18', owner: 'acme', repository: 'other', number: 18 },
+      { token: '#21', owner: null, repository: null, number: 21 },
+      { token: 'acme/other#22', owner: 'acme', repository: 'other', number: 22 },
     ])
   })
 
   test('deduplicates references across Markdown bodies', () => {
-    expect(extractIssueReferenceTargets(['- #12', '* #12', '1. #13'])).toEqual([
+    expect(extractIssueReferenceTargets(['- #12', '* #12', '1. #13', 'see #12'])).toEqual([
       { token: '#12', owner: null, repository: null, number: 12 },
       { token: '#13', owner: null, repository: null, number: 13 },
     ])
   })
 
-  test('inserts issue titles as literal AST text', () => {
+  test('inserts issue titles as literal AST text in list items only', () => {
     const title = '<img src="https://example.com/tracker.png"> *bold* `code`'
+    const references = [{
+      token: '#11160',
+      label: '#11160',
+      kind: 'issue' as const,
+      owner: 'acme',
+      repository: 'repo',
+      number: 11160,
+      title,
+      url: 'https://github.com/acme/repo/issues/11160',
+    }]
     const processor = unified()
       .use(remarkParse)
       .use(remarkGfm)
-      .use(remarkIssueReferences, {
-        references: [{
-          token: '#11160',
-          label: '#11160',
-          kind: 'issue',
-          owner: 'acme',
-          repository: 'repo',
-          number: 11160,
-          title,
-          url: 'https://github.com/acme/repo/issues/11160',
-        }],
-      })
-    const tree = processor.runSync(processor.parse('- close #11160 after'))
+      .use(remarkIssueReferences, { references })
 
-    expect(tree).toMatchObject({
+    expect(processor.runSync(processor.parse('- close #11160 after'))).toMatchObject({
       children: [{
         type: 'list',
         children: [{
@@ -423,6 +423,21 @@ describe('GitHub issue references in Markdown', () => {
             ],
           }],
         }],
+      }],
+    })
+
+    expect(processor.runSync(processor.parse('close #11160 after'))).toMatchObject({
+      children: [{
+        type: 'paragraph',
+        children: [
+          { type: 'text', value: 'close ' },
+          {
+            type: 'link',
+            url: 'https://github.com/acme/repo/issues/11160',
+            children: [{ type: 'text', value: '#11160' }],
+          },
+          { type: 'text', value: ' after' },
+        ],
       }],
     })
   })

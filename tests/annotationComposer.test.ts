@@ -69,14 +69,12 @@ describe('annotation composer items', () => {
   test('reuses unchanged file items and only versions the file that opened the composer', () => {
     const files = [fileDiff('src/a.ts'), fileDiff('src/b.ts')]
     const notes = [annotation('src/b.ts')]
-    const initial = buildCodeViewItems(files, notes, null, new Set(), 's1', 't1')
+    const initial = buildCodeViewItems(files, notes, null, new Set())
     const next = buildCodeViewItems(
       files,
       notes,
       selection('src/a.ts'),
       new Set(),
-      's1',
-      't1',
       initial,
     )
 
@@ -92,8 +90,8 @@ describe('annotation composer items', () => {
     const files = [fileDiff('src/a.ts')]
     const notes = [annotation('src/a.ts')]
     const selected = selection('src/a.ts')
-    const first = buildCodeViewItems(files, notes, selected, new Set(), 's1', 't1')
-    const second = buildCodeViewItems(files, notes, selected, new Set(), 's1', 't1', first)
+    const first = buildCodeViewItems(files, notes, selected, new Set())
+    const second = buildCodeViewItems(files, notes, selected, new Set(), first)
 
     expect(second[0]).toBe(first[0])
     expect(areReviewAnnotationsEqual(first[0]?.annotations, second[0]?.annotations ?? [])).toBe(true)
@@ -101,14 +99,12 @@ describe('annotation composer items', () => {
 
   test('reuses file items when saved annotations are cloned but unchanged', () => {
     const files = [fileDiff('src/a.ts'), fileDiff('src/b.ts')]
-    const initial = buildCodeViewItems(files, [annotation('src/b.ts')], null, new Set(), 's1', 't1')
+    const initial = buildCodeViewItems(files, [annotation('src/b.ts')], null, new Set())
     const next = buildCodeViewItems(
       files,
       [annotation('src/b.ts')],
       null,
       new Set(),
-      's1',
-      't1',
       initial,
     )
 

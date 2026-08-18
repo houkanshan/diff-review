@@ -20,7 +20,7 @@ import type {
   SessionAnnotation,
   StartPiReviewInput,
 } from '../shared/types'
-
+import { limitHeavyRequest } from './limitConcurrency'
 export class ClientError extends Error {
   constructor(
     public readonly code: string,
@@ -243,10 +243,25 @@ export async function getFileContents(
   filePath: string,
   side: 'old' | 'new',
 ): Promise<string | null> {
-  const result = await request<{ contents: string | null }>(
-    `/api/sessions/${encodeURIComponent(sessionId)}/file?path=${encodeURIComponent(filePath)}&side=${side}`,
+  const pair = await getFilePair(
+    sessionId,
+    side === 'old' ? filePath : null,
+    side === 'new' ? filePath : null,
   )
-  return result.contents
+  return side === 'old' ? pair.old : pair.new
+}
+
+export function getFilePair(
+  sessionId: string,
+  oldPath: string | null,
+  newPath: string | null,
+): Promise<{ old: string | null; new: string | null }> {
+  const query = new URLSearchParams()
+  if (oldPath != null) query.set('old', oldPath)
+  if (newPath != null) query.set('new', newPath)
+  return limitHeavyRequest(() => request(
+    `/api/sessions/${encodeURIComponent(sessionId)}/file?${query}`,
+  ))
 }
 
 export function getDifftasticAvailability(): Promise<DifftasticAvailability> {
@@ -257,9 +272,9 @@ export function getDifftasticFile(
   sessionId: string,
   filePath: string,
 ): Promise<DifftasticFileDiff> {
-  return request(
+  return limitHeavyRequest(() => request(
     `/api/sessions/${encodeURIComponent(sessionId)}/difftastic?path=${encodeURIComponent(filePath)}`,
-  )
+  ))
 }
 
 type RequestOptions = RequestInit & { timeoutMs?: number }

@@ -597,13 +597,30 @@ export class ApiHandler {
 
     if (method === 'GET' && fileMatch != null) {
       const id = fileMatch[1] ?? ''
+      const session = this.store.getSession(id)
+      const resolved = this.store.getResolvedReview(id)
+      const oldPath = url.searchParams.get('old')
+      const newPath = url.searchParams.get('new')
+      if (oldPath != null || newPath != null) {
+        if ((oldPath != null && oldPath === '') || (newPath != null && newPath === '')) {
+          throw new AppError('INVALID_INPUT', 'File path cannot be empty')
+        }
+        const [oldContents, newContents] = await Promise.all([
+          oldPath == null
+            ? Promise.resolve(null)
+            : readSnapshotFile(session.repositoryRoot, resolved.oldSnapshot, oldPath),
+          newPath == null
+            ? Promise.resolve(null)
+            : readSnapshotFile(session.repositoryRoot, resolved.newSnapshot, newPath),
+        ])
+        sendJson(response, 200, { old: oldContents, new: newContents })
+        return
+      }
       const filePath = requiredQuery(url, 'path')
       const side = requiredQuery(url, 'side')
       if (side !== 'old' && side !== 'new') {
         throw new AppError('INVALID_SIDE', 'File side must be old or new')
       }
-      const session = this.store.getSession(id)
-      const resolved = this.store.getResolvedReview(id)
       const contents = await readSnapshotFile(
         session.repositoryRoot,
         side === 'old' ? resolved.oldSnapshot : resolved.newSnapshot,

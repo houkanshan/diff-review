@@ -3325,6 +3325,29 @@ body.resizing-panels * {
   transition: opacity 100ms ease, transform 100ms ease;
 }
 
+.tooltip-popup-with-kbd {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  color: var(--muted);
+  border-radius: 3px;
+  background: var(--border-soft);
+  font-family: var(--font-sans);
+  font-size: 9px;
+  font-weight: 600;
+  pointer-events: none;
+  user-select: none;
+}
+
 .tooltip-popup[data-starting-style],
 .tooltip-popup[data-ending-style] {
   opacity: 0;
