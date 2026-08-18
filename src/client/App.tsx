@@ -715,7 +715,7 @@ function ReviewWorkspace({
   const [pullRequestView, setPullRequestView] = useState<PullRequestViewMode>('overview')
   const overviewScrollRef = useRef<HTMLElement>(null)
   const diffWorkspaceRef = useRef<HTMLDivElement>(null)
-  const hoveredFileRef = useRef<string | null>(null)
+  const lastPointerRef = useRef<{ x: number; y: number } | null>(null)
   const pullRequestScrollPositions = useRef<Record<PullRequestViewMode, number>>({
     overview: 0,
     diff: 0,
@@ -992,19 +992,22 @@ function ReviewWorkspace({
     )
   }, [closeComposer, editAnnotation, handleComposerSubmitted, setArchived])
 
-  useHotkey('V', () => {
-    const viewer = viewerRef.current?.getInstance()
-    let filePath = hoveredFileRef.current ?? selection?.id ?? items.at(0)?.id
-
-    if (hoveredFileRef.current == null && selection == null && viewer != null) {
-      const scrollTop = viewer.getScrollTop()
-      for (const item of items) {
-        const itemTop = viewer.getTopForItem(item.id)
-        if (itemTop == null) continue
-        if (itemTop > scrollTop) break
-        filePath = item.id
-      }
+  useEffect(() => {
+    const onPointerMove = (event: PointerEvent) => {
+      lastPointerRef.current = { x: event.clientX, y: event.clientY }
     }
+    window.addEventListener('pointermove', onPointerMove)
+    return () => window.removeEventListener('pointermove', onPointerMove)
+  }, [])
+
+  useHotkey('V', () => {
+    const pointer = lastPointerRef.current
+    const viewer = viewerRef.current?.getInstance()
+    const filePath =
+      (pointer != null ? fileIdAtClientPoint(pointer.x, pointer.y) : null)
+      ?? activeFilePath
+      ?? (viewer != null ? fileIdAtCodeViewScroll(viewer, items, viewer.getScrollTop()) : null)
+      ?? items.at(0)?.id
 
     if (filePath == null) return
     void setViewed(filePath, !viewedFiles.has(filePath)).catch((caught) => {
@@ -1289,12 +1292,6 @@ function ReviewWorkspace({
           />
           <section
             className="diff-stage"
-            onPointerMove={(event) => {
-              hoveredFileRef.current = fileIdFromEvent(event.nativeEvent)
-            }}
-            onPointerLeave={() => {
-              hoveredFileRef.current = null
-            }}
             onClick={(event) => {
               const fileId = fileHeaderIdFromEvent(event.nativeEvent)
               if (fileId != null) {
@@ -4588,17 +4585,41 @@ function fileHeaderIdFromEvent(event: MouseEvent): string | null {
 }
 
 function fileIdFromEvent(event: MouseEvent): string | null {
-  const path = event.composedPath()
-  const container = path.find(
-    (target) => target instanceof HTMLElement && target.tagName === 'DIFFS-CONTAINER',
-  )
-  if (container instanceof HTMLElement) {
-    return container.querySelector<HTMLElement>('[data-file-id]')?.dataset.fileId ?? null
+  return fileIdFromComposedPath(event.composedPath())
+}
+
+function fileIdAtClientPoint(x: number, y: number): string | null {
+  for (const node of document.elementsFromPoint(x, y)) {
+    const fileId = fileIdFromComposedPath(composedAncestors(node))
+    if (fileId != null) return fileId
   }
+  return null
+}
+
+function fileIdFromComposedPath(path: readonly EventTarget[]): string | null {
   const file = path.find(
     (target) => target instanceof HTMLElement && target.dataset.fileId != null,
   )
   return file instanceof HTMLElement ? file.dataset.fileId ?? null : null
+}
+
+function composedAncestors(start: Element): EventTarget[] {
+  const path: EventTarget[] = []
+  let node: EventTarget | null = start
+  while (node instanceof Node) {
+    path.push(node)
+    if (node instanceof ShadowRoot) {
+      node = node.host
+      continue
+    }
+    const parent: Node | null = node.parentNode
+    if (parent != null) {
+      node = parent
+      continue
+    }
+    break
+  }
+  return path
 }
 
 function fileChangeStats(file: FileDiffMetadata): FileChangeStats {
