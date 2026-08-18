@@ -349,6 +349,33 @@ async function resolveRange(
   }
 }
 
+export async function listMergeConflictFiles(
+  root: string,
+  baseOid: string,
+  headOid: string,
+): Promise<string[]> {
+  const result = await runGit(
+    root,
+    [
+      '-c',
+      'core.quotePath=false',
+      'merge-tree',
+      '--write-tree',
+      '--name-only',
+      '--no-messages',
+      '-z',
+      baseOid,
+      headOid,
+    ],
+    true,
+  )
+  if (result.exitCode === 0) return []
+  if (result.exitCode !== 1) return []
+  const [treeOid, ...paths] = splitNullPaths(result.stdout)
+  if (treeOid == null || treeOid.length === 0) return []
+  return [...new Set(paths)].sort((left, right) => left.localeCompare(right))
+}
+
 export async function resolvePullRequestRevision(
   root: string,
   details: PullRequestRevisionDetails,

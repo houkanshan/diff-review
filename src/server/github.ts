@@ -211,6 +211,7 @@ export async function getPullRequestDetails(
     body,
     mergedBy: parseOptionalUser(raw.mergedBy),
     mergeable: parsePullRequestMergeable(raw.mergeable),
+    conflictFiles: [],
     reviewers: parsePullRequestReviewers(raw.reviewRequests, raw.reviews),
     issueReferences,
     baseRefOid: expectString(raw.baseRefOid, 'baseRefOid'),

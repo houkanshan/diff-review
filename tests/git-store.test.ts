@@ -20,6 +20,7 @@ import {
   getRepositoryInfo,
   resolveCommitSpan,
   rerenderCommitReview,
+  listMergeConflictFiles,
   resolvePullRequestRevision,
   resolveTarget,
   stageReviewFile,
@@ -219,6 +220,23 @@ JSON
     } finally {
       process.env.PATH = originalPath
       process.env.GH_TEST_OUTPUT = originalOutput
+    }
+  })
+
+  test('lists files that conflict between two commits', async () => {
+    const conflictFixture = createConflictFixture()
+    try {
+      const baseOid = git(conflictFixture.repository, ['rev-parse', 'main']).trim()
+      const headOid = git(conflictFixture.repository, ['rev-parse', 'feature']).trim()
+      const cleanOid = git(conflictFixture.repository, ['rev-parse', 'clean']).trim()
+
+      expect(await listMergeConflictFiles(conflictFixture.repository, baseOid, headOid)).toEqual([
+        'conflict.txt',
+        'other-conflict.txt',
+      ])
+      expect(await listMergeConflictFiles(conflictFixture.repository, baseOid, cleanOid)).toEqual([])
+    } finally {
+      rmSync(conflictFixture.directory, { recursive: true, force: true })
     }
   })
 
@@ -1429,6 +1447,41 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
     expect(store.getSession('drs_legacy_pr').revisionHeadOid).toBe(commit.oid)
   })
 })
+
+function createConflictFixture(): { directory: string; repository: string } {
+  const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-conflict-'))
+  const repository = path.join(directory, 'repo')
+  mkdirSync(repository)
+  git(repository, ['init', '-b', 'main'])
+  git(repository, ['config', 'user.name', 'Diff Reviewer'])
+  git(repository, ['config', 'user.email', 'reviewer@example.com'])
+  writeFileSync(path.join(repository, 'conflict.txt'), 'base\n')
+  writeFileSync(path.join(repository, 'other-conflict.txt'), 'base other\n')
+  writeFileSync(path.join(repository, 'clean.txt'), 'shared\n')
+  git(repository, ['add', '.'])
+  git(repository, ['commit', '-m', 'base'])
+
+  git(repository, ['switch', '-c', 'feature'])
+  writeFileSync(path.join(repository, 'conflict.txt'), 'feature\n')
+  writeFileSync(path.join(repository, 'other-conflict.txt'), 'feature other\n')
+  writeFileSync(path.join(repository, 'clean.txt'), 'shared\nfeature only\n')
+  git(repository, ['add', '.'])
+  git(repository, ['commit', '-m', 'feature'])
+
+  git(repository, ['switch', 'main'])
+  writeFileSync(path.join(repository, 'conflict.txt'), 'main\n')
+  writeFileSync(path.join(repository, 'other-conflict.txt'), 'main other\n')
+  git(repository, ['add', '.'])
+  git(repository, ['commit', '-m', 'main'])
+
+  git(repository, ['switch', '-c', 'clean'])
+  writeFileSync(path.join(repository, 'clean.txt'), 'shared\nmain only\n')
+  git(repository, ['add', 'clean.txt'])
+  git(repository, ['commit', '-m', 'clean'])
+  git(repository, ['switch', 'main'])
+
+  return { directory, repository }
+}
 
 function createGitFixture(): { directory: string; repository: string } {
   const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-'))

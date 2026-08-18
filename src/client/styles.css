@@ -2087,6 +2087,28 @@ body.resizing-panels * {
   font-size: 11px;
   line-height: 1.45;
 }
+.pr-sidebar-conflict strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+}
+.pr-sidebar-conflict p { margin: 4px 0 0; }
+.pr-sidebar-conflict-files {
+  display: grid;
+  gap: 3px;
+  margin: 7px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.pr-sidebar-conflict-files li {
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .pr-sidebar-changes {
   display: flex;
   gap: 9px;

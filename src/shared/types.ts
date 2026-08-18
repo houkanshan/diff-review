@@ -269,6 +269,7 @@ export interface PullRequestDetails extends PullRequestSummary {
   body: string
   mergedBy: GitHubUser | null
   mergeable: PullRequestMergeable
+  conflictFiles: string[]
   issueReferences: GitHubIssueReference[]
   baseRefOid: string
   headRefOid: string

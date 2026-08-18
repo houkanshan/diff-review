@@ -29,6 +29,7 @@ import {
   readSnapshotFile,
   resolveCommitSpan,
   rerenderCommitReview,
+  listMergeConflictFiles,
   resolvePullRequestRevision,
   resolveRepository,
   resolveTarget,
@@ -175,6 +176,13 @@ export class ApiHandler {
       const details = await getPullRequestDetails(root, number)
       const ignoreWhitespace = true
       const resolved = await resolvePullRequestRevision(root, details, ignoreWhitespace)
+      if (details.mergeable === 'CONFLICTING') {
+        details.conflictFiles = await listMergeConflictFiles(
+          root,
+          details.baseRefOid,
+          details.headRefOid,
+        )
+      }
       const target: ReviewTarget = { kind: 'pr', number }
       const currentSession = this.createOrReuseSession(
         root,

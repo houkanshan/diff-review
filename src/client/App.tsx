@@ -2239,7 +2239,25 @@ function PullRequestSidebar({ details }: { details: PullRequestDetails }) {
           </div>
         )}
         {details.state === 'OPEN' && details.mergeable === 'CONFLICTING' && (
-          <p className="pr-sidebar-conflict">Conflicts must be resolved before merging.</p>
+          <div className="pr-sidebar-conflict">
+            <strong>Has conflicts</strong>
+            {details.conflictFiles.length === 0
+              ? <p>Conflicts must be resolved before merging.</p>
+              : (
+                  <>
+                    <p>
+                      {details.conflictFiles.length === 1
+                        ? '1 file must be resolved before merging.'
+                        : `${details.conflictFiles.length} files must be resolved before merging.`}
+                    </p>
+                    <ul className="pr-sidebar-conflict-files">
+                      {details.conflictFiles.map((filePath) => (
+                        <li key={filePath} title={filePath}>{filePath}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+          </div>
         )}
         <div className="pr-sidebar-changes" aria-label="Pull request changes">
           <span className="addition">+{details.additions}</span>
