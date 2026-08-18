@@ -3,10 +3,11 @@ import { runCommand } from './command.js'
 import { readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
 
-import type {
-  CommitSummary,
-  RepositoryInfo,
-  ReviewTarget,
+import {
+  type CommitSummary,
+  type RepositoryInfo,
+  type ReviewTarget,
+  targetSupportsStaging,
 } from '../shared/types.js'
 import { AppError } from './errors.js'
 import {
@@ -26,6 +27,7 @@ export interface ResolvedReview {
   oldSnapshot: SnapshotRef
   newSnapshot: SnapshotRef
   commits: CommitSummary[]
+  unstagedPaths?: string[]
 }
 
 
@@ -70,22 +72,33 @@ export async function resolveTarget(
 ): Promise<ResolvedReview> {
   const root = await resolveRepository(repositoryPath)
 
+  let resolved: ResolvedReview
   switch (target.kind) {
     case 'worktree':
-      return resolveWorktree(root, ignoreWhitespace)
+      resolved = await resolveWorktree(root, ignoreWhitespace)
+      break
     case 'branch-worktree':
-      return resolveBranchWorktree(root, ignoreWhitespace)
+      resolved = await resolveBranchWorktree(root, ignoreWhitespace)
+      break
     case 'unstaged':
-      return resolveUnstaged(root, ignoreWhitespace)
+      resolved = await resolveUnstaged(root, ignoreWhitespace)
+      break
     case 'staged':
-      return resolveStaged(root, ignoreWhitespace)
+      resolved = await resolveStaged(root, ignoreWhitespace)
+      break
     case 'range':
-      return resolveRange(root, target.expression, ignoreWhitespace)
+      resolved = await resolveRange(root, target.expression, ignoreWhitespace)
+      break
     case 'pr': {
       const details = await getPullRequestRevisionDetails(root, target.number)
-      return resolvePullRequestRevision(root, details, ignoreWhitespace)
+      resolved = await resolvePullRequestRevision(root, details, ignoreWhitespace)
+      break
     }
   }
+  if (targetSupportsStaging(target)) {
+    resolved.unstagedPaths = await listUnstagedPaths(root)
+  }
+  return resolved
 }
 
 export async function rerenderCommitReview(
@@ -484,11 +497,9 @@ async function gitDiff(
 }
 
 async function untrackedPatch(root: string, ignoreWhitespace: boolean): Promise<string> {
-  const files = (
-    await runGit(root, ['ls-files', '--others', '--exclude-standard', '-z'])
-  ).stdout
-    .split('\0')
-    .filter(Boolean)
+  const files = splitNullPaths(
+    (await runGit(root, ['ls-files', '--others', '--exclude-standard', '-z'])).stdout,
+  )
 
   let patch = ''
   for (const file of files) {
@@ -516,6 +527,20 @@ async function untrackedPatch(root: string, ignoreWhitespace: boolean): Promise<
     patch += result.stdout
   }
   return patch
+}
+
+async function listUnstagedPaths(root: string): Promise<string[]> {
+  const tracked = await runGit(root, ['-c', 'core.quotePath=false', 'diff', '--name-only', '-z'], true)
+  const untracked = await runGit(
+    root,
+    ['-c', 'core.quotePath=false', 'ls-files', '--others', '--exclude-standard', '-z'],
+    true,
+  )
+  return [...new Set([...splitNullPaths(tracked.stdout), ...splitNullPaths(untracked.stdout)])]
+}
+
+function splitNullPaths(value: string): string[] {
+  return value.split('\0').filter((entry) => entry.length > 0)
 }
 
 async function indexTreeId(root: string): Promise<string> {

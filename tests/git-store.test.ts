@@ -226,13 +226,20 @@ JSON
     const stagingFixture = createGitFixture()
     try {
       const review = await resolveTarget(stagingFixture.repository, { kind: 'unstaged' })
+      const worktreeBefore = await resolveTarget(stagingFixture.repository, { kind: 'worktree' })
+      expect(review.unstagedPaths).toContain('tracked.txt')
+      expect(worktreeBefore.unstagedPaths).toContain('tracked.txt')
 
       await stageReviewFile(stagingFixture.repository, review.patch, 'tracked.txt')
 
       const staged = await resolveTarget(stagingFixture.repository, { kind: 'staged' })
       const unstaged = await resolveTarget(stagingFixture.repository, { kind: 'unstaged' })
+      const worktree = await resolveTarget(stagingFixture.repository, { kind: 'worktree' })
       expect(staged.patch).toContain('two edited')
       expect(unstaged.patch).not.toContain('two edited')
+      expect(unstaged.unstagedPaths).not.toContain('tracked.txt')
+      expect(worktree.patch).toContain('two edited')
+      expect(worktree.unstagedPaths).not.toContain('tracked.txt')
     } finally {
       rmSync(stagingFixture.directory, { recursive: true, force: true })
     }
@@ -647,7 +654,58 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
     ])
   })
 
-  test('reuses a local session for the same repository target', async () => {
+
+  test('indexes local range sessions by resolved commit SHAs', async () => {
+    const review = await resolveTarget(fixture.repository, {
+      kind: 'range',
+      expression: 'origin/main...HEAD',
+    })
+    expect(review.oldSnapshot.kind).toBe('commit')
+    expect(review.newSnapshot.kind).toBe('commit')
+    const store = new ReviewStore(path.join(fixture.directory, 'local-revisions.db'))
+    const first = store.createSession(
+      fixture.repository,
+      'repo',
+      { kind: 'range', expression: 'origin/main...HEAD' },
+      review,
+      true,
+    )
+    store.createSession(
+      fixture.repository,
+      'repo',
+      { kind: 'range', expression: `${review.oldSnapshot.id}..${review.newSnapshot.id}` },
+      review,
+      true,
+    )
+
+    expect(first.revisionBaseOid).toBe(review.oldSnapshot.id)
+    expect(first.revisionHeadOid).toBe(review.newSnapshot.id)
+    expect(store.findLocalRevision(
+      fixture.repository,
+      review.oldSnapshot.id,
+      review.newSnapshot.id,
+    )?.revisionHeadOid).toBe(review.newSnapshot.id)
+    expect(store.findPullRequestRevision(
+      fixture.repository,
+      42,
+      review.oldSnapshot.id,
+      review.newSnapshot.id,
+    )).toBeNull()
+
+    const nextHead = 'd'.repeat(40)
+    const moved = store.createSession(
+      fixture.repository,
+      'repo',
+      { kind: 'range', expression: 'origin/main...HEAD' },
+      { ...review, newSnapshot: { kind: 'commit', id: nextHead } },
+      true,
+    )
+    expect(moved.id).not.toBe(first.id)
+    expect(store.findLocalRevision(fixture.repository, review.oldSnapshot.id, nextHead)?.id)
+      .toBe(moved.id)
+  })
+
+  test('reuses a local session for the same resolved commit range', async () => {
     const store = new ReviewStore(path.join(fixture.directory, 'reuse-local.db'))
     const handler = new ApiHandler(store, null)
     const server = createServer(handler.handle)
@@ -695,11 +753,72 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
       }
       expect(third.id).toBe(first.id)
       expect(third.annotations).toMatchObject([{ comment: 'Keep this note' }])
+
+
+      const range = await resolveTarget(fixture.repository, {
+        kind: 'range',
+        expression: 'origin/main...HEAD',
+      })
+      const aliasedResponse = await fetch(`${baseUrl}/api/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repositoryPath: fixture.repository,
+          target: {
+            kind: 'range',
+            expression: `${range.oldSnapshot.id}..${range.newSnapshot.id}`,
+          },
+        }),
+      })
+      expect(aliasedResponse.status).toBe(201)
+      expect((await aliasedResponse.json() as { id: string }).id).toBe(first.id)
     } finally {
       handler.close()
       await new Promise<void>((resolve, reject) => {
         server.close((error) => error == null ? resolve() : reject(error))
       })
+    }
+  })
+
+
+  test('opens a new local session when the resolved head advances', async () => {
+    const isolated = createGitFixture()
+    const store = new ReviewStore(path.join(isolated.directory, 'reuse-local-advance.db'))
+    const handler = new ApiHandler(store, null)
+    const server = createServer(handler.handle)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address() as AddressInfo
+    const url = `http://127.0.0.1:${port}/api/sessions`
+    const body = JSON.stringify({
+      repositoryPath: isolated.repository,
+      target: { kind: 'range', expression: 'origin/main...HEAD' },
+    })
+
+    try {
+      const firstResponse = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      })
+      const first = await firstResponse.json() as { id: string }
+      writeFileSync(path.join(isolated.repository, 'later.txt'), 'later\n')
+      git(isolated.repository, ['add', 'later.txt'])
+      git(isolated.repository, ['commit', '-m', 'later'])
+      const secondResponse = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      })
+      const second = await secondResponse.json() as { id: string }
+      expect(firstResponse.status).toBe(201)
+      expect(secondResponse.status).toBe(201)
+      expect(second.id).not.toBe(first.id)
+    } finally {
+      handler.close()
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error == null ? resolve() : reject(error))
+      })
+      rmSync(isolated.directory, { recursive: true, force: true })
     }
   })
 
@@ -1062,8 +1181,8 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
     expect(updated.patch).toContain('feature two')
     expect(updated.ignoreWhitespace).toBe(false)
     expect(updated.globalComment).toBeNull()
-    expect(updated.revisionBaseOid).toBeNull()
-    expect(updated.revisionHeadOid).toBeNull()
+    expect(updated.revisionBaseOid).toBe(review.oldSnapshot.id)
+    expect(updated.revisionHeadOid).toBe(review.newSnapshot.id)
 
     expect(store.setGlobalComment(session.id, 'Review the routing behavior first').globalComment)
       .toBe('Review the routing behavior first')
@@ -1295,8 +1414,8 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
     expect(store.getSession('drs_legacy').viewedFiles).toEqual([])
     expect(store.getSession('drs_legacy').ignoreWhitespace).toBe(false)
     expect(store.getSession('drs_legacy').globalComment).toBeNull()
-    expect(store.getSession('drs_legacy').revisionBaseOid).toBeNull()
-    expect(store.getSession('drs_legacy').revisionHeadOid).toBeNull()
+    expect(store.getSession('drs_legacy').revisionBaseOid).toBe('b'.repeat(40))
+    expect(store.getSession('drs_legacy').revisionHeadOid).toBe(commit.oid)
     expect(store.getSession('drs_legacy').annotations).toMatchObject([
       {
         id: 'ann_legacy',

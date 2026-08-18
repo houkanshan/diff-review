@@ -17,6 +17,7 @@ import type {
   PullRequestWorkspace,
   ReviewSession,
   ReviewTarget,
+  SessionUpdatedEvent,
   StartPiReviewInput,
 } from '../shared/types.js'
 import { targetSupportsStaging } from '../shared/types.js'
@@ -355,25 +356,14 @@ export class ApiHandler {
         session.target,
         session.ignoreWhitespace,
       )
-      if (session.target.kind === 'pr') {
-        const updated = this.createOrReuseSession(
-          session.repositoryRoot,
-          session.target,
-          resolved,
-          session.ignoreWhitespace,
-        )
-        this.emitSessionUpdate(updated.id)
-        sendJson(response, 200, updated)
-        return
-      }
-      const updated = this.store.updateResolvedReview(
-        id,
+      // Range/PR refresh follows the current target; a new SHA pair opens or reuses that revision.
+      const updated = this.createOrReuseSession(
+        session.repositoryRoot,
+        session.target,
         resolved,
-        resolved.commits.at(0)?.oid ?? null,
-        resolved.commits.at(-1)?.oid ?? null,
-        resolved.commits,
+        session.ignoreWhitespace,
       )
-      this.emitSessionUpdate(id)
+      this.emitSessionUpdate(updated.id)
       sendJson(response, 200, updated)
       return
     }
@@ -652,8 +642,7 @@ export class ApiHandler {
 
 
     if (method === 'GET' && url.pathname === '/api/events') {
-      const sessionId = requiredQuery(url, 'session')
-      this.openEventStream(request, response, sessionId)
+      this.openEventStream(request, response)
       return
     }
 
@@ -663,29 +652,27 @@ export class ApiHandler {
   private openEventStream(
     request: IncomingMessage,
     response: ServerResponse,
-    sessionId: string,
   ): void {
-    this.store.getSession(sessionId)
     response.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
     })
     response.write(': connected\n\n')
-    const eventName = `session:${sessionId}`
-    const listener = () => {
-      response.write(`data: ${JSON.stringify({ type: 'session-updated', sessionId })}\n\n`)
+    const listener = (sessionId: string) => {
+      const event: SessionUpdatedEvent = { type: 'session-updated', sessionId }
+      response.write(`data: ${JSON.stringify(event)}\n\n`)
     }
-    this.events.on(eventName, listener)
+    this.events.on('session-updated', listener)
     const heartbeat = setInterval(() => response.write(': heartbeat\n\n'), 20_000)
     request.on('close', () => {
       clearInterval(heartbeat)
-      this.events.off(eventName, listener)
+      this.events.off('session-updated', listener)
     })
   }
 
   private emitSessionUpdate(sessionId: string): void {
-    this.events.emit(`session:${sessionId}`)
+    this.events.emit('session-updated', sessionId)
   }
 
   private async serveAvatar(response: ServerResponse, source: string): Promise<void> {
@@ -737,20 +724,23 @@ export class ApiHandler {
     ignoreWhitespace: boolean,
   ): ReviewSession {
     if (
-      target.kind === 'pr' &&
       resolved.oldSnapshot.kind === 'commit' &&
       resolved.newSnapshot.kind === 'commit'
     ) {
-      const existing = this.store.findPullRequestRevision(
-        root,
-        target.number,
-        resolved.oldSnapshot.id,
-        resolved.newSnapshot.id,
-      )
-      if (existing != null) return existing
-    } else {
-      const existing = this.store.findSessionByTarget(root, target)
+      const existing = target.kind === 'pr'
+        ? this.store.findPullRequestRevision(
+          root,
+          target.number,
+          resolved.oldSnapshot.id,
+          resolved.newSnapshot.id,
+        )
+        : this.store.findLocalRevision(
+          root,
+          resolved.oldSnapshot.id,
+          resolved.newSnapshot.id,
+        )
       if (existing != null) {
+        if (target.kind === 'pr') return existing
         return this.store.updateResolvedReview(
           existing.id,
           resolved,

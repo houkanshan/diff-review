@@ -49,6 +49,7 @@ import {
   Unlock as UnlockIcon,
   UserMinus as UserMinusIcon,
   UserPlus as UserPlusIcon,
+  History as HistoryIcon,
   TextWrap as WrapIcon,
   CircleCheck,
 } from 'lucide-react'
@@ -131,6 +132,7 @@ import { applyImportance } from './importance'
 import { formatTimestamp, relativeTime, relativeTimeAgo } from './time'
 import { DifftasticView, scrollDifftasticTarget } from './DifftasticView'
 import { ShortcutTooltip } from './ShortcutTooltip'
+import { subscribeSessionEvents } from './sessionEvents'
 import {
   EMPTY_COMPOSER_DRAFT,
   areCodeViewSelectionsEqual,
@@ -323,9 +325,7 @@ function SessionPage({
   useEffect(() => {
     if (sessionId == null) return
     void loadSession(sessionId)
-    const events = new EventSource(`/api/events?session=${encodeURIComponent(sessionId)}`)
-    events.onmessage = () => void loadSession(sessionId, true)
-    return () => events.close()
+    return subscribeSessionEvents(sessionId, () => void loadSession(sessionId, true))
   }, [loadSession, sessionId])
 
   if (loading && session == null) return <LoadingScreen />
@@ -366,7 +366,9 @@ function RootRedirect({
       })
       .catch(() => setEmpty(true))
   }, [onOpenSession])
+  useDocumentChrome(APP_TITLE, 'default')
   if (!empty) return <LoadingScreen />
+
   return (
     <main className="root-empty">
       <span className="welcome-mark">Δ</span>
@@ -484,8 +486,7 @@ function PullRequestsPage({
   useEffect(() => {
     if (session == null || number == null) return
     const sessionId = session.id
-    const events = new EventSource(`/api/events?session=${encodeURIComponent(sessionId)}`)
-    events.onmessage = () => {
+    return subscribeSessionEvents(sessionId, () => {
       void Promise.all([
         getSession(sessionId),
         getPullRequestRevisions(route.repositoryPath, number),
@@ -501,8 +502,7 @@ function PullRequestsPage({
           piStatus: nextPiStatus,
         }))
       })
-    }
-    return () => events.close()
+    })
   }, [number, route.repositoryPath, session?.id, updateWorkspace])
 
   const rail = (
@@ -516,6 +516,15 @@ function PullRequestsPage({
       onSelect={(number) => onOpenPullRequests(route.repositoryPath, number)}
     />
   )
+
+  useDocumentChrome(
+    formatDocumentTitle(
+      repository?.name ?? repositoryNameFromPath(route.repositoryPath),
+      details != null ? `PR #${details.number} · ${details.title}` : 'Pull requests',
+    ),
+    details != null ? 'pr' : 'default',
+  )
+
 
   if (session == null || details == null || currentSessionId == null) {
     return (
@@ -737,6 +746,17 @@ function ReviewWorkspace({
   annotationsRef.current = session.annotations
   sessionContentsRef.current = { id: session.id, contentKey: patchContentKey(session.patch) }
 
+  useDocumentChrome(
+    formatDocumentTitle(
+      session.repositoryName,
+      pullRequest != null
+        ? `PR #${pullRequest.details.number} · ${pullRequest.details.title}`
+        : session.targetLabel,
+    ),
+    pullRequest != null ? 'pr' : 'local',
+  )
+
+
   const setFileCollapsed = useCallback((filePath: string, collapsed: boolean) => {
     store.set(fileCollapsedAtom(filePath), collapsed)
     setCollapsedFiles((current) => {
@@ -931,6 +951,10 @@ function ReviewWorkspace({
   }, [onSessionChange, session.id])
 
   const stagingEnabled = targetSupportsStaging(session.target)
+  const unstagedPathSet = useMemo(
+    () => session.unstagedPaths == null ? null : new Set(session.unstagedPaths),
+    [session.unstagedPaths],
+  )
   const renderHeaderFilenameSuffix = useCallback((item: CodeViewItem<ReviewLineAnnotation>) => (
     <FileCopyButton filePath={item.id} />
   ), [])
@@ -938,12 +962,12 @@ function ReviewWorkspace({
   const renderHeaderMetadata = useCallback((item: CodeViewItem<ReviewLineAnnotation>) => (
     <FileHeaderControls
       filePath={item.id}
-      stagingEnabled={stagingEnabled}
+      stagingEnabled={stagingEnabled && (unstagedPathSet == null || unstagedPathSet.has(item.id))}
       onToggleCollapsed={setFileCollapsed}
       onAdd={addFile}
       onSetViewed={setViewed}
     />
-  ), [addFile, setFileCollapsed, setViewed, stagingEnabled])
+  ), [addFile, setFileCollapsed, setViewed, stagingEnabled, unstagedPathSet])
 
   const handleComposerSubmitted = useCallback(async () => {
     closeComposer()
@@ -1298,7 +1322,7 @@ function ReviewWorkspace({
             ) : (
               <CodeView<ReviewLineAnnotation>
                 ref={viewerRef}
-                key={`${session.id}:${layout}:${resolvedTheme}`}
+                key={`${session.id}:${layout}:${resolvedTheme}:${patchContentKey(session.patch)}`}
                 className="diff-view"
                 items={items}
                 options={diffOptions}
@@ -1337,6 +1361,7 @@ function ReviewWorkspace({
             onUpdateGlobalComment={editGlobalComment}
             allowGlobalComment={pullRequest == null}
             onArchiveAll={archiveAll}
+            onOpenSession={onOpenSession}
             onNavigate={(annotation) => {
               const fileId = fileIdForAnnotation(annotation, parsedFiles)
               setActiveFilePath(fileId)
@@ -3101,54 +3126,36 @@ function LocalReviewPicker({
 }) {
   const [open, setOpen] = useState(false)
   const [repository, setRepository] = useState<RepositoryInfo | null>(null)
-  const visitedSessions = useRef(new Map<string, string>())
+  const [sessions, setSessions] = useState<ReviewSession[]>([])
   const [customRange, setCustomRange] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (currentSession == null || currentSession.target.kind === 'pr') return
-    visitedSessions.current.set(
-      reviewTargetKey(repositoryRoot, currentSession.target),
-      currentSession.id,
-    )
-  }, [currentSession, repositoryRoot])
+  const currentRevision = localRevisionLabel(currentSession)
+  const revisionSessions = localRevisionSessions(sessions)
 
   useEffect(() => {
     if (!open) return
-    void getRepositoryInfo(repositoryRoot)
-      .then(setRepository)
+    void Promise.all([
+      getRepositoryInfo(repositoryRoot),
+      getSessions(repositoryRoot),
+    ])
+      .then(([info, nextSessions]) => {
+        setRepository(info)
+        setSessions(nextSessions)
+      })
       .catch((caught) => setError(caught instanceof Error ? caught.message : String(caught)))
   }, [open, repositoryRoot])
 
+  const openExisting = (sessionId: string) => {
+    setOpen(false)
+    onOpenSession(sessionId)
+  }
+
   const choose = async (target: ReviewTarget) => {
-    if (currentSession != null && reviewTargetsEqual(currentSession.target, target)) {
-      setOpen(false)
-      return
-    }
     setBusy(true)
     setError(null)
     try {
-      const targetKey = reviewTargetKey(repositoryRoot, target)
-      const visitedId = visitedSessions.current.get(targetKey)
-      if (visitedId != null) {
-        setOpen(false)
-        onOpenSession(visitedId)
-        return
-      }
-      const matchingSessions = (await getSessions(repositoryRoot)).filter((item) =>
-        reviewTargetsEqual(item.target, target)
-      )
-      const existing =
-        matchingSessions.find((item) => item.annotations.length > 0) ?? matchingSessions.at(0)
-      if (existing != null) {
-        visitedSessions.current.set(targetKey, existing.id)
-        setOpen(false)
-        onOpenSession(existing.id)
-        return
-      }
       const next = await createSession({ repositoryPath: repositoryRoot, target })
-      visitedSessions.current.set(targetKey, next.id)
       setOpen(false)
       onOpenSession(next.id)
     } catch (caught) {
@@ -3163,6 +3170,7 @@ function LocalReviewPicker({
       <Popover.Trigger className={`global-nav-tab local-review-trigger${active ? ' active' : ''}`}>
         <BranchIcon />
         <span>Local diff review</span>
+        {currentRevision != null && <code>{currentRevision}</code>}
         <ChevronIcon />
       </Popover.Trigger>
       <Popover.Portal>
@@ -3210,6 +3218,24 @@ function LocalReviewPicker({
               />
             )}
 
+            {revisionSessions.length > 0 && (
+              <>
+                <div className="menu-section-label">Sessions</div>
+                {revisionSessions.map((item) => {
+                  const revision = localRevisionLabel(item)!
+                  return (
+                    <TargetOption
+                      key={item.id}
+                      selected={item.id === currentSession?.id}
+                      label={item.targetLabel}
+                      detail={revision}
+                      onClick={() => openExisting(item.id)}
+                    />
+                  )
+                })}
+              </>
+            )}
+
             <div className="menu-section-label">Revision range</div>
             <form
               className="compact-form"
@@ -3253,10 +3279,23 @@ function TargetOption({
 }
 
 
-function reviewTargetKey(repositoryRoot: string, target: ReviewTarget): string {
-  if (target.kind === 'range') return `${repositoryRoot}:range:${target.expression.trim()}`
-  if (target.kind === 'pr') return `${repositoryRoot}:pr:${target.number}`
-  return `${repositoryRoot}:${target.kind}`
+function localRevisionLabel(session: ReviewSession | null): string | null {
+  if (session?.revisionBaseOid == null || session.revisionHeadOid == null) return null
+  return `${session.revisionBaseOid.slice(0, 7)}…${session.revisionHeadOid.slice(0, 7)}`
+}
+
+function localRevisionSessions(sessions: ReviewSession[]): ReviewSession[] {
+  const byRevision = new Map<string, ReviewSession>()
+  for (const session of sessions) {
+    if (session.target.kind === 'pr') continue
+    if (session.revisionBaseOid == null || session.revisionHeadOid == null) continue
+    const key = `${session.revisionBaseOid}:${session.revisionHeadOid}`
+    const existing = byRevision.get(key)
+    if (existing == null || session.annotations.length > existing.annotations.length) {
+      byRevision.set(key, session)
+    }
+  }
+  return [...byRevision.values()].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
 }
 
 function CommitPicker({
@@ -3347,7 +3386,9 @@ function CommitPicker({
                         <code>{commit.shortOid}</code>
                         <span>{commit.author}</span>
                         {commit.authoredAt !== '' && (
-                          <time dateTime={commit.authoredAt}>{formatTimestamp(commit.authoredAt)}</time>
+                          <time dateTime={commit.authoredAt} title={formatTimestamp(commit.authoredAt)}>
+                            {relativeTimeAgo(commit.authoredAt)}
+                          </time>
                         )}
                       </small>
                     </span>
@@ -3383,22 +3424,33 @@ function FileRail({
       ? files
       : files.filter((file) => file.name.toLowerCase().includes(normalizedQuery))
   const stats = new Map<string, FileChangeStats>()
-  const treeKeyParts: string[] = []
-  for (const file of filteredFiles) {
+  const totalStats: FileChangeStats = { additions: 0, deletions: 0, modifications: 0 }
+  for (const file of files) {
     const fileStats = fileChangeStats(file)
     stats.set(file.name, fileStats)
-    treeKeyParts.push(
-      `${file.name}:${file.type}:${fileStats.additions}:${fileStats.deletions}:${fileStats.modifications}`,
-    )
+    totalStats.additions += fileStats.additions
+    totalStats.deletions += fileStats.deletions
+    totalStats.modifications += fileStats.modifications
   }
-  const treeKey = treeKeyParts.join('|')
+  const treeKey = filteredFiles
+    .map((file) => {
+      const fileStats = stats.get(file.name)!
+      return `${file.name}:${file.type}:${fileStats.additions}:${fileStats.deletions}:${fileStats.modifications}`
+    })
+    .join('|')
 
   return (
     <nav className="file-rail" aria-label="Changed files">
       <div className="rail-heading">
         <div className="rail-heading-title">
           <span>Files</span>
-          <em>{normalizedQuery === '' ? files.length : `${filteredFiles.length}/${files.length}`}</em>
+          <span
+            title={`${totalStats.additions} added, ${totalStats.deletions} deleted, ${totalStats.modifications} modified`}
+          >
+            <span className="addition">+{totalStats.additions}</span>{' '}
+            <span className="deletion">−{totalStats.deletions}</span>{' '}
+            <span className="modification">~{totalStats.modifications}</span>
+          </span>
         </div>
         <input
           className="file-filter"
@@ -3665,6 +3717,73 @@ function FileViewedToggle({
   )
 }
 
+function SessionHistoryMenu({
+  repositoryRoot,
+  currentSessionId,
+  onOpenSession,
+}: {
+  repositoryRoot: string
+  currentSessionId: string
+  onOpenSession(id: string): void
+}) {
+  const [open, setOpen] = useState(false)
+  const sessionsQuery = useQuery({
+    queryKey: ['session-history', repositoryRoot],
+    queryFn: () => getSessions(repositoryRoot),
+    enabled: open,
+  })
+  const sessions = sessionsQuery.data ?? []
+
+  return (
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger className="session-history-trigger" aria-label="Session history">
+        <HistoryIcon />
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Positioner className="popup-positioner" sideOffset={6} align="start">
+          <Popover.Popup className="revision-menu session-history-menu">
+            <Popover.Title className="menu-kicker">Repository history</Popover.Title>
+            {sessionsQuery.isPending && <p className="session-history-empty">Loading…</p>}
+            {sessionsQuery.error != null && (
+              <div className="menu-error">
+                {sessionsQuery.error instanceof Error
+                  ? sessionsQuery.error.message
+                  : String(sessionsQuery.error)}
+              </div>
+            )}
+            {sessionsQuery.isSuccess && sessions.length === 0 && (
+              <p className="session-history-empty">No sessions for this repository</p>
+            )}
+            {sessions.map((item) => {
+              const revision = localRevisionLabel(item)
+              return (
+                <button
+                  key={item.id}
+                  className={item.id === currentSessionId ? 'selected' : ''}
+                  onClick={() => {
+                    setOpen(false)
+                    if (item.id !== currentSessionId) onOpenSession(item.id)
+                  }}
+                >
+                  <span className="revision-status">
+                    {item.target.kind === 'pr' ? `PR #${item.target.number}` : 'Local'}
+                  </span>
+                  <code>{revision ?? item.targetLabel}</code>
+                  <time dateTime={item.updatedAt} title={formatTimestamp(item.updatedAt)}>
+                    {relativeTimeAgo(item.updatedAt)}
+                  </time>
+                  <small>{item.targetLabel}</small>
+                </button>
+              )
+            })}
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
+  )
+}
+
+
 function Inspector({
   session,
   files,
@@ -3675,6 +3794,7 @@ function Inspector({
   onUpdateGlobalComment,
   allowGlobalComment,
   onArchiveAll,
+  onOpenSession,
   onNavigate,
 }: {
   session: ReviewSession
@@ -3686,6 +3806,7 @@ function Inspector({
   onUpdateGlobalComment(comment: string): Promise<void>
   allowGlobalComment: boolean
   onArchiveAll(): Promise<void>
+  onOpenSession(id: string): void
   onNavigate(annotation: SessionAnnotation): void
 }) {
   const reviewCommentAvailable = useAtomValue(reviewCommentAvailableAtom)
@@ -3721,7 +3842,14 @@ function Inspector({
     <aside className="inspector">
       <section className="notes-panel">
         <div className="notes-heading">
-          <span>Annotations</span>
+          <div className="notes-heading-title">
+            <span>Annotations</span>
+            <SessionHistoryMenu
+              repositoryRoot={session.repositoryRoot}
+              currentSessionId={session.id}
+              onOpenSession={onOpenSession}
+            />
+          </div>
           <div>
             {allowGlobalComment &&
               view === 'active' &&
@@ -4271,6 +4399,7 @@ function InlineAnnotation({
 }
 
 function LoadingScreen() {
+  useDocumentChrome(APP_TITLE, 'default')
   return (
     <main className="loading-screen">
       <span>Δ</span>
@@ -4281,6 +4410,7 @@ function LoadingScreen() {
 }
 
 function ErrorScreen({ message, onBack }: { message: string; onBack(): void }) {
+  useDocumentChrome(formatDocumentTitle('Unavailable'), 'default')
   return (
     <main className="error-screen">
       <span>Session unavailable</span>
@@ -4522,6 +4652,42 @@ function cssEscape(value: string): string {
   return typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
     ? CSS.escape(value)
     : value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+}
+
+const APP_TITLE = 'Diff Review'
+
+function formatDocumentTitle(...parts: Array<string | null | undefined>): string {
+  const labels: string[] = []
+  const seen = new Set<string>()
+  for (const part of parts) {
+    const value = part?.trim()
+    if (value == null || value === '' || seen.has(value) || value === APP_TITLE) continue
+    seen.add(value)
+    labels.push(value)
+  }
+  return labels.length === 0 ? APP_TITLE : `${labels.join(' · ')} · ${APP_TITLE}`
+}
+
+type FaviconVariant = 'default' | 'local' | 'pr'
+
+const FAVICON_HREF: Record<FaviconVariant, string> = {
+  default: '/favicon.svg',
+  local: '/favicon.svg',
+  pr: '/favicon-pr.svg',
+}
+
+function useDocumentChrome(title: string, variant: FaviconVariant) {
+  useEffect(() => {
+    const previousTitle = document.title
+    document.title = title
+    const icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]')
+    const previousHref = icon?.getAttribute('href')
+    if (icon != null) icon.href = FAVICON_HREF[variant]
+    return () => {
+      document.title = previousTitle
+      if (icon != null && previousHref != null) icon.href = previousHref
+    }
+  }, [title, variant])
 }
 
 function compactPath(filePath: string): string {

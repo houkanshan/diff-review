@@ -216,6 +216,13 @@ svg {
 .local-review-trigger svg {
   width: 13px;
   height: 13px;
+  flex: 0 0 auto;
+}
+
+.local-review-trigger code {
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 8px;
 }
 
 .global-nav-tab.active svg,
@@ -1390,6 +1397,7 @@ svg {
 .pr-item-stats time:first-of-type { margin-left: auto; }
 .addition { color: var(--green); }
 .deletion { color: var(--red); }
+.modification { color: var(--accent); }
 
 .pr-state,
 .check-state {
@@ -1645,6 +1653,44 @@ body.resizing-panels * {
   color: var(--faint);
   font-size: 10px;
   text-align: center;
+}
+
+.notes-heading-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.session-history-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  color: var(--faint);
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+}
+
+.session-history-trigger svg {
+  width: 11px;
+  height: 11px;
+}
+
+.session-history-trigger:hover,
+.session-history-trigger[data-popup-open] {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.session-history-empty {
+  margin: 0;
+  padding: 10px 8px;
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 500;
 }
 
 .notes-heading > div {

@@ -14,7 +14,6 @@ import type {
   ReviewTarget,
   SessionAnnotation,
 } from '../shared/types.js'
-import { reviewTargetsEqual } from '../shared/types.js'
 import type { ResolvedReview } from './git.js'
 import { AppError } from './errors.js'
 
@@ -171,7 +170,7 @@ export class ReviewStore {
     const now = new Date().toISOString()
     const start = resolved.commits.at(0)?.oid ?? null
     const end = resolved.commits.at(-1)?.oid ?? null
-    const revision = target.kind === 'pr' ? revisionFromResolved(resolved) : null
+    const revision = revisionFromResolved(resolved)
     this.database
       .prepare(`
         INSERT INTO sessions (
@@ -219,6 +218,27 @@ export class ReviewStore {
     baseOid: string,
     headOid: string,
   ): ReviewSession | null {
+    return this.findRevisionSession(repositoryRoot, baseOid, headOid, (target) => (
+      target.kind === 'pr' && target.number === number
+    ))
+  }
+
+  findLocalRevision(
+    repositoryRoot: string,
+    baseOid: string,
+    headOid: string,
+  ): ReviewSession | null {
+    return this.findRevisionSession(repositoryRoot, baseOid, headOid, (target) => (
+      target.kind === 'range'
+    ))
+  }
+
+  private findRevisionSession(
+    repositoryRoot: string,
+    baseOid: string,
+    headOid: string,
+    match: (target: ReviewTarget) => boolean,
+  ): ReviewSession | null {
     const rows = this.database
       .prepare(`
         SELECT * FROM sessions
@@ -226,26 +246,8 @@ export class ReviewStore {
         ORDER BY updated_at DESC
       `)
       .all(repositoryRoot, baseOid, headOid) as unknown as SessionRow[]
-    const row = rows.find((candidate) => {
-      const target = JSON.parse(candidate.target_json) as ReviewTarget
-      return target.kind === 'pr' && target.number === number
-    })
+    const row = rows.find((candidate) => match(JSON.parse(candidate.target_json) as ReviewTarget))
     return row == null ? null : this.sessionFromRow(row)
-  }
-
-  findSessionByTarget(repositoryRoot: string, target: ReviewTarget): ReviewSession | null {
-    const rows = this.database
-      .prepare(`
-        SELECT id, target_json FROM sessions
-        WHERE repository_root = ?
-        ORDER BY updated_at DESC
-      `)
-      .all(repositoryRoot) as unknown as Pick<SessionRow, 'id' | 'target_json'>[]
-    const row = rows.find((candidate) => {
-      const existing = JSON.parse(candidate.target_json) as ReviewTarget
-      return reviewTargetsEqual(existing, target)
-    })
-    return row == null ? null : this.getSession(row.id)
   }
 
   listPullRequestRevisions(repositoryRoot: string, number: number): PullRequestRevision[] {
@@ -666,8 +668,6 @@ export class ReviewStore {
       'UPDATE sessions SET revision_base_oid = ?, revision_head_oid = ? WHERE id = ?',
     )
     for (const row of rows) {
-      const target = JSON.parse(row.target_json) as ReviewTarget
-      if (target.kind !== 'pr') continue
       const revision = revisionFromResolved(JSON.parse(row.resolved_json) as ResolvedReview)
       if (revision != null) updateRevision.run(revision.baseOid, revision.headOid, row.id)
     }
@@ -714,6 +714,7 @@ export class ReviewStore {
       ignoreWhitespace: row.ignore_whitespace === 1,
       revisionBaseOid: row.revision_base_oid,
       revisionHeadOid: row.revision_head_oid,
+      unstagedPaths: Array.isArray(resolved.unstagedPaths) ? resolved.unstagedPaths : null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }

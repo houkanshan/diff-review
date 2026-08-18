@@ -78,6 +78,11 @@ export function reviewTargetsEqual(left: ReviewTarget, right: ReviewTarget): boo
   return true
 }
 
+export type SessionUpdatedEvent = {
+  type: 'session-updated'
+  sessionId: string
+}
+
 export interface CommitSummary {
   oid: string
   shortOid: string
@@ -121,6 +126,7 @@ export interface ReviewSession {
   ignoreWhitespace: boolean
   revisionBaseOid: string | null
   revisionHeadOid: string | null
+  unstagedPaths: string[] | null
   createdAt: string
   updatedAt: string
 }
