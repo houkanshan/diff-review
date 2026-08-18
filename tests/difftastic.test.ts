@@ -236,6 +236,194 @@ describe('difftastic file reconstruction', () => {
     ]))
   })
 
+  test('keeps inserted functions that appear before a later change in the same chunk', () => {
+    const oldText = [
+      'export const steps = map((step) => {',
+      '  if (step.name === "ResidenceType") {',
+      '    return {',
+      '      ...step,',
+      '      Component: TypeQuestion,',
+      '    };',
+      '  }',
+      '  return step;',
+      '});',
+      '',
+      'export const getSteps = (',
+      '  values: OldFormData,',
+      '): Step[] => {',
+      '  return [];',
+      '};',
+      '',
+    ].join('\n')
+    const newText = [
+      'export const steps = map((step) => {',
+      '  if (step.name === "ResidenceType") {',
+      '    return {',
+      '      ...step,',
+      '      Component: TypeQuestion,',
+      '    };',
+      '  }',
+      '  return step;',
+      '});',
+      '',
+      'export const shouldCollect = (',
+      '  values: NewFormData,',
+      '): boolean => {',
+      '  return true;',
+      '};',
+      '',
+      'export const getSteps = (',
+      '  values: NewFormData,',
+      '): Step[] => {',
+      '  return [];',
+      '};',
+      '',
+    ].join('\n')
+
+    const file = buildDifftasticFileDiff({
+      path: 'steps.ts',
+      oldText,
+      newText,
+      raw: {
+        language: 'TypeScript',
+        path: '/tmp/steps.ts',
+        status: 'changed',
+        chunks: [[
+          {
+            rhs: {
+              line_number: 10,
+              changes: [{ start: 0, end: 7, content: 'export', highlight: 'keyword' }],
+            },
+          },
+          {
+            rhs: {
+              line_number: 11,
+              changes: [{ start: 2, end: 8, content: 'values', highlight: 'normal' }],
+            },
+          },
+          {
+            rhs: {
+              line_number: 12,
+              changes: [{ start: 0, end: 11, content: '): boolean', highlight: 'type' }],
+            },
+          },
+          {
+            rhs: {
+              line_number: 13,
+              changes: [{ start: 2, end: 8, content: 'return', highlight: 'keyword' }],
+            },
+          },
+          {
+            rhs: {
+              line_number: 14,
+              changes: [{ start: 0, end: 3, content: '};', highlight: 'delimiter' }],
+            },
+          },
+          {
+            lhs: {
+              line_number: 11,
+              changes: [{ start: 10, end: 21, content: 'OldFormData', highlight: 'type' }],
+            },
+            rhs: {
+              line_number: 17,
+              changes: [{ start: 10, end: 21, content: 'NewFormData', highlight: 'type' }],
+            },
+          },
+        ]],
+      },
+    })
+
+    const inserted = file.hunks[0]!.lines.filter((line) => line.newLine != null && line.newLine >= 11 && line.newLine <= 15)
+    expect(inserted.map((line) => ({ kind: line.kind, newLine: line.newLine, newText: line.newText }))).toEqual([
+      { kind: 'insert', newLine: 11, newText: 'export const shouldCollect = (' },
+      { kind: 'insert', newLine: 12, newText: '  values: NewFormData,' },
+      { kind: 'insert', newLine: 13, newText: '): boolean => {' },
+      { kind: 'insert', newLine: 14, newText: '  return true;' },
+      { kind: 'insert', newLine: 15, newText: '};' },
+    ])
+    const change = file.hunks[0]!.lines.find((line) => line.kind === 'change')
+    expect(change).toMatchObject({ oldLine: 12, newLine: 18, oldText: '  values: OldFormData,', newText: '  values: NewFormData,' })
+  })
+
+  test('emits a one-line replacement as delete then insert', () => {
+    const file = buildDifftasticFileDiff({
+      path: 'swap.txt',
+      oldText: 'keep\nold\nkeep\n',
+      newText: 'keep\nnew\nkeep\n',
+      raw: {
+        language: 'Text',
+        path: '/tmp/swap.txt',
+        status: 'changed',
+        chunks: [[
+          { lhs: { line_number: 1, changes: [{ start: 0, end: 3, content: 'old', highlight: 'normal' }] } },
+          { rhs: { line_number: 1, changes: [{ start: 0, end: 3, content: 'new', highlight: 'normal' }] } },
+        ]],
+      },
+    })
+
+    expect(file.hunks[0]!.lines.filter((line) => line.kind !== 'context').map((line) => line.kind)).toEqual([
+      'delete',
+      'insert',
+    ])
+  })
+
+  test('merges nearby chunks without repeating context lines', () => {
+    const lines = Array.from({ length: 20 }, (_, index) => `line${index + 1}`)
+    const oldText = `${lines.join('\n')}\n`
+    const newText = lines.map((line, index) => index === 7 ? 'changed-a' : index === 12 ? 'changed-b' : line).join('\n') + '\n'
+    const file = buildDifftasticFileDiff({
+      path: 'near.txt',
+      oldText,
+      newText,
+      raw: {
+        language: 'Text',
+        path: '/tmp/near.txt',
+        status: 'changed',
+        chunks: [
+          [{
+            lhs: { line_number: 7, changes: [{ start: 0, end: 5, content: 'line8', highlight: 'normal' }] },
+            rhs: { line_number: 7, changes: [{ start: 0, end: 9, content: 'changed-a', highlight: 'normal' }] },
+          }],
+          [{
+            lhs: { line_number: 12, changes: [{ start: 0, end: 6, content: 'line13', highlight: 'normal' }] },
+            rhs: { line_number: 12, changes: [{ start: 0, end: 9, content: 'changed-b', highlight: 'normal' }] },
+          }],
+        ],
+      },
+    })
+
+    expect(file.hunks).toHaveLength(1)
+    const newNumbers = file.hunks[0]!.lines.map((line) => line.newLine).filter((line): line is number => line != null)
+    expect(newNumbers).toEqual([...new Set(newNumbers)])
+    expect(file.hunks[0]!.lines.filter((line) => line.kind === 'change').map((line) => line.newLine)).toEqual([8, 13])
+  })
+
+  test('keeps distant chunks as separate hunks', () => {
+    const lines = Array.from({ length: 30 }, (_, index) => `line${index + 1}`)
+    const file = buildDifftasticFileDiff({
+      path: 'far.txt',
+      oldText: `${lines.join('\n')}\n`,
+      newText: lines.map((line, index) => index === 2 ? 'a' : index === 24 ? 'b' : line).join('\n') + '\n',
+      raw: {
+        language: 'Text',
+        path: '/tmp/far.txt',
+        status: 'changed',
+        chunks: [
+          [{
+            lhs: { line_number: 2, changes: [{ start: 0, end: 5, content: 'line3', highlight: 'normal' }] },
+            rhs: { line_number: 2, changes: [{ start: 0, end: 1, content: 'a', highlight: 'normal' }] },
+          }],
+          [{
+            lhs: { line_number: 24, changes: [{ start: 0, end: 6, content: 'line25', highlight: 'normal' }] },
+            rhs: { line_number: 24, changes: [{ start: 0, end: 1, content: 'b', highlight: 'normal' }] },
+          }],
+        ],
+      },
+    })
+
+    expect(file.hunks).toHaveLength(2)
+  })
+
   test('converts difftastic UTF-8 offsets to JavaScript string indexes', () => {
     expect(utf8OffsetToUtf16('😀foo', 4)).toBe(2)
     expect(utf8OffsetToUtf16('😀foo', 7)).toBe(5)

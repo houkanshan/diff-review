@@ -76,9 +76,13 @@ export function buildDifftasticFileDiff(input: {
   const parsed = parseDifftasticOutput(input.raw)
   const oldLines = splitFileLines(input.oldText)
   const newLines = splitFileLines(input.newText)
-  const hunks = parsed.chunks
-    .map((chunk) => buildHunk(chunk, oldLines, newLines))
-    .filter((hunk) => hunk.lines.length > 0)
+  const hunks = coalesceHunks(
+    parsed.chunks
+      .map((chunk) => buildHunk(chunk, oldLines, newLines))
+      .filter((hunk) => hunk.lines.length > 0),
+    oldLines,
+    newLines,
+  )
 
   if (parsed.status === 'created' && hunks.length === 0 && newLines.length > 0) {
     hunks.push(wholeFileHunk(null, newLines, 'insert'))
@@ -182,21 +186,55 @@ function mergeBothSides(
   let newLine = newStart
   const consumed = new Set<DifftasticHunkLine>()
 
+  const emit = (line: DifftasticHunkLine) => {
+    consumed.add(line)
+    lines.push(line)
+    if (line.oldLine != null && line.oldLine >= oldLine) oldLine = line.oldLine + 1
+    if (line.newLine != null && line.newLine >= newLine) newLine = line.newLine + 1
+  }
+
   while (oldLine <= oldEnd || newLine <= newEnd) {
     const oldChange = oldLine <= oldEnd ? changeByOld.get(oldLine) : undefined
     const newChange = newLine <= newEnd ? changeByNew.get(newLine) : undefined
-    if (oldChange != null && !consumed.has(oldChange)) {
-      consumed.add(oldChange)
-      lines.push(oldChange)
-      if (oldChange.oldLine != null) oldLine = oldChange.oldLine + 1
-      if (oldChange.newLine != null && oldChange.newLine >= newLine) newLine = oldChange.newLine + 1
+
+    if (oldChange != null && !consumed.has(oldChange) && oldChange.newLine == null) {
+      emit(oldChange)
       continue
     }
-    if (newChange != null && !consumed.has(newChange)) {
-      consumed.add(newChange)
-      lines.push(newChange)
-      if (newChange.newLine != null) newLine = newChange.newLine + 1
-      if (newChange.oldLine != null && newChange.oldLine >= oldLine) oldLine = newChange.oldLine + 1
+    if (newChange != null && !consumed.has(newChange) && newChange.oldLine == null) {
+      emit(newChange)
+      continue
+    }
+    if (
+      oldChange != null && !consumed.has(oldChange) &&
+      (oldChange.newLine === newLine || newLine > newEnd)
+    ) {
+      emit(oldChange)
+      continue
+    }
+    if (
+      newChange != null && !consumed.has(newChange) &&
+      (newChange.oldLine === oldLine || oldLine > oldEnd)
+    ) {
+      emit(newChange)
+      continue
+    }
+    if (oldChange != null && oldChange.newLine != null && oldChange.newLine > newLine && newLine <= newEnd) {
+      if (newChange != null && !consumed.has(newChange)) {
+        emit(newChange)
+        continue
+      }
+      lines.push(contextLine(null, newLine, null, newLines[newLine - 1] ?? ''))
+      newLine += 1
+      continue
+    }
+    if (newChange != null && newChange.oldLine != null && newChange.oldLine > oldLine && oldLine <= oldEnd) {
+      if (oldChange != null && !consumed.has(oldChange)) {
+        emit(oldChange)
+        continue
+      }
+      lines.push(contextLine(oldLine, null, oldLines[oldLine - 1] ?? '', null))
+      oldLine += 1
       continue
     }
     if (oldLine <= oldEnd && newLine <= newEnd) {
@@ -215,6 +253,108 @@ function mergeBothSides(
   }
 
   return lines
+}
+
+function coalesceHunks(
+  hunks: DifftasticHunk[],
+  oldLines: string[],
+  newLines: string[],
+): DifftasticHunk[] {
+  if (hunks.length < 2) return hunks
+  const merged: DifftasticHunk[] = [{ lines: [...hunks[0]!.lines] }]
+  for (let index = 1; index < hunks.length; index += 1) {
+    const current = hunks[index]!
+    const previous = merged[merged.length - 1]!
+    const gap = contextGap(previous, current, oldLines, newLines)
+    if (gap == null) {
+      merged.push({ lines: [...current.lines] })
+      continue
+    }
+    previous.lines.push(...gap, ...uncoveredLines(previous, current))
+  }
+  return merged
+}
+
+function contextGap(
+  left: DifftasticHunk,
+  right: DifftasticHunk,
+  oldLines: string[],
+  newLines: string[],
+): DifftasticHunkLine[] | null {
+  const leftOld = lastNumber(left.lines, 'oldLine')
+  const leftNew = lastNumber(left.lines, 'newLine')
+  const rightOld = firstNumber(right.lines, 'oldLine')
+  const rightNew = firstNumber(right.lines, 'newLine')
+  const oldGap = numericGap(leftOld, rightOld)
+  const newGap = numericGap(leftNew, rightNew)
+  if (oldGap == null && newGap == null) return null
+  const nearest = Math.min(oldGap ?? Number.POSITIVE_INFINITY, newGap ?? Number.POSITIVE_INFINITY)
+  if (nearest > DIFFT_CONTEXT_LINES * 2) return null
+
+  const lines: DifftasticHunkLine[] = []
+  let oldLine = leftOld == null ? null : leftOld + 1
+  let newLine = leftNew == null ? null : leftNew + 1
+  const oldStop = rightOld == null ? null : rightOld - 1
+  const newStop = rightNew == null ? null : rightNew - 1
+
+  while (
+    (oldLine != null && oldStop != null && oldLine <= oldStop) ||
+    (newLine != null && newStop != null && newLine <= newStop)
+  ) {
+    const hasOld = oldLine != null && oldStop != null && oldLine <= oldStop && oldLine <= oldLines.length
+    const hasNew = newLine != null && newStop != null && newLine <= newStop && newLine <= newLines.length
+    const emitOld = hasOld ? oldLine : null
+    const emitNew = hasNew ? newLine : null
+    if (emitOld != null && emitNew != null) {
+      lines.push(contextLine(emitOld, emitNew, oldLines[emitOld - 1] ?? '', newLines[emitNew - 1] ?? ''))
+      oldLine = emitOld + 1
+      newLine = emitNew + 1
+      continue
+    }
+    if (emitOld != null) {
+      lines.push(contextLine(emitOld, null, oldLines[emitOld - 1] ?? '', null))
+      oldLine = emitOld + 1
+      continue
+    }
+    if (emitNew != null) {
+      lines.push(contextLine(null, emitNew, null, newLines[emitNew - 1] ?? ''))
+      newLine = emitNew + 1
+      continue
+    }
+    break
+  }
+  return lines
+}
+
+function uncoveredLines(left: DifftasticHunk, right: DifftasticHunk): DifftasticHunkLine[] {
+  const leftOld = lastNumber(left.lines, 'oldLine')
+  const leftNew = lastNumber(left.lines, 'newLine')
+  return right.lines.filter((line) => {
+    if (line.oldLine != null && leftOld != null && line.oldLine <= leftOld) return false
+    if (line.newLine != null && leftNew != null && line.newLine <= leftNew) return false
+    return true
+  })
+}
+
+function lastNumber(lines: DifftasticHunkLine[], key: 'oldLine' | 'newLine'): number | null {
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const value = lines[index]![key]
+    if (value != null) return value
+  }
+  return null
+}
+
+function firstNumber(lines: DifftasticHunkLine[], key: 'oldLine' | 'newLine'): number | null {
+  for (const line of lines) {
+    const value = line[key]
+    if (value != null) return value
+  }
+  return null
+}
+
+function numericGap(left: number | null, right: number | null): number | null {
+  if (left == null || right == null) return null
+  return right - left - 1
 }
 
 function contextLine(
