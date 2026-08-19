@@ -23,6 +23,8 @@ import {
   listMergeConflictFiles,
   resolvePullRequestRevision,
   resolveTarget,
+  computeReviewFingerprint,
+  storedReviewFingerprint,
   stageReviewFile,
   validateAnnotationTarget,
 } from '../src/server/git.js'
@@ -601,7 +603,9 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
       const worktree = lines[0] ?? ''
       expect(lines[1]).toBe(session.revisionHeadOid)
       expect(lines.join('\n')).toContain(`diff-review annotate ${session.id}`)
-      expect(lines.join('\n')).toContain('Explain PR #42 in plain language')
+      expect(lines.join('\n')).toContain('Help someone review PR #42.')
+      expect(lines.join('\n')).toContain('[summary]')
+      expect(lines.join('\n')).toContain('action(domain):')
       expect(lines).toContain('--session-dir')
       expect(lines).toContain('--session-id')
       expect(lines).not.toContain('--no-session')
@@ -831,6 +835,144 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
       expect(firstResponse.status).toBe(201)
       expect(secondResponse.status).toBe(201)
       expect(second.id).not.toBe(first.id)
+    } finally {
+      handler.close()
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error == null ? resolve() : reject(error))
+      })
+      rmSync(isolated.directory, { recursive: true, force: true })
+    }
+  })
+
+  test('freshness stays current until the range or worktree changes', async () => {
+    const isolated = createGitFixture()
+    const store = new ReviewStore(path.join(isolated.directory, 'freshness.db'))
+    const handler = new ApiHandler(store, null)
+    const server = createServer(handler.handle)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address() as AddressInfo
+    const baseUrl = `http://127.0.0.1:${port}`
+
+    try {
+      const rangeResponse = await fetch(`${baseUrl}/api/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repositoryPath: isolated.repository,
+          target: { kind: 'range', expression: 'origin/main...HEAD' },
+        }),
+      })
+      const rangeSession = await rangeResponse.json() as { id: string }
+      const freshRange = await fetch(`${baseUrl}/api/sessions/${rangeSession.id}/freshness`)
+      expect(await freshRange.json()).toEqual({ stale: false })
+
+      writeFileSync(path.join(isolated.repository, 'later.txt'), 'later\n')
+      git(isolated.repository, ['add', 'later.txt'])
+      git(isolated.repository, ['commit', '-m', 'later'])
+      const staleRange = await fetch(`${baseUrl}/api/sessions/${rangeSession.id}/freshness`)
+      expect(await staleRange.json()).toEqual({ stale: true })
+
+      const unstagedResponse = await fetch(`${baseUrl}/api/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repositoryPath: isolated.repository,
+          target: { kind: 'unstaged' },
+        }),
+      })
+      const unstagedSession = await unstagedResponse.json() as { id: string }
+      const freshUnstaged = await fetch(`${baseUrl}/api/sessions/${unstagedSession.id}/freshness`)
+      expect(await freshUnstaged.json()).toEqual({ stale: false })
+
+      writeFileSync(path.join(isolated.repository, 'tracked.txt'), 'edited again\n')
+      const staleUnstaged = await fetch(`${baseUrl}/api/sessions/${unstagedSession.id}/freshness`)
+      expect(await staleUnstaged.json()).toEqual({ stale: true })
+
+      const resolved = await resolveTarget(isolated.repository, { kind: 'unstaged' })
+      expect(resolved.fingerprint).toBe(
+        await computeReviewFingerprint(isolated.repository, { kind: 'unstaged' }),
+      )
+      expect(storedReviewFingerprint(resolved)).toBe(resolved.fingerprint)
+
+      const modeSessionResponse = await fetch(`${baseUrl}/api/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repositoryPath: isolated.repository,
+          target: { kind: 'unstaged' },
+        }),
+      })
+      const modeSession = await modeSessionResponse.json() as { id: string }
+      chmodSync(path.join(isolated.repository, 'tracked.txt'), 0o755)
+      const staleMode = await fetch(`${baseUrl}/api/sessions/${modeSession.id}/freshness`)
+      expect(await staleMode.json()).toEqual({ stale: true })
+    } finally {
+      handler.close()
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error == null ? resolve() : reject(error))
+      })
+      rmSync(isolated.directory, { recursive: true, force: true })
+    }
+  })
+
+  test('legacy range sessions and partial selections keep a comparable fingerprint', async () => {
+    const isolated = createGitFixture()
+    const store = new ReviewStore(path.join(isolated.directory, 'freshness-legacy.db'))
+    const handler = new ApiHandler(store, null)
+    const server = createServer(handler.handle)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address() as AddressInfo
+    const baseUrl = `http://127.0.0.1:${port}`
+
+    try {
+      const review = await resolveTarget(isolated.repository, {
+        kind: 'range',
+        expression: 'origin/main...HEAD',
+      })
+      const { fingerprint: _fingerprint, ...legacyResolved } = review
+      const legacy = store.createSession(
+        isolated.repository,
+        'repo',
+        { kind: 'range', expression: 'origin/main...HEAD' },
+        legacyResolved,
+        true,
+      )
+      expect(storedReviewFingerprint(store.getResolvedReview(legacy.id))).toBe(
+        `range:${review.oldSnapshot.id}:${review.newSnapshot.id}`,
+      )
+      const freshLegacy = await fetch(`${baseUrl}/api/sessions/${legacy.id}/freshness`)
+      expect(await freshLegacy.json()).toEqual({ stale: false })
+
+      const created = await fetch(`${baseUrl}/api/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repositoryPath: isolated.repository,
+          target: { kind: 'range', expression: 'origin/main...HEAD' },
+        }),
+      })
+      const session = await created.json() as {
+        id: string
+        commits: Array<{ oid: string }>
+      }
+      const start = session.commits[0]?.oid
+      const mid = session.commits[1]?.oid ?? start
+      expect(start).toBeTruthy()
+      const selected = await fetch(`${baseUrl}/api/sessions/${session.id}/selection`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ start, end: mid }),
+      })
+      expect(selected.status).toBe(200)
+      expect(store.getResolvedReview(session.id).fingerprint).toBe(review.fingerprint)
+
+      const stillFresh = await fetch(`${baseUrl}/api/sessions/${session.id}/freshness`)
+      expect(await stillFresh.json()).toEqual({ stale: false })
+      writeFileSync(path.join(isolated.repository, 'later.txt'), 'later\n')
+      git(isolated.repository, ['add', 'later.txt'])
+      git(isolated.repository, ['commit', '-m', 'later'])
+      const staleSelected = await fetch(`${baseUrl}/api/sessions/${session.id}/freshness`)
+      expect(await staleSelected.json()).toEqual({ stale: true })
     } finally {
       handler.close()
       await new Promise<void>((resolve, reject) => {
@@ -1198,13 +1340,33 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
     expect(updated.selectedCommitStart).toBe(selectedCommit.oid)
     expect(updated.patch).toContain('feature two')
     expect(updated.ignoreWhitespace).toBe(false)
-    expect(updated.globalComment).toBeNull()
+    expect(updated.globalComments).toEqual([])
     expect(updated.revisionBaseOid).toBe(review.oldSnapshot.id)
     expect(updated.revisionHeadOid).toBe(review.newSnapshot.id)
 
-    expect(store.setGlobalComment(session.id, 'Review the routing behavior first').globalComment)
-      .toBe('Review the routing behavior first')
-    expect(store.getSession(session.id).globalComment).toBe('Review the routing behavior first')
+    const userGlobal = store.addGlobalComment(session.id, {
+      comment: 'Review the routing behavior first',
+      source: 'user',
+    })
+    expect(userGlobal.comment).toBe('Review the routing behavior first')
+    expect(userGlobal.source).toBe('user')
+    expect(userGlobal.archivedAt).toBeNull()
+    expect(store.getSession(session.id).globalComments).toHaveLength(1)
+
+    const agentGlobal = store.addGlobalComment(session.id, {
+      comment: 'Agent summary',
+      source: 'agent',
+    })
+    expect(store.addGlobalComment(session.id, { comment: 'Second user note', source: 'user' }).source)
+      .toBe('user')
+    expect(store.getSession(session.id).globalComments).toHaveLength(3)
+    expect(() => store.updateGlobalComment(session.id, agentGlobal.id, 'Edited by user')).toThrow(
+      'User global comment not found',
+    )
+    expect(store.updateGlobalComment(session.id, userGlobal.id, 'Edited by user').comment).toBe(
+      'Edited by user',
+    )
+    expect(store.setGlobalCommentArchived(session.id, agentGlobal.id, true).archivedAt).not.toBeNull()
 
     expect(
       store.updateResolvedReview(
@@ -1315,10 +1477,71 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
     const archiveAll = store.archiveAllAnnotations(session.id)
     expect(archiveAll.annotations).toHaveLength(4)
     expect(archiveAll.annotations.every((item) => item.archivedAt !== null)).toBe(true)
+    expect(archiveAll.globalComments.every((item) => item.archivedAt !== null)).toBe(true)
     expect(
       archiveAll.annotations.find((item) => item.id === annotation.id)?.updatedAt,
     ).toBe(individuallyArchived.updatedAt)
     expect(store.archiveAllAnnotations(session.id).annotations).toEqual(archiveAll.annotations)
+  })
+
+  test('stores a user reply on a top-level agent annotation', async () => {
+    const review = await resolveTarget(fixture.repository, {
+      kind: 'range',
+      expression: 'origin/main...HEAD',
+    })
+    const store = new ReviewStore(path.join(fixture.directory, 'replies.db'))
+    const session = store.createSession(
+      fixture.repository,
+      'repo',
+      { kind: 'range', expression: 'origin/main...HEAD' },
+      review,
+      false,
+    )
+    const agent = store.addAnnotation(session.id, {
+      filePath: 'tracked.txt',
+      side: 'new',
+      startLine: 5,
+      endLine: 5,
+      comment: 'Look at this branch',
+      source: 'agent',
+    })
+    const reply = store.addAnnotation(session.id, {
+      filePath: 'ignored.ts',
+      side: 'old',
+      startLine: 1,
+      endLine: 1,
+      comment: 'Will keep this local',
+      source: 'user',
+      replyToId: agent.id,
+    })
+    expect(reply).toMatchObject({
+      filePath: 'tracked.txt',
+      side: 'new',
+      startLine: 5,
+      endLine: 5,
+      comment: 'Will keep this local',
+      source: 'user',
+      intent: 'annotation',
+      replyToId: agent.id,
+    })
+    expect(() => store.addAnnotation(session.id, {
+      filePath: 'tracked.txt',
+      side: 'new',
+      startLine: 5,
+      endLine: 5,
+      comment: 'Nested',
+      source: 'user',
+      replyToId: reply.id,
+    })).toThrow('Replies can only be added to a top-level agent annotation')
+    expect(() => store.addAnnotation(session.id, {
+      filePath: 'tracked.txt',
+      side: 'new',
+      startLine: 5,
+      endLine: 5,
+      comment: 'Agent cannot reply',
+      source: 'agent',
+      replyToId: agent.id,
+    })).toThrow('Only user replies')
   })
 
   test('migrates sessions created before commit timelines were stored separately', () => {
@@ -1431,7 +1654,7 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
     expect(store.getSession('drs_legacy').commits).toEqual([commit])
     expect(store.getSession('drs_legacy').viewedFiles).toEqual([])
     expect(store.getSession('drs_legacy').ignoreWhitespace).toBe(false)
-    expect(store.getSession('drs_legacy').globalComment).toBeNull()
+    expect(store.getSession('drs_legacy').globalComments).toEqual([])
     expect(store.getSession('drs_legacy').revisionBaseOid).toBe('b'.repeat(40))
     expect(store.getSession('drs_legacy').revisionHeadOid).toBe(commit.oid)
     expect(store.getSession('drs_legacy').annotations).toMatchObject([
@@ -1439,12 +1662,110 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
         id: 'ann_legacy',
         endSide: null,
         intent: 'annotation',
+        replyToId: null,
         archivedAt: null,
         submittedAt: null,
       },
     ])
     expect(store.getSession('drs_legacy_pr').revisionBaseOid).toBe('b'.repeat(40))
     expect(store.getSession('drs_legacy_pr').revisionHeadOid).toBe(commit.oid)
+  })
+
+  test('migrates dual-slot global comments into global_comments rows once', () => {
+    const databasePath = path.join(fixture.directory, 'legacy-globals.db')
+    const database = new DatabaseSync(databasePath)
+    database.exec(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        repository_root TEXT NOT NULL,
+        repository_name TEXT NOT NULL,
+        target_json TEXT NOT NULL,
+        target_label TEXT NOT NULL,
+        git_command TEXT NOT NULL,
+        patch TEXT NOT NULL,
+        resolved_json TEXT NOT NULL,
+        selected_commit_start TEXT,
+        selected_commit_end TEXT,
+        global_comment TEXT,
+        global_comment_source TEXT,
+        global_comment_archived_at TEXT,
+        agent_global_comment TEXT,
+        agent_global_comment_archived_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE annotations (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        file_path TEXT NOT NULL,
+        side TEXT NOT NULL CHECK(side IN ('old', 'new')),
+        start_line INTEGER NOT NULL,
+        end_line INTEGER NOT NULL,
+        comment TEXT,
+        importance REAL,
+        source TEXT NOT NULL CHECK(source IN ('user', 'agent')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `)
+    const commit = {
+      oid: 'a'.repeat(40),
+      shortOid: 'aaaaaaaa',
+      subject: 'legacy commit',
+      author: 'Reviewer',
+      authoredAt: '2026-01-01T00:00:00Z',
+    }
+    database
+      .prepare('INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(
+        'drs_legacy_globals',
+        fixture.repository,
+        'repo',
+        JSON.stringify({ kind: 'range', expression: 'main..HEAD' }),
+        'main..HEAD',
+        "git diff 'main..HEAD'",
+        '',
+        JSON.stringify({
+          label: 'main..HEAD',
+          gitCommand: "git diff 'main..HEAD'",
+          oldSnapshot: { kind: 'commit', id: 'b'.repeat(40) },
+          newSnapshot: { kind: 'commit', id: commit.oid },
+          commits: [commit],
+        }),
+        commit.oid,
+        commit.oid,
+        'User overview',
+        'user',
+        null,
+        'Agent overview',
+        '2026-01-03T00:00:00Z',
+        '2026-01-01T00:00:00Z',
+        '2026-01-02T00:00:00Z',
+      )
+    database.close()
+
+    const first = new ReviewStore(databasePath).getSession('drs_legacy_globals')
+    expect(first.globalComments).toEqual([
+      expect.objectContaining({
+        comment: 'User overview',
+        source: 'user',
+        archivedAt: null,
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-02T00:00:00Z',
+      }),
+      expect.objectContaining({
+        comment: 'Agent overview',
+        source: 'agent',
+        archivedAt: '2026-01-03T00:00:00Z',
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-02T00:00:00Z',
+      }),
+    ])
+
+    const second = new ReviewStore(databasePath).getSession('drs_legacy_globals')
+    expect(second.globalComments.map((comment) => comment.id)).toEqual(
+      first.globalComments.map((comment) => comment.id),
+    )
   })
 })
 

@@ -6,11 +6,12 @@ import {
   ChevronDown as ChevronIcon,
   Copy as CopyIcon,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import type { ThemedToken } from 'shiki'
 
 import { ClientError, getDifftasticFile, getFileContents } from './api'
 import {
+  annotationCoversLine,
   annotationsAtDifftasticRow,
   placeDifftasticAnnotations,
   visibleAnnotationsForFile,
@@ -25,6 +26,14 @@ import type {
   ReviewSession,
   SessionAnnotation,
 } from '../shared/types'
+
+const AnnotationHoverContext = createContext<{
+  annotation: SessionAnnotation | null
+  onHover(annotationId: string | null): void
+}>({
+  annotation: null,
+  onHover() {},
+})
 
 export type DifftasticScrollTarget = {
   line: number
@@ -112,6 +121,8 @@ export function DifftasticView({
   files,
   layout,
   resolvedTheme,
+  hoveredAnnotationId,
+  onHoverAnnotation,
   collapsedFiles,
   viewedFiles,
   onToggleCollapsed,
@@ -122,13 +133,20 @@ export function DifftasticView({
   files: FileDiffMetadata[]
   layout: 'unified' | 'split'
   resolvedTheme: 'light' | 'dark'
+  hoveredAnnotationId: string | null
+  onHoverAnnotation(annotationId: string | null): void
   collapsedFiles: Set<string>
   viewedFiles: Set<string>
   onToggleCollapsed(filePath: string): void
   onSetViewed(filePath: string, viewed: boolean): Promise<void>
   onVisibleFileChange?(filePath: string): void
 }) {
+  const hover = useMemo(() => ({
+    annotation: session.annotations.find((annotation) => annotation.id === hoveredAnnotationId) ?? null,
+    onHover: onHoverAnnotation,
+  }), [hoveredAnnotationId, onHoverAnnotation, session.annotations])
   return (
+    <AnnotationHoverContext.Provider value={hover}>
     <div
       className="diff-view difftastic-view"
       onScroll={(event) => {
@@ -152,6 +170,7 @@ export function DifftasticView({
         />
       ))}
     </div>
+    </AnnotationHoverContext.Provider>
   )
 }
 
@@ -285,6 +304,17 @@ function DifftasticFileBody({
     resolvedTheme,
     highlightReady,
   )
+  const hover = useContext(AnnotationHoverContext)
+  const fileHover = useMemo(() => {
+    const annotation = hover.annotation
+    if (
+      annotation == null ||
+      (annotation.filePath !== filePath && annotation.filePath !== oldFilePath)
+    ) {
+      return { annotation: null, onHover: hover.onHover }
+    }
+    return hover
+  }, [filePath, hover, oldFilePath])
   const placed = useMemo(
     () => placeDifftasticAnnotations(annotations, file?.hunks ?? []),
     [annotations, file],
@@ -305,6 +335,7 @@ function DifftasticFileBody({
   }
 
   return (
+    <AnnotationHoverContext.Provider value={fileHover}>
     <div className={`difftastic-hunks difftastic-${layout}`}>
       {file.hunks.map((hunk, hunkIndex) => (
         <div key={hunkIndex} className="difftastic-hunk">
@@ -322,6 +353,7 @@ function DifftasticFileBody({
         </div>
       ))}
     </div>
+    </AnnotationHoverContext.Provider>
   )
 }
 
@@ -421,10 +453,14 @@ function UnifiedLine({
   tokens: ThemedToken[] | null
   annotations: SessionAnnotation[]
 }) {
+  const { annotation } = useContext(AnnotationHoverContext)
+  const hovered =
+    lineInHoveredRange(annotation, 'new', newLine) ||
+    lineInHoveredRange(annotation, 'old', oldLine)
   const lineNumber = newLine ?? oldLine
   return (
     <div
-      className={`difftastic-row is-${kind}`}
+      className={`difftastic-row is-${kind}${hovered ? ' is-range-hover' : ''}`}
       data-dft-old={oldLine ?? undefined}
       data-dft-new={newLine ?? undefined}
     >
@@ -456,9 +492,11 @@ function LineSide({
   kind: DifftasticHunkLine['kind'] | 'empty'
   annotations: SessionAnnotation[]
 } ) {
+  const { annotation } = useContext(AnnotationHoverContext)
+  const hovered = lineInHoveredRange(annotation, side, lineNumber)
   return (
     <div
-      className={`difftastic-side is-${side} is-${kind}`}
+      className={`difftastic-side is-${side} is-${kind}${hovered ? ' is-range-hover' : ''}`}
       data-dft-old={side === 'old' ? lineNumber ?? undefined : undefined}
       data-dft-new={side === 'new' ? lineNumber ?? undefined : undefined}
     >
@@ -473,15 +511,29 @@ function LineSide({
   )
 }
 
-function ReadOnlyAnnotations({ annotations }: { annotations: SessionAnnotation[] }) {
+function ReadOnlyAnnotations({
+  annotations,
+}: {
+  annotations: SessionAnnotation[]
+}) {
+  const { onHover } = useContext(AnnotationHoverContext)
   if (annotations.length === 0) return null
+  const repliesByParent = new Map<string, SessionAnnotation[]>()
+  for (const annotation of annotations) {
+    if (annotation.replyToId == null) continue
+    const existing = repliesByParent.get(annotation.replyToId)
+    if (existing == null) repliesByParent.set(annotation.replyToId, [annotation])
+    else existing.push(annotation)
+  }
   return (
     <div className="difftastic-annotations">
-      {annotations.map((annotation) => (
+      {annotations.filter((annotation) => annotation.replyToId == null).map((annotation) => (
         <div
           key={annotation.id}
           className={`inline-annotation ${annotation.source}`}
           data-dft-note={annotation.id}
+          onPointerEnter={() => onHover(annotation.id)}
+          onPointerLeave={() => onHover(null)}
         >
           <div className="inline-source">
             <div>
@@ -492,7 +544,20 @@ function ReadOnlyAnnotations({ annotations }: { annotations: SessionAnnotation[]
               <code>{lineLabel(annotation)}</code>
             </div>
           </div>
-          <p>{annotation.comment}</p>
+          {annotation.comment != null ? <p>{annotation.comment}</p> : null}
+          {(repliesByParent.get(annotation.id) ?? []).map((reply) => (
+            <div key={reply.id} className={`note-reply ${reply.source}`}>
+              <div className="inline-source">
+                <div>
+                  <span>Reply</span>
+                  <time className="note-time" title={formatTimestamp(reply.createdAt)}>
+                    {relativeTimeAgo(reply.createdAt)}
+                  </time>
+                </div>
+              </div>
+              <p>{reply.comment}</p>
+            </div>
+          ))}
         </div>
       ))}
     </div>
@@ -513,6 +578,16 @@ function lineLabel(annotation: SessionAnnotation): string {
     return `${prefix}${annotation.startLine} → ${endPrefix}${annotation.endLine}`
   }
   return `${prefix}${annotation.startLine}${annotation.startLine === annotation.endLine ? '' : `–${annotation.endLine}`}`
+}
+
+function lineInHoveredRange(
+  annotation: SessionAnnotation | null,
+  side: 'old' | 'new',
+  lineNumber: number | null,
+): boolean {
+  return annotation != null &&
+    lineNumber != null &&
+    annotationCoversLine(annotation, side, lineNumber)
 }
 
 function uniqueAnnotations(

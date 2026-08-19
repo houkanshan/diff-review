@@ -1,3 +1,4 @@
+import { annotationCoversLine } from './annotationComposer'
 import type { SessionAnnotation } from '../shared/types'
 
 interface ImportanceContext {
@@ -57,6 +58,30 @@ export function applyImportance(
         '--diffs-bg-deletion-emphasis',
         `rgb(from var(--diffs-deletion-base) r g b / ${alpha})`,
       )
+    }
+  }
+}
+
+export function applyHoveredRange(
+  node: HTMLElement,
+  context: ImportanceContext,
+  annotation: SessionAnnotation | null,
+): void {
+  const root = node.shadowRoot
+  if (root == null) return
+
+  for (const element of root.querySelectorAll<HTMLElement>('[data-review-hover]')) {
+    element.removeAttribute('data-review-hover')
+  }
+  if (annotation == null || annotation.filePath !== context.item.id) return
+
+  for (const element of root.querySelectorAll<HTMLElement>('[data-line-type]')) {
+    const lineType = element.dataset.lineType
+    const side = lineType === 'change-addition' ? 'new' : lineType === 'change-deletion' ? 'old' : null
+    const line = Number(element.dataset.line ?? element.dataset.columnNumber)
+    if (side == null || !Number.isFinite(line)) continue
+    if (annotationCoversLine(annotation, side, line)) {
+      element.setAttribute('data-review-hover', '')
     }
   }
 }

@@ -103,10 +103,30 @@ export interface SessionAnnotation {
   importance: number | null
   source: 'user' | 'agent'
   intent: AnnotationIntent
+  replyToId: string | null
   archivedAt: string | null
   submittedAt: string | null
   createdAt: string
   updatedAt: string
+}
+
+export interface SessionGlobalComment {
+  id: string
+  sessionId: string
+  comment: string
+  source: 'user' | 'agent'
+  archivedAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface AddGlobalCommentInput {
+  comment: string
+  source: 'user' | 'agent'
+}
+
+export interface SessionFreshness {
+  stale: boolean
 }
 
 export interface ReviewSession {
@@ -121,7 +141,7 @@ export interface ReviewSession {
   selectedCommitStart: string | null
   selectedCommitEnd: string | null
   annotations: SessionAnnotation[]
-  globalComment: string | null
+  globalComments: SessionGlobalComment[]
   viewedFiles: string[]
   ignoreWhitespace: boolean
   revisionBaseOid: string | null
@@ -195,6 +215,12 @@ export interface PullRequestSummary {
   reviewers: GitHubReviewer[]
   labels: GitHubLabel[]
   checkStatus: PullRequestCheckStatus
+}
+
+export interface PullRequestListResponse {
+  items: PullRequestSummary[]
+  fetchedAt: string
+  stale: boolean
 }
 
 export type MinimizedCommentReason =
@@ -371,6 +397,7 @@ export interface AddAnnotationInput {
   importance?: number
   source: 'user' | 'agent'
   intent?: AnnotationIntent
+  replyToId?: string
 }
 
 export interface UpdateAnnotationInput {

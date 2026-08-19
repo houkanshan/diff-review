@@ -7,6 +7,7 @@ import type {
   FileDiffMetadata,
 } from '@pierre/diffs'
 
+import { isAnnotationThreadRoot } from '../shared/annotationThreads'
 import type { AnnotationIntent, DifftasticHunk, SessionAnnotation } from '../shared/types'
 
 export type ReviewLineAnnotation =
@@ -52,11 +53,15 @@ export function annotationsForFile(
   fileDiff: FileDiffMetadata,
   selection: CodeViewLineSelection | null,
 ): DiffLineAnnotation<ReviewLineAnnotation>[] {
-  const result: DiffLineAnnotation<ReviewLineAnnotation>[] = visibleAnnotationsForFile(
+  const visible = visibleAnnotationsForFile(
     annotations,
     fileDiff.name,
     fileDiff.prevName,
-  ).map((annotation) => ({
+  )
+  const visibleIds = new Set(visible.map((annotation) => annotation.id))
+  const result: DiffLineAnnotation<ReviewLineAnnotation>[] = visible
+    .filter((annotation) => isAnnotationThreadRoot(annotation, visibleIds))
+    .map((annotation) => ({
     side: (annotation.endSide ?? annotation.side) === 'new' ? 'additions' : 'deletions',
     lineNumber: annotation.endLine,
     metadata: { kind: 'saved', annotation },
@@ -83,6 +88,21 @@ export function annotationAnchorSide(annotation: SessionAnnotation): 'old' | 'ne
   return annotation.endSide ?? annotation.side
 }
 
+export function annotationCoversLine(
+  annotation: SessionAnnotation,
+  side: 'old' | 'new',
+  lineNumber: number,
+): boolean {
+  const endSide = annotation.endSide ?? annotation.side
+  if (endSide === annotation.side) {
+    return side === annotation.side &&
+      lineNumber >= annotation.startLine &&
+      lineNumber <= annotation.endLine
+  }
+  return (side === annotation.side && lineNumber === annotation.startLine) ||
+    (side === endSide && lineNumber === annotation.endLine)
+}
+
 export function placeDifftasticAnnotations(
   annotations: SessionAnnotation[],
   hunks: DifftasticHunk[],
@@ -100,8 +120,10 @@ export function placeDifftasticAnnotations(
     })
   })
 
+  const visibleIds = new Set(annotations.map((annotation) => annotation.id))
   const byRow = new Map<string, SessionAnnotation[]>()
   for (const annotation of annotations) {
+    if (!isAnnotationThreadRoot(annotation, visibleIds)) continue
     const preferred = annotationAnchorSide(annotation)
     const sameSide = preferred === 'new' ? newSlots : oldSlots
     const otherSide = preferred === 'new' ? oldSlots : newSlots
@@ -175,6 +197,7 @@ export function areSavedAnnotationsEqual(
     left.importance === right.importance &&
     left.source === right.source &&
     left.intent === right.intent &&
+    left.replyToId === right.replyToId &&
     left.archivedAt === right.archivedAt &&
     left.submittedAt === right.submittedAt &&
     left.createdAt === right.createdAt &&

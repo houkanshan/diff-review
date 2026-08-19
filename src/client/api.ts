@@ -8,16 +8,18 @@ import type {
   DifftasticFileDiff,
   OpenPullRequestInput,
   PiReviewStatus,
+  PullRequestListResponse,
   PullRequestListView,
   PullRequestRevision,
-  PullRequestSummary,
   PullRequestWorkspace,
   SquashMergePullRequestInput,
   SubmitPullRequestReviewInput,
   UpdatePullRequestLabelInput,
   RepositoryInfo,
   ReviewSession,
+  SessionFreshness,
   SessionAnnotation,
+  SessionGlobalComment,
   StartPiReviewInput,
 } from '../shared/types'
 import { limitHeavyRequest } from './limitConcurrency'
@@ -54,9 +56,11 @@ export function getRepositoryInfo(repositoryPath: string): Promise<RepositoryInf
 export function getPullRequests(
   repositoryPath: string,
   view: PullRequestListView,
-): Promise<PullRequestSummary[]> {
+  options?: { fresh?: boolean },
+): Promise<PullRequestListResponse> {
+  const fresh = options?.fresh === true ? '&fresh=1' : ''
   return request(
-    `/api/pull-requests?repositoryPath=${encodeURIComponent(repositoryPath)}&view=${view}`,
+    `/api/pull-requests?repositoryPath=${encodeURIComponent(repositoryPath)}&view=${view}${fresh}`,
     { timeoutMs: GITHUB_READ_TIMEOUT_MS },
   )
 }
@@ -134,6 +138,10 @@ export function refreshSession(id: string): Promise<ReviewSession> {
   return request(`/api/sessions/${encodeURIComponent(id)}/refresh`, { method: 'POST' })
 }
 
+export function getSessionFreshness(id: string): Promise<SessionFreshness> {
+  return request(`/api/sessions/${encodeURIComponent(id)}/freshness`)
+}
+
 export function getPiReviewStatus(id: string): Promise<PiReviewStatus> {
   return request(`/api/sessions/${encodeURIComponent(id)}/pi-review`)
 }
@@ -207,10 +215,35 @@ export function updateAnnotationComment(
   })
 }
 
-export function updateGlobalComment(id: string, comment: string): Promise<ReviewSession> {
-  return request(`/api/sessions/${encodeURIComponent(id)}/global-comment`, {
+export function addGlobalComment(
+  id: string,
+  comment: string,
+): Promise<SessionGlobalComment> {
+  return request(`/api/sessions/${encodeURIComponent(id)}/global-comments`, {
+    method: 'POST',
+    body: JSON.stringify({ comment, source: 'user' }),
+  })
+}
+
+export function updateGlobalComment(
+  id: string,
+  commentId: string,
+  comment: string,
+): Promise<SessionGlobalComment> {
+  return request(`/api/sessions/${encodeURIComponent(id)}/global-comments/${commentId}`, {
     method: 'PATCH',
     body: JSON.stringify({ comment }),
+  })
+}
+
+export function setGlobalCommentArchived(
+  id: string,
+  commentId: string,
+  archived: boolean,
+): Promise<SessionGlobalComment> {
+  return request(`/api/sessions/${encodeURIComponent(id)}/global-comments/${commentId}/archive`, {
+    method: 'POST',
+    body: JSON.stringify({ archived }),
   })
 }
 

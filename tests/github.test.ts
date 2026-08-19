@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { describe, expect, test } from 'vitest'
+import { beforeEach, describe, expect, test } from 'vitest'
 import remarkGfm from 'remark-gfm'
 import remarkParse from 'remark-parse'
 import { unified } from 'unified'
@@ -16,7 +16,10 @@ import { parseGitHubAttachmentUrl } from '../src/server/api.js'
 import {
   aggregateCheckStatus,
   addPullRequestComment,
+  expirePullRequestListCache,
+  invalidatePullRequestListCache,
   listPullRequests,
+  resetPullRequestListCache,
   parseCheckRollupState,
   parsePullRequestChecks,
   parsePullRequestMergeable,
@@ -127,6 +130,7 @@ printf '%s\\n' '{\"merged\":true,\"message\":\"Pull Request successfully merged\
       importance: null,
       source: 'user',
       intent: 'review-comment',
+      replyToId: null,
       archivedAt: null,
       submittedAt: null,
       createdAt: '2026-01-01T00:00:00Z',
@@ -154,6 +158,7 @@ printf '%s\\n' '{\"merged\":true,\"message\":\"Pull Request successfully merged\
       importance: null,
       source: 'user' as const,
       intent: 'review-comment' as const,
+      replyToId: null,
       archivedAt: null,
       submittedAt: null,
       createdAt: '2026-01-01T00:00:00Z',
@@ -668,6 +673,10 @@ describe('GitHub pull request timeline', () => {
 
 
 describe('GitHub pull request list', () => {
+  beforeEach(() => {
+    resetPullRequestListCache()
+  })
+
   test('loads summaries without statusCheckRollup and fills badges from rollup state', async () => {
     const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-github-list-'))
     const bin = path.join(directory, 'bin')
@@ -675,6 +684,10 @@ describe('GitHub pull request list', () => {
     writeFileSync(path.join(bin, 'gh'), [
       '#!/usr/bin/env node',
       'const args = process.argv.slice(2)',
+      "if (args[0] === 'repo' && args[1] === 'view') {",
+      "  process.stdout.write(JSON.stringify({ nameWithOwner: 'acme/repo' }))",
+      '  process.exit(0)',
+      '}',
       "if (args[0] === 'pr' && args[1] === 'list') {",
       "  if (args.some((arg) => arg.includes('statusCheckRollup'))) {",
       "    process.stderr.write('list should not request statusCheckRollup')",
@@ -747,7 +760,9 @@ describe('GitHub pull request list', () => {
       },
     })
     try {
-      await expect(listPullRequests(directory, 'open')).resolves.toMatchObject([
+      await expect(listPullRequests(directory, 'open')).resolves.toMatchObject({
+        stale: false,
+        items: [
         {
           number: 12,
           title: 'Fast list',
@@ -758,7 +773,8 @@ describe('GitHub pull request list', () => {
           ],
         },
         { number: 13, title: 'No checks', checkStatus: 'none', reviewers: [] },
-      ])
+        ],
+      })
     } finally {
       process.env.PATH = originalPath
       if (originalList == null) delete process.env.GH_TEST_LIST_JSON
@@ -776,6 +792,10 @@ describe('GitHub pull request list', () => {
     writeFileSync(path.join(bin, 'gh'), [
       '#!/usr/bin/env node',
       'const args = process.argv.slice(2)',
+      "if (args[0] === 'repo' && args[1] === 'view') {",
+      "  process.stdout.write(JSON.stringify({ nameWithOwner: 'acme/repo' }))",
+      '  process.exit(0)',
+      '}',
       "if (args[0] === 'pr' && args[1] === 'list') {",
       "  process.stdout.write(process.env.GH_TEST_LIST_JSON)",
       '  process.exit(0)',
@@ -808,13 +828,130 @@ describe('GitHub pull request list', () => {
       },
     ])
     try {
-      await expect(listPullRequests(directory, 'open')).resolves.toMatchObject([
-        { number: 12, checkStatus: 'unknown' },
-      ])
+      await expect(listPullRequests(directory, 'open')).resolves.toMatchObject({
+        stale: false,
+        items: [{ number: 12, checkStatus: 'unknown' }],
+      })
     } finally {
       process.env.PATH = originalPath
       if (originalList == null) delete process.env.GH_TEST_LIST_JSON
       else process.env.GH_TEST_LIST_JSON = originalList
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test('reuses a cached list without calling GitHub again', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-github-list-cache-'))
+    const bin = path.join(directory, 'bin')
+    const countFile = path.join(directory, 'list-count')
+    mkdirSync(bin)
+    writeFileSync(countFile, '0')
+    writeFileSync(path.join(bin, 'gh'), [
+      '#!/usr/bin/env node',
+      'const fs = require("node:fs")',
+      'const args = process.argv.slice(2)',
+      `const countFile = ${JSON.stringify(countFile)}`,
+      "if (args[0] === 'repo' && args[1] === 'view') {",
+      "  process.stdout.write(JSON.stringify({ nameWithOwner: 'acme/cache-repo' }))",
+      '  process.exit(0)',
+      '}',
+      "if (args[0] === 'pr' && args[1] === 'list') {",
+      '  const delay = Number(process.env.GH_TEST_LIST_DELAY_MS || 0)',
+      '  if (delay > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay)',
+      '  fs.writeFileSync(countFile, String(Number(fs.readFileSync(countFile, "utf8")) + 1))',
+      "  process.stdout.write(process.env.GH_TEST_LIST_JSON)",
+      '  process.exit(0)',
+      '}',
+      "if (args[0] === 'api' && args[1] === 'graphql') {",
+      "  process.stdout.write(process.env.GH_TEST_GRAPHQL_JSON)",
+      '  process.exit(0)',
+      '}',
+      'process.exit(1)',
+    ].join('\n'))
+    chmodSync(path.join(bin, 'gh'), 0o755)
+    const originalPath = process.env.PATH
+    const originalList = process.env.GH_TEST_LIST_JSON
+    const originalGraphql = process.env.GH_TEST_GRAPHQL_JSON
+    process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`
+    process.env.GH_TEST_LIST_JSON = JSON.stringify([
+      {
+        number: 12,
+        title: 'Cached list',
+        url: 'https://github.com/acme/cache-repo/pull/12',
+        state: 'OPEN',
+        isDraft: false,
+        baseRefName: 'main',
+        headRefName: 'feature',
+        additions: 1,
+        deletions: 0,
+        createdAt: '2026-03-01T10:00:00Z',
+        updatedAt: '2026-03-01T11:00:00Z',
+        author: { login: 'octocat' },
+        assignees: [],
+        reviewRequests: [],
+        latestReviews: [],
+        labels: [],
+      },
+    ])
+    process.env.GH_TEST_GRAPHQL_JSON = JSON.stringify({
+      data: {
+        repository: {
+          pr0: { commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] } },
+        },
+      },
+    })
+    try {
+      await expect(listPullRequests(directory, 'open')).resolves.toMatchObject({
+        stale: false,
+        items: [{ number: 12, checkStatus: 'pass' }],
+      })
+      await expect(listPullRequests(directory, 'open')).resolves.toMatchObject({
+        stale: false,
+        items: [{ number: 12, checkStatus: 'pass' }],
+      })
+      expect(readFileSync(countFile, 'utf8')).toBe('1')
+
+      expirePullRequestListCache()
+      await expect(listPullRequests(directory, 'open')).resolves.toMatchObject({
+        stale: true,
+        items: [{ number: 12, checkStatus: 'pass' }],
+      })
+      await expect(listPullRequests(directory, 'open', { fresh: true })).resolves.toMatchObject({
+        stale: false,
+        items: [{ number: 12, checkStatus: 'pass' }],
+      })
+      expect(Number(readFileSync(countFile, 'utf8'))).toBeGreaterThanOrEqual(2)
+
+      const first = listPullRequests(directory, 'open', { fresh: true })
+      const second = listPullRequests(directory, 'open', { fresh: true })
+      await Promise.all([first, second])
+      const afterDedupe = Number(readFileSync(countFile, 'utf8'))
+
+      expirePullRequestListCache()
+      const originalListJson = process.env.GH_TEST_LIST_JSON
+      process.env.GH_TEST_LIST_JSON = 'not-json'
+      await expect(listPullRequests(directory, 'open')).resolves.toMatchObject({ stale: true })
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      process.env.GH_TEST_LIST_JSON = originalListJson
+      await expect(listPullRequests(directory, 'open')).resolves.toMatchObject({
+        stale: true,
+        items: [{ number: 12 }],
+      })
+
+      process.env.GH_TEST_LIST_DELAY_MS = '80'
+      const overlapping = listPullRequests(directory, 'open', { fresh: true })
+      await invalidatePullRequestListCache(directory)
+      await overlapping
+      delete process.env.GH_TEST_LIST_DELAY_MS
+      await listPullRequests(directory, 'open')
+      expect(Number(readFileSync(countFile, 'utf8'))).toBeGreaterThan(afterDedupe)
+    } finally {
+      delete process.env.GH_TEST_LIST_DELAY_MS
+      process.env.PATH = originalPath
+      if (originalList == null) delete process.env.GH_TEST_LIST_JSON
+      else process.env.GH_TEST_LIST_JSON = originalList
+      if (originalGraphql == null) delete process.env.GH_TEST_GRAPHQL_JSON
+      else process.env.GH_TEST_GRAPHQL_JSON = originalGraphql
       rmSync(directory, { recursive: true, force: true })
     }
   })

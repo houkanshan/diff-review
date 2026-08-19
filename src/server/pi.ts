@@ -273,15 +273,22 @@ function buildReviewPrompt(
   const userInstructions = additionalInstructions
     ? `\n\nAdditional instructions from the user:\n${additionalInstructions}`
     : ''
-  return `Explain PR #${pullRequestNumber} in plain language by annotating its diff. Focus on the purpose of the change, important behavior changes, risks, and tests. Do not perform a code review or limit annotations to defects.
+  return `Help someone review PR #${pullRequestNumber}. Explain the change in the context of what moved, appeared, or disappeared — purpose, behavior deltas, risks, and tests. A reviewer already has the new code; they need why this hunk is here and how it relates to the rest of the patch. Do not perform a code review or limit annotations to defects.
+
+Example: retry() deleted from a.ts and added in b.ts → one note that this is a move into b.ts, and why that home makes sense.
 
 This detached worktree is the exact PR head ${headOid}. Explain only the immutable change shown by:
   git diff ${baseOid} ${headOid} --
 
-Do not edit files, commit, push, or publish anything to GitHub. Add concise findings directly to Diff Review with:
-  diff-review annotate ${sessionId} --file <path> (--new-line <line[-end]> | --old-line <line[-end]>) --comment <explanation> [--importance <0..1>]
+Do not edit files, commit, push, or publish anything to GitHub. Add concise findings directly to Diff Review.
 
-Annotate only changed lines. Use new-side line numbers for added/current code and old-side line numbers for deleted code. Add at least one annotation per changed file unless that file's change is obvious. Keep annotations in a reviewable order and do not produce a separate overall summary.${userInstructions}`
+Global comment — session-level text, no --file or line flags:
+  diff-review annotate ${sessionId} --comment "[summary] …" --json
+
+Line annotation — attaches to a file and a changed range. Exactly one of --new-line or --old-line (42 or 42-48). Prefix --comment with action(domain): action is the edit verb (what happened to the code), domain is the feature or concern it belongs to, e.g. move(feature-A):. --comment and --importance (0–1) are independently optional; at least one is required. 0 drops the red/green line wash; 1 is the strongest wash.
+  diff-review annotate ${sessionId} --file <path> (--new-line <line[-end]> | --old-line <line[-end]>) --comment "action(domain): …" [--importance <0..1>] --json
+
+Use new-side line numbers for added/current code and old-side line numbers for deleted code. Add at least one annotation per changed file unless that file's change is obvious. Keep annotations in a reviewable order.${userInstructions}`
 }
 
 function retentionDeadline(from = Date.now()): string {

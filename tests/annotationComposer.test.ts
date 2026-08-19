@@ -3,6 +3,7 @@ import type { CodeViewLineSelection, FileDiffMetadata } from '@pierre/diffs'
 
 import {
   areReviewAnnotationsEqual,
+  annotationCoversLine,
   annotationsAtDifftasticRow,
   annotationsForFile,
   buildCodeViewItems,
@@ -37,6 +38,7 @@ function annotation(filePath: string, id = 'note-1'): SessionAnnotation {
     importance: null,
     source: 'user',
     intent: 'annotation',
+    replyToId: null,
     archivedAt: null,
     submittedAt: null,
     createdAt: '2026-01-01T00:00:00.000Z',
@@ -64,6 +66,19 @@ describe('annotation composer items', () => {
       },
     ])
     expect(annotationsForFile([], other, selection('src/a.ts'))).toEqual([])
+  })
+
+  test('does not place replies as their own line annotations', () => {
+    const file = fileDiff('src/a.ts')
+    const parent = annotation('src/a.ts', 'agent')
+    const reply = { ...annotation('src/a.ts', 'reply'), replyToId: parent.id }
+    expect(annotationsForFile([parent, reply], file, null)).toEqual([
+      {
+        side: 'additions',
+        lineNumber: 4,
+        metadata: { kind: 'saved', annotation: parent },
+      },
+    ])
   })
 
   test('reuses unchanged file items and only versions the file that opened the composer', () => {
@@ -172,6 +187,36 @@ describe('difftastic annotation placement', () => {
 
     expect(idsAt(placed, 0, 1, 'new')).toEqual(['once'])
     expect(idsAt(placed, 1, 1, 'new')).toEqual([])
+  })
+})
+
+describe('annotationCoversLine', () => {
+  test('covers an inclusive same-side range', () => {
+    const note = {
+      ...annotation('src/a.ts'),
+      side: 'new' as const,
+      startLine: 4,
+      endSide: null,
+      endLine: 6,
+    }
+    expect(annotationCoversLine(note, 'new', 4)).toBe(true)
+    expect(annotationCoversLine(note, 'new', 6)).toBe(true)
+    expect(annotationCoversLine(note, 'new', 7)).toBe(false)
+    expect(annotationCoversLine(note, 'old', 5)).toBe(false)
+  })
+
+  test('covers only the endpoints when the range crosses sides', () => {
+    const note = {
+      ...annotation('src/a.ts'),
+      side: 'old' as const,
+      startLine: 10,
+      endSide: 'new' as const,
+      endLine: 12,
+    }
+    expect(annotationCoversLine(note, 'old', 10)).toBe(true)
+    expect(annotationCoversLine(note, 'new', 12)).toBe(true)
+    expect(annotationCoversLine(note, 'old', 11)).toBe(false)
+    expect(annotationCoversLine(note, 'new', 10)).toBe(false)
   })
 })
 

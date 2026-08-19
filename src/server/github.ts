@@ -12,6 +12,7 @@ import type {
   PullRequestDetails,
   PullRequestMergeable,
   PullRequestReviewEvent,
+  PullRequestListResponse,
   PullRequestListView,
   PullRequestState,
   PullRequestSummary,
@@ -97,12 +98,143 @@ type ResolvedIssueReference = Omit<GitHubIssueReference, 'token' | 'label'>
 type ResolvedIssueReferenceTarget = GitHubIssueReferenceTarget & { owner: string; repository: string }
 
 const issueReferenceCache = new Map<string, Promise<ResolvedIssueReference | null>>()
+const PULL_REQUEST_LIST_TTL_MS = 60_000
+const repositoryKeyByRoot = new Map<string, string>()
+let pullRequestListEpoch = 0
+const pullRequestListInflight = new Map<string, Promise<PullRequestSummary[]>>()
+const pullRequestListCache = new Map<string, {
+  items: PullRequestSummary[]
+  fetchedAt: number
+}>()
 
 function issueReferenceKey(reference: { owner: string; repository: string; number: number }): string {
   return `${reference.owner.toLowerCase()}/${reference.repository.toLowerCase()}#${reference.number}`
 }
 
+function listCacheKey(repositoryKey: string, view: PullRequestListView): string {
+  return `${repositoryKey}:${view}`
+}
+
+function listResponse(
+  items: PullRequestSummary[],
+  fetchedAt: number,
+  stale: boolean,
+): PullRequestListResponse {
+  return { items, fetchedAt: new Date(fetchedAt).toISOString(), stale }
+}
+
+function rememberRepositoryKey(root: string, repositoryKey: string): void {
+  repositoryKeyByRoot.set(root, repositoryKey)
+}
+
+function repositoryKeyFromSummaries(summaries: PullRequestSummary[]): string | null {
+  if (summaries[0] == null) return null
+  try {
+    const repository = parseGitHubRepositoryUrl(summaries[0].url)
+    return `${repository.owner}/${repository.name}`.toLowerCase()
+  } catch {
+    return null
+  }
+}
+
+async function githubRepositoryKey(root: string): Promise<string | null> {
+  const cached = repositoryKeyByRoot.get(root)
+  if (cached != null) return cached
+  try {
+    const output = await runGitHub(['repo', 'view', '--json', 'nameWithOwner'], root)
+    const nameWithOwner = expectString(
+      expectObject(parseJson(output, 'GitHub repository')).nameWithOwner,
+      'nameWithOwner',
+    )
+    const key = nameWithOwner.toLowerCase()
+    rememberRepositoryKey(root, key)
+    return key
+  } catch {
+    return null
+  }
+}
+
+function deletePullRequestListCache(repositoryKey: string): void {
+  for (const view of ['open', 'additional-review', 'merged'] as const) {
+    pullRequestListCache.delete(listCacheKey(repositoryKey, view))
+    pullRequestListInflight.delete(listCacheKey(repositoryKey, view))
+  }
+}
+
+export async function invalidatePullRequestListCache(root: string): Promise<void> {
+  pullRequestListEpoch += 1
+  const repositoryKey = await githubRepositoryKey(root)
+  if (repositoryKey == null) return
+  deletePullRequestListCache(repositoryKey)
+}
+
+export function resetPullRequestListCache(): void {
+  repositoryKeyByRoot.clear()
+  pullRequestListEpoch = 0
+  pullRequestListInflight.clear()
+  pullRequestListCache.clear()
+}
+
+export function expirePullRequestListCache(): void {
+  for (const [key, entry] of pullRequestListCache) {
+    pullRequestListCache.set(key, { items: entry.items, fetchedAt: 1 })
+  }
+}
+
 export async function listPullRequests(
+  root: string,
+  view: PullRequestListView,
+  options?: { fresh?: boolean },
+): Promise<PullRequestListResponse> {
+  const repositoryKey = await githubRepositoryKey(root)
+  const cacheKey = repositoryKey == null ? null : listCacheKey(repositoryKey, view)
+  const entry = cacheKey == null ? undefined : pullRequestListCache.get(cacheKey)
+  if (options?.fresh !== true && entry != null) {
+    const stale = Date.now() - entry.fetchedAt >= PULL_REQUEST_LIST_TTL_MS
+    if (stale) {
+      void refreshPullRequestList(root, view, repositoryKey).catch((error: unknown) => {
+        console.error(`diff-review: could not refresh pull request list: ${errorMessage(error)}`)
+      })
+    }
+    return listResponse(entry.items, entry.fetchedAt, stale)
+  }
+  const items = await refreshPullRequestList(root, view, repositoryKey)
+  const resolvedKey = repositoryKey ?? await githubRepositoryKey(root)
+  const fetchedAt = resolvedKey == null
+    ? Date.now()
+    : pullRequestListCache.get(listCacheKey(resolvedKey, view))?.fetchedAt ?? Date.now()
+  return listResponse(items, fetchedAt, false)
+}
+
+async function refreshPullRequestList(
+  root: string,
+  view: PullRequestListView,
+  repositoryKey: string | null,
+): Promise<PullRequestSummary[]> {
+  const inflightKey = repositoryKey == null ? `pending:${root}:${view}` : listCacheKey(repositoryKey, view)
+  const existing = pullRequestListInflight.get(inflightKey)
+  if (existing != null) return existing
+  const epoch = pullRequestListEpoch
+  const inflight = loadPullRequestSummaries(root, view).then((items) => {
+    const resolvedKey = repositoryKeyFromSummaries(items) ?? repositoryKey
+    if (resolvedKey != null) rememberRepositoryKey(root, resolvedKey)
+    if (resolvedKey != null && epoch === pullRequestListEpoch) {
+      pullRequestListCache.set(listCacheKey(resolvedKey, view), {
+        items,
+        fetchedAt: Date.now(),
+      })
+    }
+    return items
+  }).finally(() => {
+    if (pullRequestListInflight.get(inflightKey) === inflight) {
+      pullRequestListInflight.delete(inflightKey)
+    }
+  })
+  pullRequestListInflight.set(inflightKey, inflight)
+  return inflight
+}
+
+async function loadPullRequestSummaries(
   root: string,
   view: PullRequestListView,
 ): Promise<PullRequestSummary[]> {

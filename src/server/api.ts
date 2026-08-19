@@ -17,6 +17,7 @@ import type {
   PullRequestWorkspace,
   ReviewSession,
   ReviewTarget,
+  SessionFreshness,
   SessionUpdatedEvent,
   StartPiReviewInput,
 } from '../shared/types.js'
@@ -33,6 +34,8 @@ import {
   resolvePullRequestRevision,
   resolveRepository,
   resolveTarget,
+  computeReviewFingerprint,
+  storedReviewFingerprint,
   stageReviewFile,
   validateAnnotationTarget,
   validateReviewFilePath,
@@ -43,6 +46,7 @@ import {
   getPullRequestDetails,
   getPullRequestRevisionDetails,
   addPullRequestComment,
+  invalidatePullRequestListCache,
   listPullRequests,
   removePullRequestLabel,
   squashMergePullRequest,
@@ -107,10 +111,14 @@ export class ApiHandler {
   ): Promise<void> {
     const { method = 'GET' } = request
     const sessionMatch = /^\/api\/sessions\/([^/]+)$/.exec(url.pathname)
+    const freshnessMatch = /^\/api\/sessions\/([^/]+)\/freshness$/.exec(url.pathname)
     const refreshMatch = /^\/api\/sessions\/([^/]+)\/refresh$/.exec(url.pathname)
     const selectionMatch = /^\/api\/sessions\/([^/]+)\/selection$/.exec(url.pathname)
     const whitespaceMatch = /^\/api\/sessions\/([^/]+)\/whitespace$/.exec(url.pathname)
-    const globalCommentMatch = /^\/api\/sessions\/([^/]+)\/global-comment$/.exec(url.pathname)
+    const globalCommentsMatch = /^\/api\/sessions\/([^/]+)\/global-comments$/.exec(url.pathname)
+    const globalCommentMatch = /^\/api\/sessions\/([^/]+)\/global-comments\/([^/]+)$/.exec(url.pathname)
+    const globalCommentArchiveMatch =
+      /^\/api\/sessions\/([^/]+)\/global-comments\/([^/]+)\/archive$/.exec(url.pathname)
     const annotationsMatch = /^\/api\/sessions\/([^/]+)\/annotations$/.exec(url.pathname)
     const annotationMatch = /^\/api\/sessions\/([^/]+)\/annotations\/([^/]+)$/.exec(
       url.pathname,
@@ -165,7 +173,8 @@ export class ApiHandler {
     if (method === 'GET' && url.pathname === '/api/pull-requests') {
       const root = await resolveRepository(requiredQuery(url, 'repositoryPath'))
       const view = parsePullRequestListView(requiredQuery(url, 'view'))
-      sendJson(response, 200, await listPullRequests(root, view))
+      const fresh = url.searchParams.get('fresh') === '1'
+      sendJson(response, 200, await listPullRequests(root, view, { fresh }))
       return
     }
 
@@ -221,6 +230,7 @@ export class ApiHandler {
       const input = parseUpdatePullRequestLabelInput(await readJson(request))
       const root = await resolveRepository(input.repositoryPath)
       await removePullRequestLabel(root, number, label)
+      await invalidatePullRequestListCache(root)
       response.writeHead(204).end()
       return
     }
@@ -287,6 +297,7 @@ export class ApiHandler {
       const input = parseSquashMergePullRequestInput(await readJson(request))
       const root = await resolveRepository(input.repositoryPath)
       await squashMergePullRequest(root, number, input.expectedHeadOid)
+      await invalidatePullRequestListCache(root)
       response.writeHead(204).end()
       return
     }
@@ -356,6 +367,17 @@ export class ApiHandler {
       return
     }
 
+    if (method === 'GET' && freshnessMatch != null) {
+      const id = freshnessMatch[1] ?? ''
+      const session = this.store.getSession(id)
+      const resolved = this.store.getResolvedReview(id)
+      const live = await computeReviewFingerprint(session.repositoryRoot, session.target)
+      const stored = storedReviewFingerprint(resolved)
+      const payload: SessionFreshness = { stale: stored != null && live !== stored }
+      sendJson(response, 200, payload)
+      return
+    }
+
     if (method === 'POST' && refreshMatch != null) {
       const id = refreshMatch[1] ?? ''
       const session = this.store.getSession(id)
@@ -404,6 +426,11 @@ export class ApiHandler {
             input.end,
             session.ignoreWhitespace,
           )
+      if (resolved.fingerprint == null) {
+        resolved.fingerprint =
+          this.store.getResolvedReview(id).fingerprint
+          ?? await computeReviewFingerprint(session.repositoryRoot, session.target)
+      }
       const updated = this.store.updateResolvedReview(id, resolved, input.start, input.end)
       this.emitSessionUpdate(id)
       sendJson(response, 200, updated)
@@ -436,6 +463,11 @@ export class ApiHandler {
               session.selectedCommitEnd,
               ignoreWhitespace,
             )
+      if (resolved.fingerprint == null) {
+        resolved.fingerprint =
+          this.store.getResolvedReview(id).fingerprint
+          ?? await computeReviewFingerprint(session.repositoryRoot, session.target)
+      }
       const updated = this.store.updateResolvedReview(
         id,
         resolved,
@@ -449,12 +481,34 @@ export class ApiHandler {
       return
     }
 
-    if (method === 'PATCH' && globalCommentMatch != null) {
-      const id = globalCommentMatch[1] ?? ''
-      const { comment } = parseCommentInput(await readJson(request))
-      const session = this.store.setGlobalComment(id, comment)
+    if (method === 'POST' && globalCommentsMatch != null) {
+      const id = globalCommentsMatch[1] ?? ''
+      const input = parseGlobalCommentInput(await readJson(request))
+      const comment = this.store.addGlobalComment(id, input)
       this.emitSessionUpdate(id)
-      sendJson(response, 200, session)
+      sendJson(response, 201, comment)
+      return
+    }
+
+    if (method === 'PATCH' && globalCommentMatch != null) {
+      const sessionId = globalCommentMatch[1] ?? ''
+      const { comment } = parseCommentInput(await readJson(request))
+      const updated = this.store.updateGlobalComment(sessionId, globalCommentMatch[2] ?? '', comment)
+      this.emitSessionUpdate(sessionId)
+      sendJson(response, 200, updated)
+      return
+    }
+
+    if (method === 'POST' && globalCommentArchiveMatch != null) {
+      const sessionId = globalCommentArchiveMatch[1] ?? ''
+      const { archived } = parseArchiveInput(await readJson(request))
+      const updated = this.store.setGlobalCommentArchived(
+        sessionId,
+        globalCommentArchiveMatch[2] ?? '',
+        archived,
+      )
+      this.emitSessionUpdate(sessionId)
+      sendJson(response, 200, updated)
       return
     }
 
@@ -462,6 +516,12 @@ export class ApiHandler {
       const id = annotationsMatch[1] ?? ''
       const input = parseAnnotationInput(await readJson(request))
       const session = this.store.getSession(id)
+      if (input.replyToId != null && input.intent === 'review-comment') {
+        throw new AppError(
+          'INVALID_ANNOTATION_REPLY',
+          'Replies to agent annotations cannot be review comments',
+        )
+      }
       if (
         input.intent === 'review-comment' &&
         (input.source !== 'user' || session.target.kind !== 'pr' || input.endSide != null)
@@ -984,6 +1044,7 @@ function parseAnnotationInput(value: unknown): AddAnnotationInput {
     importance,
     source,
     intent,
+    replyToId: object.replyToId == null ? undefined : expectString(object.replyToId, 'replyToId'),
   }
 }
 
@@ -1001,6 +1062,14 @@ function parseCommentInput(value: unknown): { comment: string } {
   if (!comment) throw new AppError('INVALID_INPUT', 'comment must not be empty')
   return { comment }
 }
+
+function parseGlobalCommentInput(value: unknown): { comment: string; source: 'user' | 'agent' } {
+  const { comment } = parseCommentInput(value)
+  const object = expectObject(value)
+  const source = object.source === 'agent' ? 'agent' : 'user'
+  return { comment, source }
+}
+
 
 function parseAnnotationUpdateInput(value: unknown): UpdateAnnotationInput {
   const { comment } = parseCommentInput(value)

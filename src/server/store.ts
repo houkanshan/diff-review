@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite'
 
 import type {
   AddAnnotationInput,
+  AddGlobalCommentInput,
   AnnotationIntent,
   CommitSummary,
   PiReviewRun,
@@ -13,6 +14,7 @@ import type {
   ReviewSession,
   ReviewTarget,
   SessionAnnotation,
+  SessionGlobalComment,
 } from '../shared/types.js'
 import type { ResolvedReview } from './git.js'
 import { AppError } from './errors.js'
@@ -30,6 +32,10 @@ interface SessionRow {
   selected_commit_start: string | null
   selected_commit_end: string | null
   global_comment: string | null
+  global_comment_source: 'user' | 'agent' | null
+  global_comment_archived_at: string | null
+  agent_global_comment: string | null
+  agent_global_comment_archived_at: string | null
   viewed_files_json: string
   ignore_whitespace: number
   revision_base_oid: string | null
@@ -50,8 +56,19 @@ interface AnnotationRow {
   importance: number | null
   source: 'user' | 'agent'
   intent: 'annotation' | 'review-comment'
+  reply_to_id: string | null
   archived_at: string | null
   submitted_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+interface GlobalCommentRow {
+  id: string
+  session_id: string
+  comment: string
+  source: 'user' | 'agent'
+  archived_at: string | null
   created_at: string
   updated_at: string
 }
@@ -97,6 +114,10 @@ export class ReviewStore {
         selected_commit_start TEXT,
         selected_commit_end TEXT,
         global_comment TEXT,
+        global_comment_source TEXT CHECK(global_comment_source IN ('user', 'agent')),
+        global_comment_archived_at TEXT,
+        agent_global_comment TEXT,
+        agent_global_comment_archived_at TEXT,
         viewed_files_json TEXT NOT NULL DEFAULT '[]',
         ignore_whitespace INTEGER NOT NULL DEFAULT 0,
         revision_base_oid TEXT,
@@ -117,6 +138,7 @@ export class ReviewStore {
         importance REAL,
         source TEXT NOT NULL CHECK(source IN ('user', 'agent')),
         intent TEXT NOT NULL DEFAULT 'annotation' CHECK(intent IN ('annotation', 'review-comment')),
+        reply_to_id TEXT REFERENCES annotations(id) ON DELETE CASCADE,
         archived_at TEXT,
         submitted_at TEXT,
         created_at TEXT NOT NULL,
@@ -144,7 +166,18 @@ export class ReviewStore {
         cleaned_at TEXT
       );
 
+      CREATE TABLE IF NOT EXISTS global_comments (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        comment TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('user', 'agent')),
+        archived_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS annotations_session_id ON annotations(session_id);
+      CREATE INDEX IF NOT EXISTS global_comments_session_id ON global_comments(session_id);
       CREATE INDEX IF NOT EXISTS sessions_repository_root ON sessions(repository_root);
       CREATE INDEX IF NOT EXISTS pi_review_runs_session_latest
         ON pi_review_runs(session_id, started_at DESC);
@@ -153,6 +186,7 @@ export class ReviewStore {
     `)
     this.migrateSessionsTable()
     this.migrateAnnotationsTable()
+    this.migrateGlobalCommentsTable()
   }
 
   get dataDirectory(): string {
@@ -472,27 +506,44 @@ export class ReviewStore {
 
   addAnnotation(sessionId: string, input: AddAnnotationInput): SessionAnnotation {
     this.getSession(sessionId)
+    const parent = input.replyToId == null ? null : this.getAnnotation(input.replyToId)
+    if (parent != null && parent.sessionId !== sessionId) {
+      throw new AppError('ANNOTATION_NOT_FOUND', `Annotation not found: ${input.replyToId}`, 404)
+    }
+    if (parent != null && (parent.source !== 'agent' || parent.replyToId != null)) {
+      throw new AppError(
+        'INVALID_ANNOTATION_REPLY',
+        'Replies can only be added to a top-level agent annotation',
+      )
+    }
+    if (parent != null && input.source !== 'user') {
+      throw new AppError('INVALID_ANNOTATION_REPLY', 'Only user replies to agent annotations are supported')
+    }
+    if (parent != null && (input.comment == null || input.comment.trim() === '')) {
+      throw new AppError('INVALID_ANNOTATION_REPLY', 'A reply must include a comment')
+    }
     const id = createId('ann')
     const now = new Date().toISOString()
     this.database
       .prepare(`
         INSERT INTO annotations (
           id, session_id, file_path, side, start_line, end_side, end_line,
-          comment, importance, source, intent, archived_at, submitted_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          comment, importance, source, intent, reply_to_id, archived_at, submitted_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         id,
         sessionId,
-        input.filePath,
-        input.side,
-        input.startLine,
-        input.endSide ?? null,
-        input.endLine,
+        parent?.filePath ?? input.filePath,
+        parent?.side ?? input.side,
+        parent?.startLine ?? input.startLine,
+        parent?.endSide ?? input.endSide ?? null,
+        parent?.endLine ?? input.endLine,
         input.comment ?? null,
-        input.importance ?? null,
+        parent == null ? input.importance ?? null : null,
         input.source,
-        input.source === 'user' ? input.intent ?? 'annotation' : 'annotation',
+        parent == null && input.source === 'user' ? input.intent ?? 'annotation' : 'annotation',
+        parent?.id ?? null,
         null,
         null,
         now,
@@ -568,6 +619,13 @@ export class ReviewStore {
         WHERE session_id = ? AND archived_at IS NULL
       `)
       .run(now, now, sessionId)
+    this.database
+      .prepare(`
+        UPDATE global_comments
+        SET archived_at = ?, updated_at = ?
+        WHERE session_id = ? AND archived_at IS NULL
+      `)
+      .run(now, now, sessionId)
     return this.getSession(sessionId)
   }
 
@@ -582,14 +640,54 @@ export class ReviewStore {
     return this.getSession(sessionId)
   }
 
-  setGlobalComment(sessionId: string, comment: string): ReviewSession {
+  addGlobalComment(sessionId: string, input: AddGlobalCommentInput): SessionGlobalComment {
+    this.getSession(sessionId)
+    const id = createId('glc')
+    const now = new Date().toISOString()
+    this.database
+      .prepare(`
+        INSERT INTO global_comments (id, session_id, comment, source, archived_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, NULL, ?, ?)
+      `)
+      .run(id, sessionId, input.comment, input.source, now, now)
+    return this.getGlobalComment(id)
+  }
+
+  updateGlobalComment(sessionId: string, commentId: string, comment: string): SessionGlobalComment {
     const result = this.database
-      .prepare('UPDATE sessions SET global_comment = ?, updated_at = ? WHERE id = ?')
-      .run(comment, new Date().toISOString(), sessionId)
+      .prepare(`
+        UPDATE global_comments
+        SET comment = ?, updated_at = ?
+        WHERE id = ? AND session_id = ? AND source = 'user'
+      `)
+      .run(comment, new Date().toISOString(), commentId, sessionId)
     if (result.changes === 0) {
-      throw new AppError('SESSION_NOT_FOUND', `Review session not found: ${sessionId}`, 404)
+      throw new AppError(
+        'GLOBAL_COMMENT_NOT_EDITABLE',
+        `User global comment not found: ${commentId}`,
+        404,
+      )
     }
-    return this.getSession(sessionId)
+    return this.getGlobalComment(commentId)
+  }
+
+  setGlobalCommentArchived(
+    sessionId: string,
+    commentId: string,
+    archived: boolean,
+  ): SessionGlobalComment {
+    const now = new Date().toISOString()
+    const result = this.database
+      .prepare(`
+        UPDATE global_comments
+        SET archived_at = ?, updated_at = ?
+        WHERE id = ? AND session_id = ?
+      `)
+      .run(archived ? now : null, now, commentId, sessionId)
+    if (result.changes === 0) {
+      throw new AppError('GLOBAL_COMMENT_NOT_FOUND', `Global comment not found: ${commentId}`, 404)
+    }
+    return this.getGlobalComment(commentId)
   }
 
   deleteAnnotation(sessionId: string, annotationId: string): void {
@@ -614,6 +712,21 @@ export class ReviewStore {
       .prepare('SELECT * FROM annotations WHERE session_id = ? ORDER BY created_at ASC')
       .all(sessionId) as unknown as AnnotationRow[]
     return rows.map(annotationFromRow)
+  }
+
+  private getGlobalComment(id: string): SessionGlobalComment {
+    const row = this.database
+      .prepare('SELECT * FROM global_comments WHERE id = ?')
+      .get(id) as unknown as GlobalCommentRow | undefined
+    if (row == null) throw new AppError('GLOBAL_COMMENT_NOT_FOUND', `Global comment not found: ${id}`, 404)
+    return globalCommentFromRow(row)
+  }
+
+  private globalCommentsForSession(sessionId: string): SessionGlobalComment[] {
+    const rows = this.database
+      .prepare('SELECT * FROM global_comments WHERE session_id = ? ORDER BY created_at ASC')
+      .all(sessionId) as unknown as GlobalCommentRow[]
+    return rows.map(globalCommentFromRow)
   }
 
   private migrateSessionsTable(): void {
@@ -647,6 +760,29 @@ export class ReviewStore {
     }
     if (!columns.some((column) => column.name === 'global_comment')) {
       this.database.exec('ALTER TABLE sessions ADD COLUMN global_comment TEXT')
+    }
+    if (!columns.some((column) => column.name === 'global_comment_source')) {
+      this.database.exec(
+        "ALTER TABLE sessions ADD COLUMN global_comment_source TEXT CHECK(global_comment_source IN ('user', 'agent'))",
+      )
+      this.database.exec(
+        "UPDATE sessions SET global_comment_source = 'user' WHERE global_comment IS NOT NULL",
+      )
+    }
+    if (!columns.some((column) => column.name === 'global_comment_archived_at')) {
+      this.database.exec('ALTER TABLE sessions ADD COLUMN global_comment_archived_at TEXT')
+    }
+    if (!columns.some((column) => column.name === 'agent_global_comment')) {
+      this.database.exec('ALTER TABLE sessions ADD COLUMN agent_global_comment TEXT')
+      this.database.exec('ALTER TABLE sessions ADD COLUMN agent_global_comment_archived_at TEXT')
+      this.database.exec(`
+        UPDATE sessions
+        SET agent_global_comment = global_comment,
+            agent_global_comment_archived_at = global_comment_archived_at,
+            global_comment = NULL,
+            global_comment_archived_at = NULL
+        WHERE global_comment_source = 'agent'
+      `)
     }
     if (!columns.some((column) => column.name === 'revision_base_oid')) {
       this.database.exec('ALTER TABLE sessions ADD COLUMN revision_base_oid TEXT')
@@ -693,6 +829,60 @@ export class ReviewStore {
     if (!columns.some((column) => column.name === 'submitted_at')) {
       this.database.exec('ALTER TABLE annotations ADD COLUMN submitted_at TEXT')
     }
+    if (!columns.some((column) => column.name === 'reply_to_id')) {
+      this.database.exec(
+        'ALTER TABLE annotations ADD COLUMN reply_to_id TEXT REFERENCES annotations(id) ON DELETE CASCADE',
+      )
+    }
+  }
+
+  private migrateGlobalCommentsTable(): void {
+    const sessions = this.database
+      .prepare(`
+        SELECT id, global_comment, global_comment_source, global_comment_archived_at,
+               agent_global_comment, agent_global_comment_archived_at, created_at, updated_at
+        FROM sessions
+        WHERE (global_comment IS NOT NULL OR agent_global_comment IS NOT NULL)
+          AND NOT EXISTS (SELECT 1 FROM global_comments WHERE session_id = sessions.id)
+      `)
+      .all() as unknown as Array<{
+        id: string
+        global_comment: string | null
+        global_comment_source: 'user' | 'agent' | null
+        global_comment_archived_at: string | null
+        agent_global_comment: string | null
+        agent_global_comment_archived_at: string | null
+        created_at: string
+        updated_at: string
+      }>
+    const insert = this.database.prepare(`
+      INSERT INTO global_comments (id, session_id, comment, source, archived_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `)
+    for (const session of sessions) {
+      if (session.global_comment != null) {
+        insert.run(
+          createId('glc'),
+          session.id,
+          session.global_comment,
+          session.global_comment_source === 'agent' ? 'agent' : 'user',
+          session.global_comment_archived_at,
+          session.created_at,
+          session.updated_at,
+        )
+      }
+      if (session.agent_global_comment != null) {
+        insert.run(
+          createId('glc'),
+          session.id,
+          session.agent_global_comment,
+          'agent',
+          session.agent_global_comment_archived_at,
+          session.created_at,
+          session.updated_at,
+        )
+      }
+    }
   }
 
   private sessionFromRow(row: SessionRow): ReviewSession {
@@ -709,7 +899,7 @@ export class ReviewStore {
       selectedCommitStart: row.selected_commit_start,
       selectedCommitEnd: row.selected_commit_end,
       annotations: this.annotationsForSession(row.id),
-      globalComment: row.global_comment,
+      globalComments: this.globalCommentsForSession(row.id),
       viewedFiles: JSON.parse(row.viewed_files_json) as string[],
       ignoreWhitespace: row.ignore_whitespace === 1,
       revisionBaseOid: row.revision_base_oid,
@@ -758,8 +948,21 @@ function annotationFromRow(row: AnnotationRow): SessionAnnotation {
     importance: row.importance,
     source: row.source,
     intent: row.intent,
+    replyToId: row.reply_to_id,
     archivedAt: row.archived_at,
     submittedAt: row.submitted_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+function globalCommentFromRow(row: GlobalCommentRow): SessionGlobalComment {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    comment: row.comment,
+    source: row.source,
+    archivedAt: row.archived_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { runCommand } from './command.js'
-import { readFile, realpath } from 'node:fs/promises'
+import { lstat, readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
 
 import {
@@ -28,6 +28,7 @@ export interface ResolvedReview {
   newSnapshot: SnapshotRef
   commits: CommitSummary[]
   unstagedPaths?: string[]
+  fingerprint?: string
 }
 
 
@@ -98,7 +99,51 @@ export async function resolveTarget(
   if (targetSupportsStaging(target)) {
     resolved.unstagedPaths = await listUnstagedPaths(root)
   }
+  resolved.fingerprint = await computeReviewFingerprint(root, target)
   return resolved
+}
+
+export function storedReviewFingerprint(resolved: ResolvedReview): string | null {
+  if (resolved.fingerprint != null && resolved.fingerprint.length > 0) return resolved.fingerprint
+  if (resolved.oldSnapshot.kind === 'commit' && resolved.newSnapshot.kind === 'commit') {
+    return `range:${resolved.oldSnapshot.id}:${resolved.newSnapshot.id}`
+  }
+  if (resolved.oldSnapshot.kind === 'commit' && resolved.newSnapshot.kind === 'index') {
+    return `staged:${resolved.oldSnapshot.id}:${resolved.newSnapshot.id}`
+  }
+  return null
+}
+
+export async function computeReviewFingerprint(
+  repositoryPath: string,
+  target: ReviewTarget,
+): Promise<string> {
+  const root = await resolveRepository(repositoryPath)
+  switch (target.kind) {
+    case 'range':
+      return rangeFingerprint(root, target.expression)
+    case 'pr':
+      return `pr:${target.number}`
+    case 'staged': {
+      const head = await resolveCommit(root, 'HEAD')
+      return `staged:${head}:${await indexTreeId(root)}`
+    }
+    case 'unstaged':
+      return `unstaged:${await indexTreeId(root)}:${await worktreeContentDigest(root)}`
+    case 'worktree': {
+      const head = await resolveCommit(root, 'HEAD')
+      return `worktree:${head}:${await indexTreeId(root)}:${await worktreeContentDigest(root)}`
+    }
+    case 'branch-worktree': {
+      const defaultBranch = await resolveDefaultBranch(root)
+      const head = await resolveCommit(root, 'HEAD')
+      const base =
+        defaultBranch == null
+          ? ''
+          : (await runGit(root, ['merge-base', defaultBranch, head])).stdout.trim()
+      return `branch-worktree:${base}:${head}:${await indexTreeId(root)}:${await worktreeContentDigest(root)}`
+    }
+  }
 }
 
 export async function rerenderCommitReview(
@@ -554,6 +599,71 @@ async function untrackedPatch(root: string, ignoreWhitespace: boolean): Promise<
     patch += result.stdout
   }
   return patch
+}
+
+async function rangeFingerprint(root: string, rawExpression: string): Promise<string> {
+  const expression = rawExpression.trim()
+  if (expression.length === 0 || /\s/.test(expression)) {
+    throw new AppError('INVALID_RANGE', 'Revision range must be one Git revision expression without spaces')
+  }
+
+  if (expression.includes('...')) {
+    const [left, right, extra] = expression.split('...')
+    if (extra != null || !left || !right) {
+      throw new AppError('INVALID_RANGE', `Invalid merge-base range: ${expression}`)
+    }
+    const leftOid = await resolveCommit(root, left)
+    const headRevision = await resolveCommit(root, right)
+    const baseRevision = (await runGit(root, ['merge-base', leftOid, headRevision])).stdout.trim()
+    return `range:${baseRevision}:${headRevision}`
+  }
+
+  if (expression.includes('..')) {
+    const [left, right, extra] = expression.split('..')
+    if (extra != null || !left || !right) {
+      throw new AppError('INVALID_RANGE', `Invalid revision range: ${expression}`)
+    }
+    return `range:${await resolveCommit(root, left)}:${await resolveCommit(root, right)}`
+  }
+
+  const headRevision = await resolveCommit(root, expression)
+  const baseRevision = await firstParentOrEmptyTree(root, expression)
+  return `range:${baseRevision}:${headRevision}`
+}
+
+async function worktreeContentDigest(root: string): Promise<string> {
+  const paths = splitNullPaths(
+    (
+      await runGit(root, [
+        '-c',
+        'core.quotePath=false',
+        'ls-files',
+        '-z',
+        '-m',
+        '-d',
+        '-o',
+        '--exclude-standard',
+      ])
+    ).stdout,
+  )
+  const parts = await Promise.all(
+    paths.map(async (file) => {
+      const hashed = await runGit(root, ['hash-object', '--', file], true)
+      const digest = hashed.exitCode === 0 ? hashed.stdout.trim() : 'missing'
+      const mode = await worktreeFileMode(root, file)
+      return `${file}:${mode}:${digest}`
+    }),
+  )
+  parts.sort()
+  return contentId(parts.join('\n'))
+}
+
+async function worktreeFileMode(root: string, file: string): Promise<string> {
+  try {
+    return ((await lstat(path.join(root, file))).mode & 0o777).toString(8)
+  } catch {
+    return 'missing'
+  }
 }
 
 async function listUnstagedPaths(root: string): Promise<string[]> {

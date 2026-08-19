@@ -6,7 +6,14 @@ import { homedir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import type { ApiErrorShape, PiReviewRun, ReviewSession, ReviewTarget, SessionAnnotation } from '../shared/types.js'
+import type {
+  ApiErrorShape,
+  PiReviewRun,
+  ReviewSession,
+  ReviewTarget,
+  SessionAnnotation,
+  SessionGlobalComment,
+} from '../shared/types.js'
 import { DEFAULT_HOST, DEFAULT_PORT, serveDaemon } from './daemon.js'
 import { AppError, errorMessage } from './errors.js'
 
@@ -38,10 +45,15 @@ async function main(): Promise<void> {
   }
 
   if (args[0] === 'annotate') {
+    if (wantsHelp(args.slice(1))) {
+      printHelp()
+      return
+    }
     await ensureDaemon()
     const result = await addAnnotation(args.slice(1))
-    if (result.json) console.log(JSON.stringify(result.annotation, null, 2))
-    else console.log(`Added annotation ${result.annotation.id}`)
+    if (result.json) console.log(JSON.stringify(result.payload, null, 2))
+    else if (result.kind === 'global') console.log(`Added global comment ${result.payload.id}`)
+    else console.log(`Added annotation ${result.payload.id}`)
     return
   }
 
@@ -59,7 +71,7 @@ async function main(): Promise<void> {
 async function createSession(args: string[]): Promise<{ session: ReviewSession; json: boolean }> {
   const parsed = parseArgs(args)
   const repositoryPath = stringFlag(parsed, 'repo') ?? process.cwd()
-  const target = targetFromArguments(parsed)
+  const target = await targetFromArguments(parsed, repositoryPath)
   const session = await requestJson<ReviewSession>('/api/sessions', {
     method: 'POST',
     body: JSON.stringify({ repositoryPath, target }),
@@ -69,25 +81,47 @@ async function createSession(args: string[]): Promise<{ session: ReviewSession; 
 
 async function addAnnotation(
   args: string[],
-): Promise<{ annotation: SessionAnnotation; json: boolean }> {
+): Promise<
+  | { kind: 'line'; payload: SessionAnnotation; json: boolean }
+  | { kind: 'global'; payload: SessionGlobalComment; json: boolean }
+> {
   const parsed = parseArgs(args)
   const sessionId = parsed.positionals[0]
   if (!sessionId) throw new AppError('INVALID_ARGUMENTS', 'annotate requires a session ID')
   const filePath = stringFlag(parsed, 'file')
-  if (!filePath) throw new AppError('INVALID_ARGUMENTS', 'annotate requires --file <path>')
-
   const oldLine = stringFlag(parsed, 'old-line')
   const newLine = stringFlag(parsed, 'new-line')
-  if ((oldLine == null) === (newLine == null)) {
-    throw new AppError('INVALID_ARGUMENTS', 'Use exactly one of --old-line or --new-line')
-  }
-  const range = parseLineRange(oldLine ?? newLine ?? '')
   const comment = stringFlag(parsed, 'comment')
   const importanceValue = stringFlag(parsed, 'importance')
   const importance = importanceValue == null ? undefined : Number(importanceValue)
   if (importance != null && (!Number.isFinite(importance) || importance < 0 || importance > 1)) {
     throw new AppError('INVALID_ARGUMENTS', '--importance must be a number between 0 and 1')
   }
+
+  const hasFile = filePath != null
+  const hasLine = oldLine != null || newLine != null
+  if (!hasFile && !hasLine) {
+    if (comment == null || comment.trim() === '') {
+      throw new AppError('INVALID_ARGUMENTS', 'global annotate requires --comment <text>')
+    }
+    if (importance != null) {
+      throw new AppError('INVALID_ARGUMENTS', 'global annotate does not accept --importance')
+    }
+    const globalComment = await requestJson<SessionGlobalComment>(
+      `/api/sessions/${encodeURIComponent(sessionId)}/global-comments`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ comment, source: 'agent' }),
+      },
+    )
+    return { kind: 'global', payload: globalComment, json: booleanFlag(parsed, 'json') }
+  }
+
+  if (!filePath) throw new AppError('INVALID_ARGUMENTS', 'annotate requires --file <path>')
+  if ((oldLine == null) === (newLine == null)) {
+    throw new AppError('INVALID_ARGUMENTS', 'Use exactly one of --old-line or --new-line')
+  }
+  const range = parseLineRange(oldLine ?? newLine ?? '')
   if (comment == null && importance == null) {
     throw new AppError('INVALID_ARGUMENTS', 'Use at least one of --comment or --importance')
   }
@@ -107,7 +141,7 @@ async function addAnnotation(
       }),
     },
   )
-  return { annotation, json: booleanFlag(parsed, 'json') }
+  return { kind: 'line', payload: annotation, json: booleanFlag(parsed, 'json') }
 }
 
 async function resumePiReview(runId: string | undefined): Promise<void> {
@@ -147,7 +181,7 @@ async function resumePiReview(runId: string | undefined): Promise<void> {
   }
 }
 
-function targetFromArguments(args: ParsedArgs): ReviewTarget {
+async function targetFromArguments(args: ParsedArgs, repositoryPath: string): Promise<ReviewTarget> {
   if (booleanFlag(args, 'staged')) return { kind: 'staged' }
   if (booleanFlag(args, 'unstaged')) return { kind: 'unstaged' }
   const pullRequest = stringFlag(args, 'pr')
@@ -159,7 +193,20 @@ function targetFromArguments(args: ParsedArgs): ReviewTarget {
     return { kind: 'pr', number }
   }
   const expression = args.positionals[0]
-  return expression == null ? { kind: 'worktree' } : { kind: 'range', expression }
+  if (expression != null) return { kind: 'range', expression }
+  return (await hasUnstagedChanges(repositoryPath))
+    ? { kind: 'unstaged' }
+    : { kind: 'range', expression: 'origin/master...HEAD' }
+}
+
+function hasUnstagedChanges(repositoryPath: string): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', ['-C', repositoryPath, 'diff', '--quiet'], {
+      stdio: 'ignore',
+    })
+    child.on('error', reject)
+    child.on('close', (status) => resolve(status === 1))
+  })
 }
 
 async function ensureDaemon(): Promise<void> {
@@ -245,7 +292,7 @@ interface ParsedArgs {
 
 function parseArgs(args: string[]): ParsedArgs {
   const result: ParsedArgs = { positionals: [], flags: new Map() }
-  const booleanFlags = new Set(['json', 'staged', 'unstaged'])
+  const booleanFlags = new Set(['json', 'staged', 'unstaged', 'help'])
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index] ?? ''
     if (!argument.startsWith('--')) {
@@ -299,20 +346,27 @@ function printSession(session: ReviewSession, json: boolean): void {
   console.log(`Open: ${BASE_URL}/s/${session.id}`)
 }
 
+function wantsHelp(args: string[]): boolean {
+  return args.some((argument) => argument === '--help' || argument === '-h' || argument === 'help')
+}
+
 function printHelp(): void {
   console.log(`Usage:
   diff-review [revision-range] [--repo <path>]
   diff-review --staged | --unstaged | --pr <number>
   diff-review session create [revision-range] [--repo <path>] [--json]
   diff-review pi resume <run-id>
+  diff-review annotate <session-id> --comment <text> [--json]
   diff-review annotate <session-id> --file <path> \\
     (--old-line <line[-end]> | --new-line <line[-end]>) \\
     [--comment <text>] [--importance <0..1>] [--json]
 
 Examples:
+  diff-review
   diff-review origin/master...HEAD
   diff-review session create --pr 42 --json
   diff-review pi resume pir_abc123
+  diff-review annotate drs_abc123 --comment "Summary of the change"
   diff-review annotate drs_abc123 --file src/retry.ts --new-line 42-48 \\
     --comment "Generated code; safe to skim" --importance 0
 `)

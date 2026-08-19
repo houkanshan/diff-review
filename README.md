@@ -15,7 +15,7 @@ npm link
 Open a review from any Git repository:
 
 ```bash
-# All staged, unstaged, and untracked changes
+# Unstaged changes, or origin/master...HEAD when the worktree is clean
 diff-review
 
 diff-review --unstaged
@@ -38,9 +38,10 @@ diff-review session create --repo . origin/master...HEAD
 
 The same repository and resolved commit range (`base...head`) reuse the existing local session, so later `session create` calls keep the same ID and annotations. A new session is opened when those commit SHAs change. Pull requests still open a new session when the base or head revision changes.
 
-Alternatively, copy the session ID from the browser. The agent can keep inspecting changes with ordinary `git diff`, then annotate lines in changed files with one command:
+Alternatively, copy the session ID from the browser. The agent can keep inspecting changes with ordinary `git diff`, then add a global summary or line notes:
 
 ```bash
+diff-review annotate drs_abc123 --comment "Retry now covers every 5xx"
 diff-review annotate drs_abc123 \
   --file src/retry.ts \
   --new-line 42-48 \
@@ -48,7 +49,7 @@ diff-review annotate drs_abc123 \
   --importance 1
 ```
 
-Use exactly one of `--new-line` or `--old-line`. `--comment` and `--importance` are independently optional, but at least one is required.
+Omit `--file` and line flags to add a session global comment. You can add more than one. For a line annotation, use exactly one of `--new-line` or `--old-line`. `--comment` and `--importance` are independently optional on line annotations, but at least one is required.
 
 Importance controls only the changed-line background:
 

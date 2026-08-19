@@ -88,6 +88,11 @@ function annotation(importance: number | null): SessionAnnotation {
     comment: null,
     importance,
     source: 'agent',
+    intent: 'annotation',
+    replyToId: null,
+    endSide: null,
+    archivedAt: null,
+    submittedAt: null,
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
   }

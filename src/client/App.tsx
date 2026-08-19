@@ -12,6 +12,7 @@ import {
   parsePatchFiles,
 } from '@pierre/diffs'
 import { parseReviewCommentDiff } from '../shared/reviewCommentDiff'
+import { compareReviewFilePaths, compareReviewPathEntries } from './reviewFileOrder'
 import { Checkbox } from '@base-ui/react/checkbox'
 import { Menu } from '@base-ui/react/menu'
 import { Popover } from '@base-ui/react/popover'
@@ -50,6 +51,9 @@ import {
   UserMinus as UserMinusIcon,
   UserPlus as UserPlusIcon,
   History as HistoryIcon,
+  Reply as ReplyIcon,
+  FoldVertical as CollapseFilesIcon,
+  UnfoldVertical as ExpandFilesIcon,
   TextWrap as WrapIcon,
   CircleCheck,
 } from 'lucide-react'
@@ -99,9 +103,11 @@ import type {
   SessionAnnotation,
 } from '../shared/types'
 import { pullRequestAllowsReviewEvent } from '../shared/pull-request'
+import { annotationThreads } from '../shared/annotationThreads'
 import { groupConversationActivities, type ReviewCommentThread } from '../shared/pullRequestActivity'
 import {
   addAnnotation,
+  addGlobalComment,
   addPullRequestComment,
   archiveAllAnnotations,
   createSession,
@@ -113,12 +119,14 @@ import {
   getPullRequests,
   getRepositoryInfo,
   getSession,
+  getSessionFreshness,
   getSessions,
   openPullRequest,
   removePullRequestLabel,
   refreshSession,
   selectCommits,
   setAnnotationArchived,
+  setGlobalCommentArchived,
   setFileViewed,
   setIgnoreWhitespace,
   stageFile,
@@ -128,7 +136,7 @@ import {
   updateAnnotationComment,
   updateGlobalComment,
 } from './api'
-import { applyImportance } from './importance'
+import { applyHoveredRange, applyImportance } from './importance'
 import { formatTimestamp, relativeTime, relativeTimeAgo } from './time'
 import { DifftasticView, scrollDifftasticTarget } from './DifftasticView'
 import { ShortcutTooltip } from './ShortcutTooltip'
@@ -411,7 +419,16 @@ function PullRequestsPage({
   })
   const pullRequestsQuery = useQuery({
     queryKey: ['pull-requests', route.repositoryPath, view],
-    queryFn: () => getPullRequests(route.repositoryPath, view),
+    staleTime: 0,
+    queryFn: async () => {
+      const list = await getPullRequests(route.repositoryPath, view)
+      if (list.stale) {
+        void getPullRequests(route.repositoryPath, view, { fresh: true }).then((fresh) => {
+          queryClient.setQueryData(['pull-requests', route.repositoryPath, view], fresh)
+        }).catch(() => undefined)
+      }
+      return list
+    },
   })
   const workspaceQuery = useQuery({
     queryKey: workspaceKey,
@@ -423,7 +440,7 @@ function PullRequestsPage({
         }),
   })
   const repository = repositoryQuery.data ?? null
-  const pullRequests = pullRequestsQuery.data ?? []
+  const pullRequests = pullRequestsQuery.data?.items ?? []
   const workspace = workspaceQuery.data
   const details = workspace?.details ?? null
   const session = workspace?.selectedSession ?? null
@@ -721,6 +738,7 @@ function ReviewWorkspace({
     diff: 0,
   })
   const [selection, setSelection] = useState<CodeViewLineSelection | null>(null)
+  const [hoveredAnnotationId, setHoveredAnnotationId] = useState<string | null>(null)
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null)
   const [composerSelection, setComposerSelection] = useAtom(composerSelectionAtom)
   const setComposerDraft = useSetAtom(composerDraftAtom)
@@ -740,10 +758,15 @@ function ReviewWorkspace({
   const composerSelectionRef = useRef(composerSelection)
   const onReloadRef = useRef(onReload)
   const annotationsRef = useRef(session.annotations)
+  const hoveredAnnotationRef = useRef<SessionAnnotation | null>(null)
   const sessionContentsRef = useRef({ id: session.id, contentKey: patchContentKey(session.patch) })
   composerSelectionRef.current = composerSelection
   onReloadRef.current = onReload
   annotationsRef.current = session.annotations
+  hoveredAnnotationRef.current =
+    hoveredAnnotationId == null
+      ? null
+      : session.annotations.find((annotation) => annotation.id === hoveredAnnotationId) ?? null
   sessionContentsRef.current = { id: session.id, contentKey: patchContentKey(session.patch) }
 
   useDocumentChrome(
@@ -805,7 +828,7 @@ function ReviewWorkspace({
       for (const file of files) {
         file.cacheKey = `${session.id}:${contentKey}:${file.name}`
       }
-      return files
+      return files.sort((left, right) => compareReviewFilePaths(left.name, right.name))
     } catch (caught) {
       console.error('Could not parse diff', caught)
       return []
@@ -818,6 +841,30 @@ function ReviewWorkspace({
       store.set(fileViewedAtom(file.name), viewedFiles.has(file.name))
     }
   }, [collapsedFiles, parsedFiles, store, viewedFiles])
+
+  const filePaths = useMemo(
+    () => parsedFiles.map((file) => file.name),
+    [parsedFiles],
+  )
+  const viewedFilePaths = useMemo(
+    () => filePaths.filter((name) => viewedFiles.has(name)),
+    [filePaths, viewedFiles],
+  )
+  const anyFileExpanded = filePaths.some((name) => !collapsedFiles.has(name))
+  const anyViewedExpanded = viewedFilePaths.some((name) => !collapsedFiles.has(name))
+  const setFilesCollapsed = useCallback((paths: readonly string[], collapsed: boolean) => {
+    for (const filePath of paths) {
+      store.set(fileCollapsedAtom(filePath), collapsed)
+    }
+    setCollapsedFiles((current) => {
+      const next = new Set(current)
+      for (const filePath of paths) {
+        if (collapsed) next.add(filePath)
+        else next.delete(filePath)
+      }
+      return next
+    })
+  }, [store])
 
   const items = useMemo<CodeViewItem<ReviewLineAnnotation>[]>(() => {
     const nextItems = buildCodeViewItems(
@@ -856,7 +903,6 @@ function ReviewWorkspace({
       lineHoverHighlight: 'both',
       hunkSeparators: 'line-info-basic',
       stickyHeaders: true,
-      unsafeCSS: '[data-diffs-header="default"] { cursor: pointer; }',
       layout: { paddingTop: 0, paddingBottom: 0, gap: 0 },
       collapsedContextThreshold: 10,
       expansionLineCount: 20,
@@ -901,7 +947,15 @@ function ReviewWorkspace({
       },
       onPostRender(node, _instance, phase, context) {
         applyImportance(node, phase, context, annotationsRef.current)
+        if (phase !== 'unmount') {
+          applyHoveredRange(node, context, hoveredAnnotationRef.current)
+        }
       },
+      unsafeCSS: [
+        '[data-diffs-header="default"] { cursor: pointer; }',
+        '[data-code] { scrollbar-gutter: auto; }',
+        '[data-review-hover] { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 50%, transparent); background-image: linear-gradient(color-mix(in srgb, var(--accent) 8%, transparent), color-mix(in srgb, var(--accent) 8%, transparent)); }',
+      ].join(' '),
     }),
     [layout, openComposer, overflow, resolvedTheme],
   )
@@ -913,6 +967,17 @@ function ReviewWorkspace({
     }
     setSelection(next)
   }, [setComposerDraft, setComposerSelection])
+
+  useEffect(() => {
+    const root = diffWorkspaceRef.current
+    if (root == null) return
+    const hovered = hoveredAnnotationRef.current
+    for (const node of root.querySelectorAll<HTMLElement>('diffs-container')) {
+      const fileId = node.querySelector('[data-file-id]')?.getAttribute('data-file-id')
+      if (fileId == null) continue
+      applyHoveredRange(node, { item: { id: fileId } }, hovered)
+    }
+  }, [hoveredAnnotationId, session.annotations])
 
   const setArchived = useCallback(async (annotationId: string, archived: boolean) => {
     await setAnnotationArchived(session.id, annotationId, archived)
@@ -931,9 +996,20 @@ function ReviewWorkspace({
     await onReload()
   }, [onReload, session.id])
 
-  const editGlobalComment = useCallback(async (nextComment: string) => {
-    onSessionChange(await updateGlobalComment(session.id, nextComment))
-  }, [onSessionChange, session.id])
+  const addUserGlobalComment = useCallback(async (nextComment: string) => {
+    await addGlobalComment(session.id, nextComment)
+    await onReload()
+  }, [onReload, session.id])
+
+  const editGlobalComment = useCallback(async (commentId: string, nextComment: string) => {
+    await updateGlobalComment(session.id, commentId, nextComment)
+    await onReload()
+  }, [onReload, session.id])
+
+  const archiveGlobalComment = useCallback(async (commentId: string, archived: boolean) => {
+    await setGlobalCommentArchived(session.id, commentId, archived)
+    await onReload()
+  }, [onReload, session.id])
 
   const archiveAll = useCallback(async () => {
     onSessionChange(await archiveAllAnnotations(session.id))
@@ -944,8 +1020,18 @@ function ReviewWorkspace({
     store.set(fileViewedAtom(filePath), viewed)
     setFileCollapsed(filePath, viewed)
     onSessionChange(updated)
+    const syncFinderFromPointer = () => {
+      const pointer = lastPointerRef.current
+      const next = pointer != null ? fileIdAtClientPoint(pointer.x, pointer.y) : null
+      if (next != null) {
+        setActiveFilePath((current) => current === next ? current : next)
+      }
+    }
+    // Collapse height updates after paint; one extra frame lets hit-test see the new file.
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(syncFinderFromPointer)
+    })
   }, [onSessionChange, session.id, setFileCollapsed, store])
-
   const addFile = useCallback(async (filePath: string) => {
     onSessionChange(await stageFile(session.id, filePath))
   }, [onSessionChange, session.id])
@@ -986,18 +1072,45 @@ function ReviewWorkspace({
     ) : (
       <InlineAnnotation
         annotation={metadata.annotation}
-        onArchive={() => setArchived(metadata.annotation.id, true)}
-        onUpdateComment={(comment, intent) => editAnnotation(metadata.annotation.id, comment, intent)}
+        onHover={setHoveredAnnotationId}
+        replies={session.annotations.filter((item) =>
+          item.replyToId === metadata.annotation.id &&
+          item.archivedAt == null &&
+          item.comment != null
+        )}
+        onArchive={(annotationId) => setArchived(annotationId, true)}
+        onUpdateComment={editAnnotation}
+        onReply={metadata.annotation.source === 'agent' && metadata.annotation.replyToId == null
+          ? (comment) => addAnnotation(session.id, {
+              filePath: metadata.annotation.filePath,
+              side: metadata.annotation.side,
+              startLine: metadata.annotation.startLine,
+              endSide: metadata.annotation.endSide ?? undefined,
+              endLine: metadata.annotation.endLine,
+              comment,
+              source: 'user',
+              replyToId: metadata.annotation.id,
+            }).then(() => onReloadRef.current())
+          : undefined}
       />
     )
-  }, [closeComposer, editAnnotation, handleComposerSubmitted, setArchived])
+  }, [editAnnotation, session.annotations, session.id, setArchived])
 
   useEffect(() => {
     const onPointerMove = (event: PointerEvent) => {
       lastPointerRef.current = { x: event.clientX, y: event.clientY }
     }
+    const clearPointer = () => {
+      lastPointerRef.current = null
+    }
     window.addEventListener('pointermove', onPointerMove)
-    return () => window.removeEventListener('pointermove', onPointerMove)
+    document.addEventListener('pointerleave', clearPointer)
+    window.addEventListener('blur', clearPointer)
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove)
+      document.removeEventListener('pointerleave', clearPointer)
+      window.removeEventListener('blur', clearPointer)
+    }
   }, [])
 
   useHotkey('V', () => {
@@ -1023,10 +1136,37 @@ function ReviewWorkspace({
     },
   })
 
+  const [refreshAvailable, setRefreshAvailable] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    const check = async () => {
+      if (document.visibilityState === 'hidden') return
+      try {
+        const { stale } = await getSessionFreshness(session.id)
+        if (!cancelled) setRefreshAvailable(stale)
+      } catch {
+        if (!cancelled) setRefreshAvailable(false)
+      }
+    }
+    void check()
+    const timer = window.setInterval(check, 10_000)
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') void check()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [session.id])
+
   const refresh = useCallback(async () => {
     setBusy(true)
     try {
       const updated = await refreshSession(session.id)
+      setRefreshAvailable(false)
       if (updated.id === session.id) onSessionChange(updated)
       else onOpenSession(updated.id)
     } finally {
@@ -1049,6 +1189,7 @@ function ReviewWorkspace({
       `Repository: ${session.repositoryRoot}`,
       `Review with: ${session.gitCommand}`,
       '',
+      `Add a summary with: diff-review annotate ${session.id} --comment <text>`,
       `Add notes with: diff-review annotate ${session.id} --file <path> --new-line <line[-end]> --comment <text> --importance <0..1>`,
     ].join('\n')
     await navigator.clipboard.writeText(text)
@@ -1173,6 +1314,14 @@ function ReviewWorkspace({
         <div className="topbar-spacer" />
         {(pullRequest == null || pullRequestView === 'diff') && (
           <>
+            <FoldFilesMenu
+              anyFileExpanded={anyFileExpanded}
+              anyViewedExpanded={anyViewedExpanded}
+              fileCount={filePaths.length}
+              viewedCount={viewedFilePaths.length}
+              onToggleAll={() => setFilesCollapsed(filePaths, anyFileExpanded)}
+              onToggleViewed={() => setFilesCollapsed(viewedFilePaths, anyViewedExpanded)}
+            />
             <ToggleGroup
               className="layout-switch"
               aria-label="Diff layout"
@@ -1208,8 +1357,14 @@ function ReviewWorkspace({
           </>
         )}
         <ThemePicker value={themePreference} onChange={onThemeChange} />
-        <button className="icon-button" onClick={refresh} aria-label="Refresh diff" disabled={busy}>
+        <button
+          className="icon-button"
+          onClick={refresh}
+          aria-label={refreshAvailable ? 'Refresh diff, updates available' : 'Refresh diff'}
+          disabled={busy}
+        >
           <RefreshIcon className={busy ? 'spinning' : ''} />
+          {refreshAvailable ? <span className="icon-button-badge" aria-hidden="true" /> : null}
         </button>
         {pullRequest == null ? (
           <button className="agent-button" onClick={copyForAgent}>
@@ -1275,6 +1430,7 @@ function ReviewWorkspace({
         >
           <FileRail
             files={parsedFiles}
+            viewedFiles={viewedFiles}
             resolvedTheme={resolvedTheme}
             activeFilePath={activeFilePath}
             onSelect={selectFile}
@@ -1308,6 +1464,8 @@ function ReviewWorkspace({
                 files={parsedFiles}
                 layout={layout}
                 resolvedTheme={resolvedTheme}
+                hoveredAnnotationId={hoveredAnnotationId}
+                onHoverAnnotation={setHoveredAnnotationId}
                 collapsedFiles={collapsedFiles}
                 viewedFiles={viewedFiles}
                 onToggleCollapsed={(filePath) => {
@@ -1355,10 +1513,13 @@ function ReviewWorkspace({
             piStatus={pullRequest?.piStatus}
             onSetArchived={setArchived}
             onUpdateComment={editAnnotation}
+            onReload={onReload}
+            onAddGlobalComment={addUserGlobalComment}
             onUpdateGlobalComment={editGlobalComment}
-            allowGlobalComment={pullRequest == null}
+            onSetGlobalArchived={archiveGlobalComment}
             onArchiveAll={archiveAll}
             onOpenSession={onOpenSession}
+            onHoverAnnotation={setHoveredAnnotationId}
             onNavigate={(annotation) => {
               const fileId = fileIdForAnnotation(annotation, parsedFiles)
               setActiveFilePath(fileId)
@@ -1440,6 +1601,131 @@ function PanelResizeHandle({
         onChange(Math.min(max, Math.max(min, next)))
       }}
     />
+  )
+}
+
+function FoldFilesMenu({
+  anyFileExpanded,
+  anyViewedExpanded,
+  fileCount,
+  viewedCount,
+  onToggleAll,
+  onToggleViewed,
+}: {
+  anyFileExpanded: boolean
+  anyViewedExpanded: boolean
+  fileCount: number
+  viewedCount: number
+  onToggleAll(): void
+  onToggleViewed(): void
+}) {
+  const [open, setOpen] = useState(false)
+  const [focusOnOpen, setFocusOnOpen] = useState(false)
+  const openTimerRef = useRef(0)
+  const closeTimerRef = useRef(0)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const defaultLabel = anyFileExpanded ? 'Collapse all' : 'Expand all'
+  const viewedLabel = anyViewedExpanded ? 'Collapse viewed' : 'Expand viewed'
+
+  const clearHoverTimers = useCallback(() => {
+    window.clearTimeout(openTimerRef.current)
+    window.clearTimeout(closeTimerRef.current)
+  }, [])
+
+  const focusMenuItem = useCallback((index: number) => {
+    const items = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])]
+    if (items.length === 0) return
+    items[(index + items.length) % items.length]?.focus()
+  }, [])
+
+  const openMenuFromKeyboard = useCallback(() => {
+    clearHoverTimers()
+    setFocusOnOpen(true)
+    setOpen(true)
+  }, [clearHoverTimers])
+
+  useLayoutEffect(() => {
+    if (!open || !focusOnOpen) return
+    setFocusOnOpen(false)
+    focusMenuItem(0)
+  }, [focusMenuItem, focusOnOpen, open])
+
+  const closeMenuToTrigger = useCallback(() => {
+    clearHoverTimers()
+    setOpen(false)
+    triggerRef.current?.focus()
+  }, [clearHoverTimers])
+
+  useEffect(() => clearHoverTimers, [clearHoverTimers])
+
+  return (
+    <div
+      className="fold-files-control"
+      onMouseEnter={() => {
+        clearHoverTimers()
+        openTimerRef.current = window.setTimeout(() => setOpen(true), 100)
+      }}
+      onMouseLeave={() => {
+        clearHoverTimers()
+        closeTimerRef.current = window.setTimeout(() => setOpen(false), 160)
+      }}
+      onBlur={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
+        clearHoverTimers()
+        setOpen(false)
+      }}
+    >
+      <button
+        ref={triggerRef}
+        type="button"
+        className="icon-button"
+        aria-label={defaultLabel}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        disabled={fileCount === 0}
+        onClick={onToggleAll}
+        onKeyDown={(event) => {
+          if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+          event.preventDefault()
+          openMenuFromKeyboard()
+        }}
+      >
+        {anyFileExpanded ? <CollapseFilesIcon /> : <ExpandFilesIcon />}
+      </button>
+      {open && (
+        <div
+          ref={menuRef}
+          className="fold-files-menu"
+          role="menu"
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              event.preventDefault()
+              closeMenuToTrigger()
+              return
+            }
+            if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+            event.preventDefault()
+            const items = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])]
+            const current = items.indexOf(event.target as HTMLButtonElement)
+            focusMenuItem(current + (event.key === 'ArrowDown' ? 1 : -1))
+          }}
+        >
+          <button type="button" className="fold-files-option" role="menuitem" onClick={onToggleAll}>
+            {defaultLabel}
+          </button>
+          <button
+            type="button"
+            className="fold-files-option"
+            role="menuitem"
+            disabled={viewedCount === 0}
+            onClick={onToggleViewed}
+          >
+            {viewedLabel}
+          </button>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -3423,11 +3709,13 @@ function CommitPicker({
 
 function FileRail({
   files,
+  viewedFiles,
   resolvedTheme,
   activeFilePath,
   onSelect,
 }: {
   files: FileDiffMetadata[]
+  viewedFiles: Set<string>
   resolvedTheme: ResolvedTheme
   activeFilePath: string | null
   onSelect(id: string): void
@@ -3450,7 +3738,7 @@ function FileRail({
   const treeKey = filteredFiles
     .map((file) => {
       const fileStats = stats.get(file.name)!
-      return `${file.name}:${file.type}:${fileStats.additions}:${fileStats.deletions}:${fileStats.modifications}`
+      return `${file.name}:${file.type}:${fileStats.additions}:${fileStats.deletions}:${fileStats.modifications}:${viewedFiles.has(file.name) ? 'v' : 'u'}`
     })
     .join('|')
 
@@ -3485,6 +3773,7 @@ function FileRail({
         <ChangedFileTree
           key={treeKey}
           files={filteredFiles}
+          viewedFiles={viewedFiles}
           stats={stats}
           resolvedTheme={resolvedTheme}
           activeFilePath={activeFilePath}
@@ -3498,14 +3787,40 @@ function FileRail({
   )
 }
 
+function viewedFileGitCss(paths: Iterable<string>) {
+  return [...paths]
+    .map((path) => {
+      const selector = `[data-item-path="${CSS.escape(path)}"][data-item-type="file"]`
+      return `
+        ${selector} > [data-item-section="git"] { position: relative; }
+        ${selector} > [data-item-section="git"] > * { visibility: hidden; }
+        ${selector} > [data-item-section="git"]::after {
+          content: "✓";
+          position: absolute;
+          inset: 0;
+          display: grid;
+          place-items: center;
+          color: var(--green);
+          font-size: 11px;
+          font-weight: 650;
+        }
+        ${selector}:hover > [data-item-section="git"] > * { visibility: visible; }
+        ${selector}:hover > [data-item-section="git"]::after { content: none; }
+      `
+    })
+    .join('')
+}
+
 function ChangedFileTree({
   files,
+  viewedFiles,
   stats,
   resolvedTheme,
   activeFilePath,
   onSelect,
 }: {
   files: FileDiffMetadata[]
+  viewedFiles: Set<string>
   stats: Map<string, FileChangeStats>
   resolvedTheme: ResolvedTheme
   activeFilePath: string | null
@@ -3530,11 +3845,13 @@ function ChangedFileTree({
     paths: files.map((file) => file.name),
     flattenEmptyDirectories: true,
     initialExpansion: 'open',
+    sort: compareReviewPathEntries,
     initialSelectedPaths: activeFilePath != null ? [activeFilePath] : undefined,
     density: 'compact',
     icons: { set: 'standard', colored: false },
     unsafeCSS: `
       [data-item-type="file"] > [data-item-section="icon"] { display: none; }
+      [data-item-type="folder"] > [data-item-section="git"] { display: none; }
       [data-icon-name="file-tree-icon-chevron"] { width: 11px; height: 11px; }
       [data-item-section="content"] { flex: 1 1 auto; }
       [data-item-section="decoration"] {
@@ -3547,6 +3864,7 @@ function ChangedFileTree({
         max-width: none;
         overflow: visible;
       }
+      ${viewedFileGitCss(files.filter((file) => viewedFiles.has(file.name)).map((file) => file.name))}
     `,
     gitStatus,
     onSelectionChange(selectedPaths) {
@@ -3806,11 +4124,14 @@ function Inspector({
   piStatus,
   onSetArchived,
   onUpdateComment,
+  onAddGlobalComment,
   onUpdateGlobalComment,
-  allowGlobalComment,
+  onSetGlobalArchived,
   onArchiveAll,
   onOpenSession,
   onNavigate,
+  onHoverAnnotation,
+  onReload,
 }: {
   session: ReviewSession
   files: FileDiffMetadata[]
@@ -3818,11 +4139,14 @@ function Inspector({
   piStatus?: PiReviewStatus
   onSetArchived(annotationId: string, archived: boolean): Promise<void>
   onUpdateComment(annotationId: string, comment: string, intent?: AnnotationIntent): Promise<void>
-  onUpdateGlobalComment(comment: string): Promise<void>
-  allowGlobalComment: boolean
+  onAddGlobalComment(comment: string): Promise<void>
+  onUpdateGlobalComment(commentId: string, comment: string): Promise<void>
+  onSetGlobalArchived(commentId: string, archived: boolean): Promise<void>
   onArchiveAll(): Promise<void>
   onOpenSession(id: string): void
   onNavigate(annotation: SessionAnnotation): void
+  onHoverAnnotation(annotationId: string | null): void
+  onReload(): Promise<void>
 }) {
   const reviewCommentAvailable = useAtomValue(reviewCommentAvailableAtom)
   const [view, setView] = useState<'active' | 'archived'>('active')
@@ -3830,7 +4154,7 @@ function Inspector({
   const [bulkBusy, setBulkBusy] = useState(false)
   const [commentsCopied, setCommentsCopied] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [globalEditing, setGlobalEditing] = useState(false)
+  const [addingGlobal, setAddingGlobal] = useState(false)
   const notesListRef = useRef<HTMLDivElement>(null)
   const active = session.annotations.filter((annotation) => annotation.archivedAt == null)
   const archived = session.annotations.filter((annotation) => annotation.archivedAt != null)
@@ -3838,10 +4162,13 @@ function Inspector({
     (annotation) => annotation.source === 'user' && Boolean(annotation.comment?.trim()),
   )
   const visible = view === 'active' ? active : archived
-  const showGlobalComment =
-    allowGlobalComment &&
-    view === 'active' &&
-    (session.globalComment != null || globalEditing)
+  const activeGlobals = session.globalComments.filter((comment) => comment.archivedAt == null)
+  const archivedGlobals = session.globalComments.filter((comment) => comment.archivedAt != null)
+  const visibleGlobals = view === 'active' ? activeGlobals : archivedGlobals
+  const userGlobalComments = activeGlobals.filter((comment) => comment.source === 'user')
+  const showGlobalComment = visibleGlobals.length > 0 || addingGlobal
+  const activeCount = active.length + activeGlobals.length
+  const archivedCount = archived.length + archivedGlobals.length
   const piRun = piStatus == null || piStatus.state === 'idle' ? null : piStatus
   const showPiReviewDetails = view === 'active' && piRun != null
 
@@ -3866,26 +4193,24 @@ function Inspector({
             />
           </div>
           <div>
-            {allowGlobalComment &&
-              view === 'active' &&
-              session.globalComment == null &&
-              !globalEditing && (
+            {view === 'active' && !addingGlobal && (
               <AnnotationIconButton
                 label="Add global comment"
-                onClick={() => setGlobalEditing(true)}
+                onClick={() => setAddingGlobal(true)}
               >
                 <AddCommentIcon />
               </AnnotationIconButton>
             )}
-            {((allowGlobalComment && session.globalComment != null) || myComments.length > 0) && (
+            {(userGlobalComments.length > 0 || myComments.length > 0) && (
               <AnnotationIconButton
                 label={commentsCopied ? 'Copied' : 'Copy my comments'}
                 onClick={async () => {
                   await navigator.clipboard.writeText(
                     await formatCommentsForAgent(
                       session.id,
-                      allowGlobalComment ? session.globalComment : null,
+                      userGlobalComments.map((comment) => comment.comment).join('\n\n') || null,
                       myComments,
+                      session.annotations,
                       files,
                     ),
                   )
@@ -3896,7 +4221,7 @@ function Inspector({
                 {commentsCopied ? <CheckIcon /> : <CopyIcon />}
               </AnnotationIconButton>
             )}
-            {view === 'active' && active.length > 0 && (
+            {view === 'active' && activeCount > 0 && (
               <AnnotationIconButton
                 label="Archive all"
                 disabled={bulkBusy}
@@ -3912,7 +4237,7 @@ function Inspector({
                 <ArchiveIcon />
               </AnnotationIconButton>
             )}
-            <em>{active.length}</em>
+            <em>{activeCount}</em>
           </div>
         </div>
         <ToggleGroup
@@ -3924,8 +4249,8 @@ function Inspector({
             if (next === 'active' || next === 'archived') setView(next)
           }}
         >
-          <Toggle value="active">Active {active.length}</Toggle>
-          <Toggle value="archived">Archived {archived.length}</Toggle>
+          <Toggle value="active">Active {activeCount}</Toggle>
+          <Toggle value="archived">Archived {archivedCount}</Toggle>
         </ToggleGroup>
         {visible.length === 0 && !showGlobalComment && !showPiReviewDetails ? (
           <p className="notes-empty">
@@ -3936,41 +4261,88 @@ function Inspector({
         ) : (
           <div className="notes-list" ref={notesListRef}>
             {showPiReviewDetails && piRun != null && <PiRunCard run={piRun} />}
-            {showGlobalComment && (
-              <article className="note-card global-comment-card">
+            {addingGlobal && (
+              <article className="note-card global-comment-card user">
                 <div className="global-comment-heading">
                   <strong>Global comment</strong>
-                  {session.globalComment != null && !globalEditing && (
-                    <AnnotationIconButton
-                      label="Edit global comment"
-                      onClick={() => setGlobalEditing(true)}
-                    >
-                      <EditIcon />
-                    </AnnotationIconButton>
-                  )}
                 </div>
-                {globalEditing ? (
-                  <CommentEditor
-                    comment={session.globalComment ?? ''}
-                    onCancel={() => setGlobalEditing(false)}
-                    onSave={async (comment) => {
-                      await onUpdateGlobalComment(comment)
-                      setGlobalEditing(false)
-                    }}
-                  />
-                ) : (
-                  <p>{session.globalComment}</p>
-                )}
+                <CommentEditor
+                  comment=""
+                  onCancel={() => setAddingGlobal(false)}
+                  onSave={async (comment) => {
+                    await onAddGlobalComment(comment)
+                    setAddingGlobal(false)
+                  }}
+                />
               </article>
             )}
-            {visible.map((annotation) => {
+            {visibleGlobals.map((note) => {
+              const editing = editingId === note.id
+              return (
+                <article key={note.id} className={`note-card global-comment-card ${note.source}`}>
+                  <div className="global-comment-heading">
+                    <strong>Global comment</strong>
+                    <div className="note-actions">
+                      {note.source === 'user' && note.archivedAt == null && !editing && (
+                        <AnnotationIconButton
+                          label="Edit global comment"
+                          onClick={() => setEditingId(note.id)}
+                        >
+                          <EditIcon />
+                        </AnnotationIconButton>
+                      )}
+                      {!editing && (
+                        <AnnotationIconButton
+                          label={view === 'active' ? 'Archive' : 'Restore'}
+                          disabled={busyId === note.id}
+                          onClick={async () => {
+                            setBusyId(note.id)
+                            try {
+                              await onSetGlobalArchived(note.id, view === 'active')
+                            } finally {
+                              setBusyId(null)
+                            }
+                          }}
+                        >
+                          {view === 'active' ? <ArchiveIcon /> : <RestoreIcon />}
+                        </AnnotationIconButton>
+                      )}
+                    </div>
+                  </div>
+                  {editing ? (
+                    <CommentEditor
+                      comment={note.comment}
+                      onCancel={() => setEditingId(null)}
+                      onSave={async (comment) => {
+                        await onUpdateGlobalComment(note.id, comment)
+                        setEditingId(null)
+                      }}
+                    />
+                  ) : (
+                    <p>{note.comment}</p>
+                  )}
+                  <footer>
+                    <div className="note-source">
+                      <span className={`source ${note.source}`}>{note.source}</span>
+                    </div>
+                  </footer>
+                </article>
+              )
+            })}
+            {annotationThreads(visible).map(({ root: annotation, replies }) => {
               const viewed = session.viewedFiles.includes(annotation.filePath)
               const editing = editingId === annotation.id
+              const canReply =
+                view === 'active' &&
+                annotation.source === 'agent' &&
+                annotation.replyToId == null
               return (
                 <article
                   key={annotation.id}
-                  className={`note-card${fileIdForAnnotation(annotation, files) === activeFilePath ? ' is-active' : ''}`}
+                  className={`note-card ${annotation.source}${fileIdForAnnotation(annotation, files) === activeFilePath ? ' is-active' : ''}`}
                   data-file-path={fileIdForAnnotation(annotation, files)}
+                  onPointerEnter={() => onHoverAnnotation(annotation.id)}
+                  onPointerLeave={() => onHoverAnnotation(null)}
                 >
                   <button className="note-target" onClick={() => onNavigate(annotation)}>
                     <span
@@ -4020,6 +4392,14 @@ function Inspector({
                       )}
                     </div>
                     <div className="note-actions">
+                      {canReply && editingId !== `reply:${annotation.id}` && (
+                        <AnnotationIconButton
+                          label="Reply"
+                          onClick={() => setEditingId(`reply:${annotation.id}`)}
+                        >
+                          <ReplyIcon />
+                        </AnnotationIconButton>
+                      )}
                       {annotation.source === 'user' && annotation.submittedAt == null && annotation.comment != null && !editing && (
                         <AnnotationIconButton
                           label="Edit comment"
@@ -4050,6 +4430,77 @@ function Inspector({
                       </AnnotationIconButton>
                     </div>
                   </footer>
+                  {editingId === `reply:${annotation.id}` && (
+                    <CommentEditor
+                      comment=""
+                      onCancel={() => setEditingId(null)}
+                      onSave={async (comment) => {
+                        await addAnnotation(session.id, {
+                          filePath: annotation.filePath,
+                          side: annotation.side,
+                          startLine: annotation.startLine,
+                          endSide: annotation.endSide ?? undefined,
+                          endLine: annotation.endLine,
+                          comment,
+                          source: 'user',
+                          replyToId: annotation.id,
+                        })
+                        await onReload()
+                        setEditingId(null)
+                      }}
+                    />
+                  )}
+                  {replies.map((reply) => {
+                    const replyEditing = editingId === reply.id
+                    return (
+                      <div key={reply.id} className={`note-reply ${reply.source}`}>
+                        {replyEditing ? (
+                          <CommentEditor
+                            comment={reply.comment ?? ''}
+                            onCancel={() => setEditingId(null)}
+                            onSave={async (comment) => {
+                              await onUpdateComment(reply.id, comment)
+                              setEditingId(null)
+                            }}
+                          />
+                        ) : (
+                          <p>{reply.comment}</p>
+                        )}
+                        <footer>
+                          <div className="note-source">
+                            <span className={`source ${reply.source}`}>{reply.source}</span>
+                            <time className="note-time" title={formatTimestamp(reply.createdAt)}>
+                              {relativeTimeAgo(reply.createdAt)}
+                            </time>
+                          </div>
+                          <div className="note-actions">
+                            {reply.source === 'user' && reply.submittedAt == null && !replyEditing && (
+                              <AnnotationIconButton
+                                label="Edit comment"
+                                onClick={() => setEditingId(reply.id)}
+                              >
+                                <EditIcon />
+                              </AnnotationIconButton>
+                            )}
+                            <AnnotationIconButton
+                              label={view === 'active' ? 'Archive' : 'Restore'}
+                              disabled={busyId === reply.id}
+                              onClick={async () => {
+                                setBusyId(reply.id)
+                                try {
+                                  await onSetArchived(reply.id, view === 'active')
+                                } finally {
+                                  setBusyId(null)
+                                }
+                              }}
+                            >
+                              {view === 'active' ? <ArchiveIcon /> : <RestoreIcon />}
+                            </AnnotationIconButton>
+                          </div>
+                        </footer>
+                      </div>
+                    )
+                  })}
                 </article>
               )
             })}
@@ -4341,21 +4792,32 @@ function InlineComposer({
 
 function InlineAnnotation({
   annotation,
+  replies,
+  onHover,
   onArchive,
   onUpdateComment,
+  onReply,
 }: {
   annotation: SessionAnnotation
-  onArchive(): Promise<void>
-  onUpdateComment(comment: string, intent?: AnnotationIntent): Promise<void>
+  replies: SessionAnnotation[]
+  onHover?(annotationId: string | null): void
+  onArchive(annotationId: string): Promise<void>
+  onUpdateComment(annotationId: string, comment: string, intent?: AnnotationIntent): Promise<void>
+  onReply?(comment: string): Promise<void>
 }) {
-  const [busy, setBusy] = useState(false)
-  const [editing, setEditing] = useState(false)
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
   const reviewCommentAvailable = useAtomValue(reviewCommentAvailableAtom) &&
     annotation.endSide == null &&
     annotation.source === 'user' &&
     annotation.submittedAt == null
+  const editing = editingId === annotation.id
   return (
-    <div className={`inline-annotation ${annotation.source}`}>
+    <div
+      className={`inline-annotation ${annotation.source}`}
+      onPointerEnter={() => onHover?.(annotation.id)}
+      onPointerLeave={() => onHover?.(null)}
+    >
       <div className="inline-source">
         <div>
           <span>{annotation.source === 'agent'
@@ -4371,23 +4833,31 @@ function InlineAnnotation({
           <code>{lineLabel(annotation)}</code>
         </div>
         <div>
+          {onReply != null && editingId !== 'reply' && (
+            <AnnotationIconButton
+              label="Reply"
+              onClick={() => setEditingId('reply')}
+            >
+              <ReplyIcon />
+            </AnnotationIconButton>
+          )}
           {annotation.source === 'user' && annotation.comment != null && !editing && (
             <AnnotationIconButton
               label="Edit comment"
-              onClick={() => setEditing(true)}
+              onClick={() => setEditingId(annotation.id)}
             >
               <EditIcon />
             </AnnotationIconButton>
           )}
           <AnnotationIconButton
             label="Archive"
-            disabled={busy}
+            disabled={busyId === annotation.id}
             onClick={async () => {
-              setBusy(true)
+              setBusyId(annotation.id)
               try {
-                await onArchive()
+                await onArchive(annotation.id)
               } finally {
-                setBusy(false)
+                setBusyId(null)
               }
             }}
           >
@@ -4400,15 +4870,76 @@ function InlineAnnotation({
           comment={annotation.comment ?? ''}
           intent={annotation.intent}
           reviewCommentAvailable={reviewCommentAvailable}
-          onCancel={() => setEditing(false)}
+          onCancel={() => setEditingId(null)}
           onSave={async (comment, intent) => {
-            await onUpdateComment(comment, intent)
-            setEditing(false)
+            await onUpdateComment(annotation.id, comment, intent)
+            setEditingId(null)
           }}
         />
-      ) : (
+      ) : annotation.comment != null ? (
         <p>{annotation.comment}</p>
+      ) : null}
+      {editingId === 'reply' && onReply != null && (
+        <CommentEditor
+          comment=""
+          onCancel={() => setEditingId(null)}
+          onSave={async (comment) => {
+            await onReply(comment)
+            setEditingId(null)
+          }}
+        />
       )}
+      {replies.map((reply) => {
+        const replyEditing = editingId === reply.id
+        return (
+          <div key={reply.id} className={`note-reply ${reply.source}`}>
+            <div className="inline-source">
+              <div>
+                <span>Reply</span>
+                <time className="note-time" title={formatTimestamp(reply.createdAt)}>
+                  {relativeTimeAgo(reply.createdAt)}
+                </time>
+              </div>
+              <div>
+                {reply.source === 'user' && reply.comment != null && !replyEditing && (
+                  <AnnotationIconButton
+                    label="Edit comment"
+                    onClick={() => setEditingId(reply.id)}
+                  >
+                    <EditIcon />
+                  </AnnotationIconButton>
+                )}
+                <AnnotationIconButton
+                  label="Archive"
+                  disabled={busyId === reply.id}
+                  onClick={async () => {
+                    setBusyId(reply.id)
+                    try {
+                      await onArchive(reply.id)
+                    } finally {
+                      setBusyId(null)
+                    }
+                  }}
+                >
+                  <ArchiveIcon />
+                </AnnotationIconButton>
+              </div>
+            </div>
+            {replyEditing ? (
+              <CommentEditor
+                comment={reply.comment ?? ''}
+                onCancel={() => setEditingId(null)}
+                onSave={async (comment) => {
+                  await onUpdateComment(reply.id, comment)
+                  setEditingId(null)
+                }}
+              />
+            ) : (
+              <p>{reply.comment}</p>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -4489,9 +5020,11 @@ async function formatCommentsForAgent(
   sessionId: string,
   globalComment: string | null,
   annotations: SessionAnnotation[],
+  allAnnotations: SessionAnnotation[],
   files: FileDiffMetadata[],
 ): Promise<string> {
   const contents = new Map<string, Promise<string | null>>()
+  const byId = new Map(allAnnotations.map((annotation) => [annotation.id, annotation]))
   const comments = await Promise.all(annotations.map(async (annotation) => {
     const file = files.find(
       (candidate) =>
@@ -4508,7 +5041,14 @@ async function formatCommentsForAgent(
     }
     const fileContents = await contentsRequest
     const code = truncateCodeLine(fileContents?.split('\n')[annotation.startLine - 1] ?? '')
-    return `> ${annotation.filePath}:${annotationPosition(annotation)}: ${code}\n\n${annotation.comment!.trim()}`
+    const header = `> ${annotation.filePath}:${annotationPosition(annotation)}: ${code}`
+    const parent = annotation.replyToId == null ? null : byId.get(annotation.replyToId)
+    const quotedParent = parent?.comment?.trim()
+    if (quotedParent) {
+      const quoted = quotedParent.split('\n').map((line) => `> ${line}`).join('\n')
+      return `${header}\n\n${quoted}\n\n${annotation.comment!.trim()}`
+    }
+    return `${header}\n\n${annotation.comment!.trim()}`
   }))
   return [globalComment?.trim(), ...comments].filter(Boolean).join('\n\n')
 }
@@ -4581,7 +5121,15 @@ function fileHeaderIdFromEvent(event: MouseEvent): string | null {
     (target) => target instanceof HTMLElement && target.hasAttribute('data-diffs-header'),
   )
   if (!clickedHeader) return null
-  return fileIdFromEvent(event)
+  return fileIdFromEvent(event) ?? fileIdFromDiffsContainer(path)
+}
+
+function fileIdFromDiffsContainer(path: readonly EventTarget[]): string | null {
+  const container = path.find(
+    (target) => target instanceof HTMLElement && target.tagName === 'DIFFS-CONTAINER',
+  )
+  if (!(container instanceof HTMLElement)) return null
+  return container.querySelector('[data-file-id]')?.getAttribute('data-file-id') ?? null
 }
 
 function fileIdFromEvent(event: MouseEvent): string | null {
@@ -4590,7 +5138,8 @@ function fileIdFromEvent(event: MouseEvent): string | null {
 
 function fileIdAtClientPoint(x: number, y: number): string | null {
   for (const node of document.elementsFromPoint(x, y)) {
-    const fileId = fileIdFromComposedPath(composedAncestors(node))
+    const path = composedAncestors(node)
+    const fileId = fileIdFromComposedPath(path) ?? fileIdFromDiffsContainer(path)
     if (fileId != null) return fileId
   }
   return null
