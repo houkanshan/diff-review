@@ -22,7 +22,7 @@ import { Tooltip } from '@base-ui/react/tooltip'
 import type { GitStatusEntry } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
 import { Provider, createStore, useAtom, useAtomValue, useSetAtom, useStore } from 'jotai'
-import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, skipToken, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useHotkey } from '@tanstack/react-hotkeys'
 import {
   MessageSquarePlus as AddCommentIcon,
@@ -79,7 +79,12 @@ import {
 } from 'react'
 
 import { remarkIssueReferences } from '../shared/markdown'
-import { reviewTargetsEqual, targetSupportsStaging, type DiffRenderer } from '../shared/types'
+import {
+  reviewTargetsEqual,
+  sessionUsesFullCommitRange,
+  targetSupportsStaging,
+  type DiffRenderer,
+} from '../shared/types'
 import type {
   AnnotationIntent,
   DiffSide,
@@ -432,6 +437,7 @@ function PullRequestsPage({
   })
   const workspaceQuery = useQuery({
     queryKey: workspaceKey,
+    placeholderData: keepPreviousData,
     queryFn: number == null
       ? skipToken
       : () => openPullRequest(number, {
@@ -530,7 +536,10 @@ function PullRequestsPage({
       loading={listLoading}
       error={listError}
       onViewChange={setView}
-      onSelect={(number) => onOpenPullRequests(route.repositoryPath, number)}
+      onSelect={(nextNumber) => {
+        if (nextNumber === route.pullRequestNumber) return
+        onOpenPullRequests(route.repositoryPath, nextNumber)
+      }}
     />
   )
 
@@ -556,13 +565,13 @@ function PullRequestsPage({
             repositoryName={repository?.name ?? repositoryNameFromPath(route.repositoryPath)}
             onSelect={onOpenPullRequests}
           />
-          <button className="global-nav-tab active">Pull requests</button>
-          <LocalReviewPicker
+          <ReviewSourcePicker
             repositoryRoot={route.repositoryPath}
             repositoryName={repository?.name ?? repositoryNameFromPath(route.repositoryPath)}
             currentSession={null}
-            active={false}
+            mode="pr"
             onOpenSession={onOpenSession}
+            onOpenPullRequests={onOpenPullRequests}
           />
           <div className="topbar-spacer" />
           <ThemePicker value={themePreference} onChange={onThemeChange} />
@@ -584,7 +593,7 @@ function PullRequestsPage({
   }
 
   return (
-    <ReviewWorkspaceStore key={session.id} sessionId={session.id}>
+    <ReviewWorkspaceStore sessionId={session.id}>
     <ReviewWorkspace
       session={session}
       error={detailError}
@@ -692,13 +701,12 @@ function ReviewWorkspaceStore({
   sessionId: string
   children: ReactNode
 }) {
-  const [store] = useState(() => {
-    const next = createStore()
-    next.set(composerSessionIdAtom, sessionId)
-    next.set(composerSelectionAtom, null)
-    next.set(composerDraftAtom, EMPTY_COMPOSER_DRAFT)
-    return next
-  })
+  const [store] = useState(() => createStore())
+  useLayoutEffect(() => {
+    store.set(composerSessionIdAtom, sessionId)
+    store.set(composerSelectionAtom, null)
+    store.set(composerDraftAtom, EMPTY_COMPOSER_DRAFT)
+  }, [sessionId, store])
   return <Provider store={store}>{children}</Provider>
 }
 
@@ -799,10 +807,8 @@ function ReviewWorkspace({
   }, [session.patch, setComposerDraft, setComposerSelection])
 
   useEffect(() => {
-    setReviewCommentAvailable(
-      pullRequest != null && session.id === pullRequest.currentSessionId,
-    )
-  }, [pullRequest, session.id, setReviewCommentAvailable])
+    setReviewCommentAvailable(pullRequest != null && sessionUsesFullCommitRange(session))
+  }, [pullRequest, setReviewCommentAvailable])
 
   useEffect(() => {
     setCollapsedFiles(new Set(session.viewedFiles))
@@ -1020,7 +1026,8 @@ function ReviewWorkspace({
     store.set(fileViewedAtom(filePath), viewed)
     setFileCollapsed(filePath, viewed)
     onSessionChange(updated)
-    const syncFinderFromPointer = () => {
+    const afterCollapseLayout = () => {
+      if (viewed) revealFileHeaderInViewport(filePath)
       const pointer = lastPointerRef.current
       const next = pointer != null ? fileIdAtClientPoint(pointer.x, pointer.y) : null
       if (next != null) {
@@ -1029,7 +1036,7 @@ function ReviewWorkspace({
     }
     // Collapse height updates after paint; one extra frame lets hit-test see the new file.
     window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(syncFinderFromPointer)
+      window.requestAnimationFrame(afterCollapseLayout)
     })
   }, [onSessionChange, session.id, setFileCollapsed, store])
   const addFile = useCallback(async (filePath: string) => {
@@ -1284,21 +1291,13 @@ function ReviewWorkspace({
           repositoryName={session.repositoryName}
           onSelect={onOpenPullRequests}
         />
-        <button
-          className={`global-nav-tab${pullRequest == null ? '' : ' active'}`}
-          onClick={() => onOpenPullRequests(
-            session.repositoryRoot,
-            session.target.kind === 'pr' ? session.target.number : null,
-          )}
-        >
-          Pull requests
-        </button>
-        <LocalReviewPicker
+        <ReviewSourcePicker
           repositoryRoot={session.repositoryRoot}
           repositoryName={session.repositoryName}
           currentSession={session}
-          active={pullRequest == null}
+          mode={pullRequest == null ? 'local' : 'pr'}
           onOpenSession={onOpenSession}
+          onOpenPullRequests={onOpenPullRequests}
         />
         {pullRequest != null && (
           <RevisionPicker
@@ -1308,9 +1307,7 @@ function ReviewWorkspace({
             onSelect={pullRequest.onSelectRevision}
           />
         )}
-        {pullRequest == null && (
-          <CommitPicker session={session} onSessionChange={onSessionChange} />
-        )}
+        <CommitPicker session={session} onSessionChange={onSessionChange} />
         <div className="topbar-spacer" />
         {(pullRequest == null || pullRequestView === 'diff') && (
           <>
@@ -2180,7 +2177,6 @@ function PullRequestViewHeader({
         )}
         <SubmitReviewPopover
           key={`${details.number}:${details.state}`}
-          disabled={!currentRevision}
           comments={reviewComments}
           allowedEvents={reviewEventsForPullRequest(details.state)}
           onSubmit={onSubmitReview}
@@ -2220,12 +2216,10 @@ function reviewEventsForPullRequest(state: PullRequestDetails['state']): PullReq
 }
 
 function SubmitReviewPopover({
-  disabled,
   comments,
   allowedEvents,
   onSubmit,
 }: {
-  disabled: boolean
   comments: SessionAnnotation[]
   allowedEvents: PullRequestReviewEvent[]
   onSubmit(event: PullRequestReviewEvent, body: string): Promise<void>
@@ -2252,11 +2246,7 @@ function SubmitReviewPopover({
   }
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Trigger
-        className="submit-review-button"
-        disabled={disabled}
-        title={disabled ? 'Switch to the current revision before submitting a review' : undefined}
-      >
+      <Popover.Trigger className="submit-review-button">
         Submit review
         <span className="review-comment-count" aria-label={`${comments.length} review comments`}>
           {comments.length}
@@ -3412,18 +3402,20 @@ function RepositoryPicker({
   )
 }
 
-function LocalReviewPicker({
+function ReviewSourcePicker({
   repositoryRoot,
   repositoryName,
   currentSession,
-  active,
+  mode,
   onOpenSession,
+  onOpenPullRequests,
 }: {
   repositoryRoot: string
   repositoryName: string
   currentSession: ReviewSession | null
-  active: boolean
+  mode: 'pr' | 'local'
   onOpenSession(id: string): void
+  onOpenPullRequests(repositoryPath: string, pullRequestNumber?: number | null): void
 }) {
   const [open, setOpen] = useState(false)
   const [repository, setRepository] = useState<RepositoryInfo | null>(null)
@@ -3466,18 +3458,32 @@ function LocalReviewPicker({
     }
   }
 
+  const pullRequestNumber =
+    currentSession?.target.kind === 'pr' ? currentSession.target.number : null
+
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Trigger className={`global-nav-tab local-review-trigger${active ? ' active' : ''}`}>
-        <BranchIcon />
-        <span>Local diff review</span>
-        {currentRevision != null && <code>{currentRevision}</code>}
+      <Popover.Trigger className="global-nav-tab local-review-trigger active">
+        {mode === 'pr' ? <PullRequestIcon /> : <BranchIcon />}
+        <span>{mode === 'pr' ? 'Pull requests' : 'Local diffs'}</span>
+        {mode === 'pr' && pullRequestNumber != null && <code>#{pullRequestNumber}</code>}
+        {mode === 'local' && currentRevision != null && <code>{currentRevision}</code>}
         <ChevronIcon />
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner className="popup-positioner" sideOffset={8} align="start">
           <Popover.Popup className="target-menu">
-            <Popover.Title className="menu-kicker">{repositoryName} · Local review</Popover.Title>
+            <Popover.Title className="menu-kicker">{repositoryName}</Popover.Title>
+            <TargetOption
+              selected={mode === 'pr'}
+              label="Pull requests"
+              detail="Open GitHub pull request reviews"
+              onClick={() => {
+                setOpen(false)
+                onOpenPullRequests(repositoryRoot, pullRequestNumber)
+              }}
+            />
+            <div className="menu-section-label">Local diffs</div>
             <TargetOption
               selected={currentSession?.target.kind === 'worktree'}
               label="Working tree"
@@ -5234,6 +5240,28 @@ function scheduleDifftasticScroll(
     if (++frames < 90) window.requestAnimationFrame(tick)
   }
   window.requestAnimationFrame(tick)
+}
+
+function revealFileHeaderInViewport(filePath: string): void {
+  const scroller = document.querySelector('.diff-view')
+  if (!(scroller instanceof HTMLElement)) return
+  const header = fileHeaderInDiffView(scroller, filePath)
+  if (header == null) return
+  const scrollerRect = scroller.getBoundingClientRect()
+  const headerRect = header.getBoundingClientRect()
+  const inViewport = headerRect.bottom > scrollerRect.top && headerRect.top < scrollerRect.bottom
+  if (inViewport) return
+  header.scrollIntoView({ block: 'nearest', behavior: 'instant' })
+}
+
+function fileHeaderInDiffView(root: Element, filePath: string): HTMLElement | null {
+  const article = root.querySelector<HTMLElement>(`article[data-file-id="${cssEscape(filePath)}"]`)
+  if (article != null) {
+    return article.querySelector<HTMLElement>('[data-diffs-header]') ?? article
+  }
+  const marked = root.querySelector<HTMLElement>(`[data-file-id="${cssEscape(filePath)}"]`)
+  if (marked == null) return null
+  return marked.closest<HTMLElement>('[data-diffs-header], header, diffs-container') ?? marked
 }
 
 function cssEscape(value: string): string {

@@ -69,6 +69,17 @@ export function targetSupportsStaging(target: ReviewTarget): boolean {
   }
 }
 
+export function sessionUsesFullCommitRange(session: {
+  commits: Array<{ oid: string }>
+  selectedCommitStart: string | null
+  selectedCommitEnd: string | null
+}): boolean {
+  const first = session.commits.at(0)?.oid ?? null
+  const last = session.commits.at(-1)?.oid ?? null
+  return session.commits.length === 0
+    || (session.selectedCommitStart === first && session.selectedCommitEnd === last)
+}
+
 export function reviewTargetsEqual(left: ReviewTarget, right: ReviewTarget): boolean {
   if (left.kind !== right.kind) return false
   if (left.kind === 'range' && right.kind === 'range') {

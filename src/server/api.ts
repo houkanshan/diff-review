@@ -5,6 +5,7 @@ import path from 'node:path'
 
 import type {
   AddAnnotationInput,
+  DiffSide,
   UpdateAnnotationInput,
   AddPullRequestCommentInput,
   ApiErrorShape,
@@ -21,7 +22,7 @@ import type {
   SessionUpdatedEvent,
   StartPiReviewInput,
 } from '../shared/types.js'
-import { targetSupportsStaging } from '../shared/types.js'
+import { sessionUsesFullCommitRange, targetSupportsStaging } from '../shared/types.js'
 import { pullRequestAllowsReviewEvent } from '../shared/pull-request.js'
 import { AppError, errorMessage } from './errors.js'
 import { getDifftasticAvailability, renderDifftasticFile } from './difftastic.js'
@@ -29,6 +30,7 @@ import {
   getRepositoryInfo,
   readSnapshotFile,
   resolveCommitSpan,
+  resolvePinnedCommitDiff,
   rerenderCommitReview,
   listMergeConflictFiles,
   resolvePullRequestRevision,
@@ -261,13 +263,6 @@ export class ApiHandler {
         )
       }
       const currentRevision = await getPullRequestRevisionDetails(root, number)
-      if (currentRevision.headRefOid !== session.revisionHeadOid) {
-        throw new AppError(
-          'PULL_REQUEST_REVISION_CHANGED',
-          'The pull request changed. Refresh before submitting the review.',
-          409,
-        )
-      }
       if (!pullRequestAllowsReviewEvent(currentRevision.state, input.event)) {
         throw new AppError(
           'PULL_REQUEST_REVIEW_NOT_ALLOWED',
@@ -372,7 +367,11 @@ export class ApiHandler {
       const session = this.store.getSession(id)
       const resolved = this.store.getResolvedReview(id)
       const live = await computeReviewFingerprint(session.repositoryRoot, session.target)
-      const stored = storedReviewFingerprint(resolved)
+      // PR fingerprints are `pr:<n>` and skip GitHub on poll. Legacy PR sessions
+      // stored no fingerprint, so the range SHA fallback always looked stale.
+      const stored = session.target.kind === 'pr'
+        ? (resolved.fingerprint ?? live)
+        : storedReviewFingerprint(resolved)
       const payload: SessionFreshness = { stale: stored != null && live !== stored }
       sendJson(response, 200, payload)
       return
@@ -401,12 +400,6 @@ export class ApiHandler {
     if (method === 'POST' && selectionMatch != null) {
       const id = selectionMatch[1] ?? ''
       const session = this.store.getSession(id)
-      if (session.target.kind === 'pr') {
-        throw new AppError(
-          'IMMUTABLE_PULL_REQUEST_REVISION',
-          'Commit selection cannot change an immutable pull request revision',
-        )
-      }
       const input = parseSelectionInput(await readJson(request))
       const startIndex = session.commits.findIndex((commit) => commit.oid === input.start)
       const endIndex = session.commits.findIndex((commit) => commit.oid === input.end)
@@ -418,14 +411,22 @@ export class ApiHandler {
       }
 
       const isFullRange = startIndex === 0 && endIndex === session.commits.length - 1
-      const resolved = isFullRange
-        ? await resolveTarget(session.repositoryRoot, session.target, session.ignoreWhitespace)
-        : await resolveCommitSpan(
-            session.repositoryRoot,
+      const resolved = session.target.kind === 'pr'
+        ? await resolvePullRequestCommitSelection(
+            session,
             input.start,
             input.end,
-            session.ignoreWhitespace,
+            startIndex,
+            isFullRange,
           )
+        : isFullRange
+          ? await resolveTarget(session.repositoryRoot, session.target, session.ignoreWhitespace)
+          : await resolveCommitSpan(
+              session.repositoryRoot,
+              input.start,
+              input.end,
+              session.ignoreWhitespace,
+            )
       if (resolved.fingerprint == null) {
         resolved.fingerprint =
           this.store.getResolvedReview(id).fingerprint
@@ -522,14 +523,8 @@ export class ApiHandler {
           'Replies to agent annotations cannot be review comments',
         )
       }
-      if (
-        input.intent === 'review-comment' &&
-        (input.source !== 'user' || session.target.kind !== 'pr' || input.endSide != null)
-      ) {
-        throw new AppError(
-          'INVALID_REVIEW_COMMENT',
-          'Review comments must be user comments on one side of a pull request diff',
-        )
+      if (input.intent === 'review-comment') {
+        assertReviewCommentAllowed(session, input.source, input.endSide)
       }
       const resolved = this.store.getResolvedReview(id)
       await validateAnnotationTarget(
@@ -586,14 +581,8 @@ export class ApiHandler {
         throw new AppError('ANNOTATION_NOT_FOUND', `Annotation not found: ${annotationMatch[2]}`, 404)
       }
       const intent = input.intent ?? existing.intent
-      if (
-        intent === 'review-comment' &&
-        (existing.source !== 'user' || session.target.kind !== 'pr' || existing.endSide != null)
-      ) {
-        throw new AppError(
-          'INVALID_REVIEW_COMMENT',
-          'Review comments must be user comments on one side of a pull request diff',
-        )
+      if (intent === 'review-comment') {
+        assertReviewCommentAllowed(session, existing.source, existing.endSide)
       }
       const annotation = this.store.updateAnnotationComment(
         sessionId,
@@ -953,6 +942,62 @@ function parsePiLeaseInput(value: unknown): { pid: number } {
     throw new AppError('INVALID_INPUT', 'pid must be a positive integer')
   }
   return { pid }
+}
+
+async function resolvePullRequestCommitSelection(
+  session: ReviewSession,
+  start: string,
+  end: string,
+  startIndex: number,
+  isFullRange: boolean,
+): Promise<Awaited<ReturnType<typeof resolvePinnedCommitDiff>>> {
+  if (session.revisionBaseOid == null || session.revisionHeadOid == null) {
+    throw new AppError(
+      'INVALID_PULL_REQUEST_REVISION',
+      'This pull request revision is missing pinned snapshot bounds',
+    )
+  }
+  if (isFullRange) {
+    return resolvePinnedCommitDiff(
+      session.repositoryRoot,
+      session.revisionBaseOid,
+      session.revisionHeadOid,
+      session.ignoreWhitespace,
+    )
+  }
+  if (startIndex === 0) {
+    return resolvePinnedCommitDiff(
+      session.repositoryRoot,
+      session.revisionBaseOid,
+      end,
+      session.ignoreWhitespace,
+    )
+  }
+  return resolveCommitSpan(
+    session.repositoryRoot,
+    start,
+    end,
+    session.ignoreWhitespace,
+  )
+}
+
+function assertReviewCommentAllowed(
+  session: ReviewSession,
+  source: 'user' | 'agent',
+  endSide: DiffSide | null | undefined,
+): void {
+  if (source !== 'user' || session.target.kind !== 'pr' || endSide != null) {
+    throw new AppError(
+      'INVALID_REVIEW_COMMENT',
+      'Review comments must be user comments on one side of a pull request diff',
+    )
+  }
+  if (!sessionUsesFullCommitRange(session)) {
+    throw new AppError(
+      'INVALID_REVIEW_COMMENT',
+      'Review comments can only be added on the full pull request revision',
+    )
+  }
 }
 
 function parseTarget(value: unknown): ReviewTarget {

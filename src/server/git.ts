@@ -169,6 +169,26 @@ export async function rerenderCommitReview(
   }
 }
 
+export async function resolvePinnedCommitDiff(
+  repositoryPath: string,
+  oldRevision: string,
+  newRevision: string,
+  ignoreWhitespace = false,
+): Promise<ResolvedReview> {
+  const root = await resolveRepository(repositoryPath)
+  const oldCommit = await resolveCommit(root, oldRevision)
+  const newCommit = await resolveCommit(root, newRevision)
+  const patch = await gitDiff(root, [oldCommit, newCommit], ignoreWhitespace)
+  return {
+    label: `${shortOid(oldCommit)}…${shortOid(newCommit)}`,
+    gitCommand: `git diff${ignoreWhitespace ? ' --ignore-all-space' : ''} ${shellQuote(oldCommit)} ${shellQuote(newCommit)}`,
+    patch,
+    oldSnapshot: { kind: 'commit', id: oldCommit },
+    newSnapshot: { kind: 'commit', id: newCommit },
+    commits: await listCommits(root, oldCommit, newCommit),
+  }
+}
+
 export async function resolveCommitSpan(
   repositoryPath: string,
   oldestCommit: string,
@@ -445,6 +465,7 @@ export async function resolvePullRequestRevision(
     oldSnapshot: { kind: 'commit', id: base },
     newSnapshot: { kind: 'commit', id: details.headRefOid },
     commits: await listCommits(root, base, details.headRefOid),
+    fingerprint: `pr:${number}`,
   }
 }
 

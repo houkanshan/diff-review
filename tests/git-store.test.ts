@@ -549,6 +549,146 @@ describe('local review storage', () => {
     }
   })
 
+  test('narrows an immutable pull request revision without changing its snapshot bounds', async () => {
+    const store = new ReviewStore(path.join(fixture.directory, 'pr-selection.db'))
+    const handler = new ApiHandler(store, null)
+    const server = createServer(handler.handle)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address() as AddressInfo
+    const baseUrl = `http://127.0.0.1:${port}`
+
+    try {
+      const pinned = await resolveTarget(fixture.repository, {
+        kind: 'range',
+        expression: 'origin/main...HEAD',
+      })
+      const prSession = store.createSession(
+        fixture.repository,
+        'repo',
+        { kind: 'pr', number: 42 },
+        pinned,
+        false,
+      )
+      const selectedCommit = prSession.commits[1]
+      expect(selectedCommit).toBeTruthy()
+      const selected = await fetch(`${baseUrl}/api/sessions/${prSession.id}/selection`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ start: selectedCommit!.oid, end: selectedCommit!.oid }),
+      })
+      expect(selected.status).toBe(200)
+      const updated = await selected.json() as {
+        commits: Array<{ oid: string }>
+        selectedCommitStart: string
+        selectedCommitEnd: string
+        revisionBaseOid: string
+        revisionHeadOid: string
+        patch: string
+      }
+      expect(updated.commits.map((commit) => commit.oid)).toEqual(
+        prSession.commits.map((commit) => commit.oid),
+      )
+      expect(updated.selectedCommitStart).toBe(selectedCommit!.oid)
+      expect(updated.selectedCommitEnd).toBe(selectedCommit!.oid)
+      expect(updated.revisionBaseOid).toBe(prSession.revisionBaseOid)
+      expect(updated.revisionHeadOid).toBe(prSession.revisionHeadOid)
+      expect(updated.patch).toContain('feature two')
+
+      const rejected = await fetch(`${baseUrl}/api/sessions/${prSession.id}/annotations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filePath: 'tracked.txt',
+          side: 'new',
+          startLine: 1,
+          endLine: 1,
+          comment: 'Should stay local while a span is selected.',
+          source: 'user',
+          intent: 'review-comment',
+        }),
+      })
+      expect(rejected.status).toBe(400)
+      await expect(rejected.json()).resolves.toMatchObject({
+        error: { code: 'INVALID_REVIEW_COMMENT' },
+      })
+
+      const restored = await fetch(`${baseUrl}/api/sessions/${prSession.id}/selection`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          start: prSession.commits[0]!.oid,
+          end: prSession.commits.at(-1)!.oid,
+        }),
+      })
+      expect(restored.status).toBe(200)
+      const full = await restored.json() as {
+        patch: string
+        revisionBaseOid: string
+        revisionHeadOid: string
+      }
+      expect(full.revisionBaseOid).toBe(prSession.revisionBaseOid)
+      expect(full.revisionHeadOid).toBe(prSession.revisionHeadOid)
+      expect(full.patch).toBe(prSession.patch)
+    } finally {
+      handler.close()
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error == null ? resolve() : reject(error))
+      })
+    }
+  })
+
+  test('restoring all PR commits stays inside the pinned merge-base snapshot', async () => {
+    const isolated = createMergedBasePullRequestFixture()
+    const store = new ReviewStore(path.join(isolated.directory, 'pr-merge-base.db'))
+    const handler = new ApiHandler(store, null)
+    const server = createServer(handler.handle)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address() as AddressInfo
+    const baseUrl = `http://127.0.0.1:${port}`
+
+    try {
+      const pinned = await resolveTarget(isolated.repository, {
+        kind: 'range',
+        expression: `${isolated.baseOid}...${isolated.headOid}`,
+      })
+      expect(pinned.oldSnapshot.id).toBe(isolated.baseOid)
+      expect(pinned.patch).toContain('feature.txt')
+      expect(pinned.patch).not.toContain('main.txt')
+
+      const prSession = store.createSession(
+        isolated.repository,
+        'repo',
+        { kind: 'pr', number: 7 },
+        pinned,
+        false,
+      )
+      const restored = await fetch(`${baseUrl}/api/sessions/${prSession.id}/selection`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          start: prSession.commits[0]!.oid,
+          end: prSession.commits.at(-1)!.oid,
+        }),
+      })
+      expect(restored.status).toBe(200)
+      const updated = await restored.json() as {
+        patch: string
+        revisionBaseOid: string
+        revisionHeadOid: string
+      }
+      expect(updated.revisionBaseOid).toBe(isolated.baseOid)
+      expect(updated.revisionHeadOid).toBe(isolated.headOid)
+      expect(updated.patch).toBe(pinned.patch)
+      expect(updated.patch).not.toContain('main.txt')
+    } finally {
+      handler.close()
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error == null ? resolve() : reject(error))
+      })
+      rmSync(isolated.directory, { recursive: true, force: true })
+    }
+  })
+
   test('keeps a resumable Pi session and safely cleans it after retention', async () => {
     const review = await resolveTarget(fixture.repository, {
       kind: 'range',
@@ -973,6 +1113,50 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
       git(isolated.repository, ['commit', '-m', 'later'])
       const staleSelected = await fetch(`${baseUrl}/api/sessions/${session.id}/freshness`)
       expect(await staleSelected.json()).toEqual({ stale: true })
+    } finally {
+      handler.close()
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error == null ? resolve() : reject(error))
+      })
+      rmSync(isolated.directory, { recursive: true, force: true })
+    }
+  })
+
+  test('pull request sessions stay fresh after open, including legacy fingerprints', async () => {
+    const isolated = createGitFixture()
+    const store = new ReviewStore(path.join(isolated.directory, 'freshness-pr.db'))
+    const handler = new ApiHandler(store, null)
+    const server = createServer(handler.handle)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address() as AddressInfo
+    const baseUrl = `http://127.0.0.1:${port}`
+    const review = await resolveTarget(isolated.repository, {
+      kind: 'range',
+      expression: 'origin/main...HEAD',
+    })
+
+    try {
+      const current = store.createSession(
+        isolated.repository,
+        'repo',
+        { kind: 'pr', number: 42 },
+        { ...review, fingerprint: 'pr:42' },
+        true,
+      )
+      const freshCurrent = await fetch(`${baseUrl}/api/sessions/${current.id}/freshness`)
+      expect(await freshCurrent.json()).toEqual({ stale: false })
+
+      const { fingerprint: _fingerprint, ...legacyResolved } = review
+      const legacy = store.createSession(
+        isolated.repository,
+        'repo',
+        { kind: 'pr', number: 7 },
+        legacyResolved,
+        true,
+      )
+      expect(legacyResolved.fingerprint).toBeUndefined()
+      const freshLegacy = await fetch(`${baseUrl}/api/sessions/${legacy.id}/freshness`)
+      expect(await freshLegacy.json()).toEqual({ stale: false })
     } finally {
       handler.close()
       await new Promise<void>((resolve, reject) => {
@@ -1802,6 +1986,41 @@ function createConflictFixture(): { directory: string; repository: string } {
   git(repository, ['switch', 'main'])
 
   return { directory, repository }
+}
+
+function createMergedBasePullRequestFixture(): {
+  directory: string
+  repository: string
+  baseOid: string
+  headOid: string
+} {
+  const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-pr-base-'))
+  const repository = path.join(directory, 'repo')
+  mkdirSync(repository)
+  git(repository, ['init', '-b', 'main'])
+  git(repository, ['config', 'user.name', 'Diff Reviewer'])
+  git(repository, ['config', 'user.email', 'reviewer@example.com'])
+
+  writeFileSync(path.join(repository, 'shared.txt'), 'shared\n')
+  git(repository, ['add', '.'])
+  git(repository, ['commit', '-m', 'root'])
+
+  git(repository, ['switch', '-c', 'feature'])
+  writeFileSync(path.join(repository, 'feature.txt'), 'feature\n')
+  git(repository, ['add', 'feature.txt'])
+  git(repository, ['commit', '-m', 'feature'])
+
+  git(repository, ['switch', 'main'])
+  writeFileSync(path.join(repository, 'main.txt'), 'from main\n')
+  git(repository, ['add', 'main.txt'])
+  git(repository, ['commit', '-m', 'main'])
+  const baseOid = git(repository, ['rev-parse', 'HEAD']).trim()
+
+  git(repository, ['switch', 'feature'])
+  git(repository, ['merge', '--no-ff', 'main', '-m', 'merge main'])
+  const headOid = git(repository, ['rev-parse', 'HEAD']).trim()
+
+  return { directory, repository, baseOid, headOid }
 }
 
 function createGitFixture(): { directory: string; repository: string } {
