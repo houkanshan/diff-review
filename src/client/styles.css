@@ -152,9 +152,11 @@ svg {
   font-size: 14px;
 }
 
-.repository-trigger {
+.repository-trigger,
+.local-review-trigger,
+.revision-trigger,
+.commit-trigger {
   min-width: 0;
-  max-width: min(250px, 22vw);
   height: 34px;
   display: flex;
   align-items: center;
@@ -167,97 +169,15 @@ svg {
   box-shadow: 0 1px 1px var(--shadow-soft);
   font-size: 11px;
   font-weight: 650;
+  white-space: nowrap;
 }
 
 .repository-trigger:hover,
-.repository-trigger[data-popup-open] {
-  color: var(--text);
-  border-color: var(--border-strong);
-  background: var(--surface-raised);
-}
-
-.repository-trigger > svg:first-child { color: var(--accent); }
-.repository-trigger > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.repository-trigger > svg:last-child {
-  width: 12px;
-  color: var(--faint);
-  transition: transform 120ms ease;
-}
-.repository-trigger[data-popup-open] > svg:last-child { transform: rotate(180deg); }
-
-.global-nav-tab,
-.local-review-trigger {
-  height: 34px;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 10px;
-  color: var(--muted);
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  font-size: 10px;
-  font-weight: 680;
-  white-space: nowrap;
-}
-
-.global-nav-tab:hover,
+.repository-trigger[data-popup-open],
 .local-review-trigger:hover,
-.local-review-trigger[data-popup-open] {
-  color: var(--text);
-  background: var(--hover);
-}
-
-.global-nav-tab.active,
-.local-review-trigger.active {
-  color: var(--text);
-  background: var(--surface-raised);
-  box-shadow: 0 1px 3px var(--shadow-soft);
-}
-
-.global-nav-tab svg,
-.local-review-trigger svg {
-  width: 13px;
-  height: 13px;
-  flex: 0 0 auto;
-}
-
-.local-review-trigger code {
-  color: var(--faint);
-  font-family: var(--font-mono);
-  font-size: 8px;
-}
-
-.global-nav-tab.active svg,
-.local-review-trigger.active > svg:first-child { color: var(--accent); }
-
-.topbar-spacer {
-  min-width: 2px;
-  flex: 1;
-}
-
-.target-trigger,
-.commit-trigger {
-  min-width: 0;
-  height: 36px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 10px;
-  color: var(--muted);
-  border: 1px solid var(--border-soft);
-  border-radius: 8px;
-  background: var(--surface);
-  box-shadow: 0 1px 1px var(--shadow-soft);
-}
-
-.target-trigger:hover,
-.target-trigger[data-popup-open],
+.local-review-trigger[data-popup-open],
+.revision-trigger:hover,
+.revision-trigger[data-popup-open],
 .commit-trigger:hover,
 .commit-trigger[data-popup-open] {
   color: var(--text);
@@ -265,26 +185,91 @@ svg {
   background: var(--surface-raised);
 }
 
-.target-trigger {
-  max-width: min(430px, 32vw);
-  font-size: 12px;
+.repository-trigger > svg:first-child,
+.local-review-trigger > svg:first-child,
+.revision-trigger > svg:first-child,
+.commit-trigger > svg:first-child { color: var(--accent); }
+
+.repository-trigger > span,
+.local-review-trigger > span,
+.revision-trigger > span,
+.commit-trigger > span,
+.commit-trigger > code,
+.revision-trigger > code,
+.local-review-trigger > code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.target-trigger > svg:first-child,
-.commit-trigger > svg:first-child {
-  color: var(--accent);
-}
-
-.target-trigger > svg:last-child,
+.repository-trigger > svg:last-child,
+.local-review-trigger > svg:last-child,
+.revision-trigger > svg:last-child,
 .commit-trigger > svg:last-child {
+  width: 12px;
+  flex: 0 0 auto;
   color: var(--faint);
   transition: transform 120ms ease;
 }
 
-.target-trigger[data-popup-open] > svg:last-child,
-.commit-trigger[data-popup-open] > svg:last-child {
-  transform: rotate(180deg);
+.repository-trigger[data-popup-open] > svg:last-child,
+.local-review-trigger[data-popup-open] > svg:last-child,
+.revision-trigger[data-popup-open] > svg:last-child,
+.commit-trigger[data-popup-open] > svg:last-child { transform: rotate(180deg); }
+
+.repository-trigger { max-width: min(250px, 22vw); }
+
+.local-review-trigger svg,
+.revision-trigger svg,
+.commit-trigger svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
 }
+
+.local-review-trigger code,
+.revision-trigger code,
+.commit-trigger code {
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.topbar-spacer {
+  min-width: 2px;
+  flex: 1;
+}
+
+.target-trigger {
+  min-width: 0;
+  max-width: min(430px, 32vw);
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
+  color: var(--muted);
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: 0 1px 1px var(--shadow-soft);
+  font-size: 11px;
+}
+
+.target-trigger:hover,
+.target-trigger[data-popup-open] {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--surface-raised);
+}
+
+.target-trigger > svg:first-child { color: var(--accent); }
+.target-trigger > svg:last-child {
+  color: var(--faint);
+  transition: transform 120ms ease;
+}
+.target-trigger[data-popup-open] > svg:last-child { transform: rotate(180deg); }
 
 .target-repo,
 .target-label {
@@ -303,30 +288,8 @@ svg {
 }
 
 .commit-trigger {
-  width: min(285px, 25vw);
+  max-width: min(320px, 28vw);
   text-align: left;
-}
-
-.commit-trigger-copy {
-  min-width: 0;
-  display: grid;
-  flex: 1;
-  line-height: 1.12;
-}
-
-.commit-trigger-copy small {
-  color: var(--faint);
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-}
-
-.commit-trigger-copy > span {
-  overflow: hidden;
-  color: var(--text-soft);
-  font-size: 9px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .popup-positioner {
@@ -804,7 +767,6 @@ svg {
 .layout-switch button[data-pressed] {
   color: var(--text);
   background: var(--surface-raised);
-  box-shadow: 0 1px 3px var(--shadow-soft);
 }
 
 .diff-options-trigger {
@@ -998,7 +960,7 @@ svg {
 }
 
 .pr-workspace {
-  grid-template-columns: minmax(250px, 292px) minmax(0, 1fr);
+  grid-template-columns: max-content 5px minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
 }
 
@@ -1020,12 +982,18 @@ svg {
 }
 
 .pr-workspace > .pr-rail {
+  grid-column: 1;
+  grid-row: 1 / -1;
+}
+
+.pr-workspace > .panel-resizer {
+  grid-column: 2;
   grid-row: 1 / -1;
 }
 
 .pr-workspace > .review-workspace-body,
 .pr-overview-stage {
-  grid-column: 2;
+  grid-column: 3;
   grid-row: 2;
 }
 
@@ -1035,7 +1003,7 @@ svg {
   z-index: 10;
   min-width: 0;
   min-height: 48px;
-  grid-column: 2;
+  grid-column: 3;
   grid-row: 1;
   display: flex;
   align-items: center;
@@ -1308,16 +1276,16 @@ svg {
   min-height: 0;
   flex: 1;
   display: grid;
-  grid-template-columns: minmax(250px, 292px) 1fr;
+  grid-template-columns: max-content 5px minmax(0, 1fr);
 }
 
 .pr-rail {
+  width: 292px;
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border-right: 1px solid var(--border);
   background: var(--surface-inset);
 }
 
@@ -1376,7 +1344,7 @@ svg {
 }
 
 .pr-view-tabs button:hover { color: var(--text); background: var(--hover); }
-.pr-view-tabs button.active { color: var(--text); background: var(--surface-raised); box-shadow: 0 1px 3px var(--shadow-soft); }
+.pr-view-tabs button.active { color: var(--text); background: var(--surface-raised); }
 
 .pr-list {
   min-height: 0;
@@ -1529,25 +1497,11 @@ svg {
 .pr-selection-empty p { max-width: 360px; margin: 0; font-size: 10px; line-height: 1.5; }
 .empty-glyph { color: var(--accent) !important; font-size: 34px !important; }
 
-.revision-trigger {
-  height: 34px;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 8px;
-  color: var(--muted);
-  border: 1px solid var(--border-soft);
-  border-radius: 7px;
-  background: var(--surface);
-  font-size: 9px;
+.revision-trigger.old {
+  color: var(--warning-text);
+  border-color: var(--accent-border);
+  background: var(--warning-soft);
 }
-
-.revision-trigger:hover,
-.revision-trigger[data-popup-open] { color: var(--text); border-color: var(--border-strong); background: var(--surface-raised); }
-.revision-trigger.old { color: var(--warning-text); border-color: var(--accent-border); background: var(--warning-soft); }
-.revision-trigger svg { width: 13px; height: 13px; }
-.revision-trigger code { color: var(--faint); font-family: var(--font-mono); font-size: 8px; }
 
 .revision-menu {
   width: 310px;
@@ -3139,7 +3093,6 @@ body.resizing-panels * {
 .annotation-filter button[data-pressed] {
   color: var(--text);
   background: var(--surface-raised);
-  box-shadow: 0 1px 3px var(--shadow-soft);
 }
 
 .notes-empty {
@@ -3686,7 +3639,6 @@ body.resizing-panels * {
       minmax(340px, 1fr) 5px
       var(--right-panel-width, 270px);
   }
-  .pr-empty-workspace { grid-template-columns: minmax(235px, 260px) 1fr; }
 }
 
 @media (max-width: 1050px) {
@@ -3701,17 +3653,15 @@ body.resizing-panels * {
 }
 
 @media (max-width: 940px) {
-  .workspace { grid-template-columns: 1fr; }
-  .pr-workspace { grid-template-columns: 255px minmax(0, 1fr); }
+  .workspace:not(.pr-workspace) { grid-template-columns: 1fr; }
   .review-workspace-body { grid-template-columns: minmax(0, 1fr); }
-  .pr-empty-workspace { grid-template-columns: 255px minmax(0, 1fr); }
-  .file-rail,
-  .inspector,
-  .panel-resizer { display: none; }
+  .review-workspace-body .file-rail,
+  .review-workspace-body .inspector,
+  .review-workspace-body .panel-resizer { display: none; }
   .target-label,
   .target-divider { display: none; }
   .target-trigger { max-width: 180px; }
-  .commit-trigger { width: 160px; }
+  .commit-trigger { max-width: 160px; }
   .diff-options-trigger { width: 34px; justify-content: center; padding: 0; }
   .diff-options-trigger span,
   .diff-options-trigger svg:last-child { display: none; }
@@ -3725,13 +3675,12 @@ body.resizing-panels * {
   .brand { display: none; }
   .repository-trigger { max-width: 120px; }
   .repository-trigger > svg:first-child { display: none; }
-  .global-nav-tab { padding-inline: 7px; font-size: 8px; }
-  .local-review-trigger { width: 32px; justify-content: center; padding: 0; font-size: 0; }
+  .local-review-trigger { max-width: 36px; justify-content: center; padding: 0 8px; }
+  .local-review-trigger > span,
+  .local-review-trigger > code { display: none; }
   .target-trigger { max-width: 145px; }
-  .commit-trigger { width: 130px; }
+  .commit-trigger { max-width: 130px; }
   .layout-switch { display: none; }
-  .pr-workspace { grid-template-columns: 210px minmax(0, 1fr); }
-  .pr-empty-workspace { grid-template-columns: 210px minmax(0, 1fr); }
   .revision-trigger { max-width: 92px; }
   .revision-trigger code { overflow: hidden; text-overflow: ellipsis; }
   .pr-rail-heading { padding-inline: 8px; }

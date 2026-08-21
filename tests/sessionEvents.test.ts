@@ -5,6 +5,7 @@ import { subscribeSessionEvents } from '../src/client/sessionEvents'
 class FakeEventSource {
   static instances: FakeEventSource[] = []
   onmessage: ((event: { data: string }) => void) | null = null
+  onopen: (() => void) | null = null
   closed = false
 
   constructor(public url: string) {
@@ -17,6 +18,10 @@ class FakeEventSource {
 
   emit(sessionId: string) {
     this.onmessage?.({ data: JSON.stringify({ type: 'session-updated', sessionId }) })
+  }
+
+  open() {
+    this.onopen?.()
   }
 }
 
@@ -114,5 +119,20 @@ describe('subscribeSessionEvents', () => {
     stopFirst()
     stopSecond()
     expect(FakeEventSource.instances[0]?.closed).toBe(true)
+  })
+
+  it('refetches every subscribed session when the EventSource reconnects', () => {
+    stubBrowser(undefined)
+    const first = vi.fn()
+    const second = vi.fn()
+    const stopFirst = subscribeSessionEvents('session-a', first)
+    const stopSecond = subscribeSessionEvents('session-b', second)
+
+    FakeEventSource.instances[0]?.open()
+    expect(first).toHaveBeenCalledTimes(1)
+    expect(second).toHaveBeenCalledTimes(1)
+
+    stopFirst()
+    stopSecond()
   })
 })

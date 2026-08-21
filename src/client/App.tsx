@@ -23,6 +23,10 @@ import type { GitStatusEntry } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
 import { Provider, createStore, useAtom, useAtomValue, useSetAtom, useStore } from 'jotai'
 import { keepPreviousData, skipToken, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  readStoredPullRequestList,
+  storePullRequestList,
+} from './pullRequestListCache'
 import { useHotkey } from '@tanstack/react-hotkeys'
 import {
   MessageSquarePlus as AddCommentIcon,
@@ -425,10 +429,18 @@ function PullRequestsPage({
   const pullRequestsQuery = useQuery({
     queryKey: ['pull-requests', route.repositoryPath, view],
     staleTime: 0,
+    initialData: () => readStoredPullRequestList(route.repositoryPath, view),
+    initialDataUpdatedAt: () => {
+      const stored = readStoredPullRequestList(route.repositoryPath, view)
+      const updatedAt = stored == null ? Number.NaN : Date.parse(stored.fetchedAt)
+      return Number.isFinite(updatedAt) ? updatedAt : undefined
+    },
     queryFn: async () => {
       const list = await getPullRequests(route.repositoryPath, view)
+      storePullRequestList(route.repositoryPath, view, list)
       if (list.stale) {
         void getPullRequests(route.repositoryPath, view, { fresh: true }).then((fresh) => {
+          storePullRequestList(route.repositoryPath, view, fresh)
           queryClient.setQueryData(['pull-requests', route.repositoryPath, view], fresh)
         }).catch(() => undefined)
       }
@@ -454,7 +466,9 @@ function PullRequestsPage({
   const revisions = workspace?.revisions ?? []
   const piStatus = workspace?.piStatus ?? { state: 'idle' }
   const listLoading = pullRequestsQuery.isPending
-  const listError = queryErrorMessage(pullRequestsQuery.error)
+  const listError = pullRequestsQuery.data == null
+    ? queryErrorMessage(pullRequestsQuery.error)
+    : null
   const detailLoading = number != null && workspaceQuery.isPending
   const detailError = queryErrorMessage(workspaceQuery.error)
 
@@ -1893,8 +1907,10 @@ function PullRequestRail({
     { id: 'additional-review', label: 'Additional' },
     { id: 'merged', label: 'Merged' },
   ]
+  const [width, setWidth] = useState(() => storedPanelWidth('pr', 292, 220, 520))
   return (
-    <aside className="pr-rail">
+    <>
+    <aside className="pr-rail" style={{ width }}>
       <div className="pr-rail-heading">
         <div><span>Pull requests</span><strong>{loading ? '…' : items.length}</strong></div>
         <div className="pr-view-tabs" role="tablist" aria-label="Pull request view">
@@ -1962,6 +1978,18 @@ function PullRequestRail({
         ))}
       </div>
     </aside>
+    <PanelResizeHandle
+      label="Resize pull request list"
+      side="left"
+      size={width}
+      min={220}
+      max={520}
+      onChange={(next) => {
+        setWidth(next)
+        storePanelWidth('pr', next)
+      }}
+    />
+    </>
   )
 }
 
@@ -3463,7 +3491,7 @@ function ReviewSourcePicker({
 
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Trigger className="global-nav-tab local-review-trigger active">
+      <Popover.Trigger className="local-review-trigger">
         {mode === 'pr' ? <PullRequestIcon /> : <BranchIcon />}
         <span>{mode === 'pr' ? 'Pull requests' : 'Local diffs'}</span>
         {mode === 'pr' && pullRequestNumber != null && <code>#{pullRequestNumber}</code>}
@@ -3643,10 +3671,8 @@ function CommitPicker({
     <Popover.Root>
       <Popover.Trigger className="commit-trigger" disabled={busy} title={selectionLabel}>
         <CommitIcon />
-        <span className="commit-trigger-copy">
-          <small>Commits</small>
-          <span>{selectionLabel}</span>
-        </span>
+        <span>Commits</span>
+        <code>{selectionLabel}</code>
         <ChevronIcon />
       </Popover.Trigger>
       <Popover.Portal>
@@ -5196,7 +5222,7 @@ function formatImportance(importance: number): string {
 }
 
 function storedPanelWidth(
-  side: 'left' | 'right',
+  side: 'left' | 'right' | 'pr',
   fallback: number,
   min: number,
   max: number,
@@ -5205,7 +5231,7 @@ function storedPanelWidth(
   return Number.isFinite(value) && value > 0 ? Math.min(max, Math.max(min, value)) : fallback
 }
 
-function storePanelWidth(side: 'left' | 'right', width: number): void {
+function storePanelWidth(side: 'left' | 'right' | 'pr', width: number): void {
   window.localStorage.setItem(`diff-review-${side}-panel-width`, String(width))
 }
 

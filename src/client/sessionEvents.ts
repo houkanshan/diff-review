@@ -9,6 +9,8 @@ let channel: BroadcastChannel | null = null
 let source: EventSource | null = null
 let lockAbort: AbortController | null = null
 
+const RESYNC_SESSION_ID = '*'
+
 function isSessionEvent(value: unknown): value is SessionUpdatedEvent {
   return (
     typeof value === 'object'
@@ -25,6 +27,10 @@ function dispatch(event: SessionUpdatedEvent, broadcast: boolean): void {
   if (broadcast) channel?.postMessage(event)
 }
 
+function resyncSubscribers(broadcast: boolean): void {
+  dispatch({ type: 'session-updated', sessionId: RESYNC_SESSION_ID }, broadcast)
+}
+
 function ensureTransport(): void {
   if (channel != null) return
   channel = new BroadcastChannel(SSE_CHANNEL)
@@ -34,14 +40,20 @@ function ensureTransport(): void {
 
   const locks = navigator.locks
   if (locks == null) {
-    source = openSessionEventSource((event) => dispatch(event, true))
+    source = openSessionEventSource(
+      (event) => dispatch(event, true),
+      () => resyncSubscribers(true),
+    )
     return
   }
 
   lockAbort = new AbortController()
   void locks.request(SSE_LOCK, { signal: lockAbort.signal }, () => (
     new Promise<void>((resolve) => {
-      source = openSessionEventSource((event) => dispatch(event, true))
+      source = openSessionEventSource(
+        (event) => dispatch(event, true),
+        () => resyncSubscribers(true),
+      )
       const stop = () => {
         source?.close()
         source = null
@@ -73,7 +85,7 @@ export function subscribeSessionEvents(
   onEvent: () => void,
 ): () => void {
   const listener = (event: SessionUpdatedEvent) => {
-    if (event.sessionId === sessionId) onEvent()
+    if (event.sessionId === sessionId || event.sessionId === RESYNC_SESSION_ID) onEvent()
   }
   listeners.add(listener)
   ensureTransport()
@@ -85,8 +97,10 @@ export function subscribeSessionEvents(
 
 function openSessionEventSource(
   onEvent: (event: SessionUpdatedEvent) => void,
+  onOpen: () => void,
 ): EventSource {
   const next = new EventSource('/api/events')
+  next.onopen = () => onOpen()
   next.onmessage = (message) => {
     let parsed: unknown
     try {

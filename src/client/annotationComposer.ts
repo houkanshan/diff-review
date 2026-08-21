@@ -7,7 +7,7 @@ import type {
   FileDiffMetadata,
 } from '@pierre/diffs'
 
-import { isAnnotationThreadRoot } from '../shared/annotationThreads'
+import { annotationThreads, isAnnotationThreadRoot } from '../shared/annotationThreads'
 import type { AnnotationIntent, DifftasticHunk, SessionAnnotation } from '../shared/types'
 
 export type ReviewLineAnnotation =
@@ -120,19 +120,18 @@ export function placeDifftasticAnnotations(
     })
   })
 
-  const visibleIds = new Set(annotations.map((annotation) => annotation.id))
   const byRow = new Map<string, SessionAnnotation[]>()
-  for (const annotation of annotations) {
-    if (!isAnnotationThreadRoot(annotation, visibleIds)) continue
-    const preferred = annotationAnchorSide(annotation)
+  for (const { root, replies } of annotationThreads(annotations)) {
+    const preferred = annotationAnchorSide(root)
     const sameSide = preferred === 'new' ? newSlots : oldSlots
     const otherSide = preferred === 'new' ? oldSlots : newSlots
-    const hit = nearestVisibleSlot(annotation.endLine, sameSide)
-      ?? nearestVisibleSlot(annotation.endLine, otherSide)
+    const hit = nearestVisibleSlot(root.endLine, sameSide)
+      ?? nearestVisibleSlot(root.endLine, otherSide)
     if (hit == null) continue
+    const thread = [root, ...replies]
     const existing = byRow.get(hit.key)
-    if (existing == null) byRow.set(hit.key, [annotation])
-    else existing.push(annotation)
+    if (existing == null) byRow.set(hit.key, thread)
+    else existing.push(...thread)
   }
   return byRow
 }

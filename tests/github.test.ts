@@ -677,7 +677,7 @@ describe('GitHub pull request list', () => {
     resetPullRequestListCache()
   })
 
-  test('loads summaries without statusCheckRollup and fills badges from rollup state', async () => {
+  test('loads summaries and check badges from one GraphQL list query', async () => {
     const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-github-list-'))
     const bin = path.join(directory, 'bin')
     mkdirSync(bin)
@@ -688,18 +688,10 @@ describe('GitHub pull request list', () => {
       "  process.stdout.write(JSON.stringify({ nameWithOwner: 'acme/repo' }))",
       '  process.exit(0)',
       '}',
-      "if (args[0] === 'pr' && args[1] === 'list') {",
-      "  if (args.some((arg) => arg.includes('statusCheckRollup'))) {",
-      "    process.stderr.write('list should not request statusCheckRollup')",
-      '    process.exit(1)',
-      '  }',
-      "  process.stdout.write(process.env.GH_TEST_LIST_JSON)",
-      '  process.exit(0)',
-      '}',
       "if (args[0] === 'api' && args[1] === 'graphql') {",
       "  const query = args.find((arg) => arg.startsWith('query=')) ?? ''",
-      "  if (!query.includes('statusCheckRollup { state }')) {",
-      "    process.stderr.write('expected rollup state query')",
+      "  if (!query.includes('CREATED_AT') || !query.includes('statusCheckRollup { state }')) {",
+      "    process.stderr.write('expected combined list query')",
       '    process.exit(1)',
       '  }',
       "  process.stdout.write(process.env.GH_TEST_GRAPHQL_JSON)",
@@ -710,52 +702,55 @@ describe('GitHub pull request list', () => {
     ].join('\n'))
     chmodSync(path.join(bin, 'gh'), 0o755)
     const originalPath = process.env.PATH
-    const originalList = process.env.GH_TEST_LIST_JSON
     const originalGraphql = process.env.GH_TEST_GRAPHQL_JSON
     process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`
-    process.env.GH_TEST_LIST_JSON = JSON.stringify([
-      {
-        number: 12,
-        title: 'Fast list',
-        url: 'https://github.com/acme/repo/pull/12',
-        state: 'OPEN',
-        isDraft: false,
-        baseRefName: 'main',
-        headRefName: 'feature',
-        additions: 3,
-        deletions: 1,
-        createdAt: '2026-03-01T10:00:00Z',
-        updatedAt: '2026-03-01T11:00:00Z',
-        author: { login: 'octocat' },
-        assignees: [],
-        reviewRequests: [{ __typename: 'User', login: 'hubot' }],
-        latestReviews: [{ author: { login: 'reviewer' } }],
-        labels: [],
-      },
-      {
-        number: 13,
-        title: 'No checks',
-        url: 'https://github.com/acme/repo/pull/13',
-        state: 'OPEN',
-        isDraft: true,
-        baseRefName: 'main',
-        headRefName: 'other',
-        additions: 0,
-        deletions: 0,
-        createdAt: '2026-03-01T10:00:00Z',
-        updatedAt: '2026-03-01T11:00:00Z',
-        author: { login: 'hubot' },
-        assignees: [],
-        reviewRequests: [],
-        latestReviews: [],
-        labels: [],
-      },
-    ])
     process.env.GH_TEST_GRAPHQL_JSON = JSON.stringify({
       data: {
         repository: {
-          pr0: { commits: { nodes: [{ commit: { statusCheckRollup: { state: 'FAILURE' } } }] } },
-          pr1: { commits: { nodes: [{ commit: { statusCheckRollup: null } }] } },
+          pullRequests: {
+            nodes: [
+              {
+                number: 12,
+                title: 'Fast list',
+                url: 'https://github.com/acme/repo/pull/12',
+                state: 'OPEN',
+                isDraft: false,
+                baseRefName: 'main',
+                headRefName: 'feature',
+                additions: 3,
+                deletions: 1,
+                createdAt: '2026-03-01T10:00:00Z',
+                updatedAt: '2026-03-01T11:00:00Z',
+                author: { login: 'octocat' },
+                assignees: { nodes: [] },
+                reviewRequests: {
+                  nodes: [{ requestedReviewer: { __typename: 'User', login: 'hubot' } }],
+                },
+                latestReviews: { nodes: [{ author: { login: 'reviewer' } }] },
+                labels: { nodes: [] },
+                commits: { nodes: [{ commit: { statusCheckRollup: { state: 'FAILURE' } } }] },
+              },
+              {
+                number: 13,
+                title: 'No checks',
+                url: 'https://github.com/acme/repo/pull/13',
+                state: 'OPEN',
+                isDraft: true,
+                baseRefName: 'main',
+                headRefName: 'other',
+                additions: 0,
+                deletions: 0,
+                createdAt: '2026-03-01T10:00:00Z',
+                updatedAt: '2026-03-01T11:00:00Z',
+                author: { login: 'hubot' },
+                assignees: { nodes: [] },
+                reviewRequests: { nodes: [] },
+                latestReviews: { nodes: [] },
+                labels: { nodes: [] },
+                commits: { nodes: [{ commit: { statusCheckRollup: null } }] },
+              },
+            ],
+          },
         },
       },
     })
@@ -777,65 +772,8 @@ describe('GitHub pull request list', () => {
       })
     } finally {
       process.env.PATH = originalPath
-      if (originalList == null) delete process.env.GH_TEST_LIST_JSON
-      else process.env.GH_TEST_LIST_JSON = originalList
       if (originalGraphql == null) delete process.env.GH_TEST_GRAPHQL_JSON
       else process.env.GH_TEST_GRAPHQL_JSON = originalGraphql
-      rmSync(directory, { recursive: true, force: true })
-    }
-  })
-
-  test('keeps the list when check status lookup fails', async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-github-list-fail-'))
-    const bin = path.join(directory, 'bin')
-    mkdirSync(bin)
-    writeFileSync(path.join(bin, 'gh'), [
-      '#!/usr/bin/env node',
-      'const args = process.argv.slice(2)',
-      "if (args[0] === 'repo' && args[1] === 'view') {",
-      "  process.stdout.write(JSON.stringify({ nameWithOwner: 'acme/repo' }))",
-      '  process.exit(0)',
-      '}',
-      "if (args[0] === 'pr' && args[1] === 'list') {",
-      "  process.stdout.write(process.env.GH_TEST_LIST_JSON)",
-      '  process.exit(0)',
-      '}',
-      "process.stderr.write('stream error: stream ID 1; CANCEL; received from peer')",
-      'process.exit(1)',
-    ].join('\n'))
-    chmodSync(path.join(bin, 'gh'), 0o755)
-    const originalPath = process.env.PATH
-    const originalList = process.env.GH_TEST_LIST_JSON
-    process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`
-    process.env.GH_TEST_LIST_JSON = JSON.stringify([
-      {
-        number: 12,
-        title: 'Fast list',
-        url: 'https://github.com/acme/repo/pull/12',
-        state: 'OPEN',
-        isDraft: false,
-        baseRefName: 'main',
-        headRefName: 'feature',
-        additions: 3,
-        deletions: 1,
-        createdAt: '2026-03-01T10:00:00Z',
-        updatedAt: '2026-03-01T11:00:00Z',
-        author: { login: 'octocat' },
-        assignees: [],
-        reviewRequests: [],
-        latestReviews: [],
-        labels: [],
-      },
-    ])
-    try {
-      await expect(listPullRequests(directory, 'open')).resolves.toMatchObject({
-        stale: false,
-        items: [{ number: 12, checkStatus: 'unknown' }],
-      })
-    } finally {
-      process.env.PATH = originalPath
-      if (originalList == null) delete process.env.GH_TEST_LIST_JSON
-      else process.env.GH_TEST_LIST_JSON = originalList
       rmSync(directory, { recursive: true, force: true })
     }
   })
@@ -855,14 +793,10 @@ describe('GitHub pull request list', () => {
       "  process.stdout.write(JSON.stringify({ nameWithOwner: 'acme/cache-repo' }))",
       '  process.exit(0)',
       '}',
-      "if (args[0] === 'pr' && args[1] === 'list') {",
+      "if (args[0] === 'api' && args[1] === 'graphql') {",
       '  const delay = Number(process.env.GH_TEST_LIST_DELAY_MS || 0)',
       '  if (delay > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay)',
       '  fs.writeFileSync(countFile, String(Number(fs.readFileSync(countFile, "utf8")) + 1))',
-      "  process.stdout.write(process.env.GH_TEST_LIST_JSON)",
-      '  process.exit(0)',
-      '}',
-      "if (args[0] === 'api' && args[1] === 'graphql') {",
       "  process.stdout.write(process.env.GH_TEST_GRAPHQL_JSON)",
       '  process.exit(0)',
       '}',
@@ -870,33 +804,32 @@ describe('GitHub pull request list', () => {
     ].join('\n'))
     chmodSync(path.join(bin, 'gh'), 0o755)
     const originalPath = process.env.PATH
-    const originalList = process.env.GH_TEST_LIST_JSON
     const originalGraphql = process.env.GH_TEST_GRAPHQL_JSON
     process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`
-    process.env.GH_TEST_LIST_JSON = JSON.stringify([
-      {
-        number: 12,
-        title: 'Cached list',
-        url: 'https://github.com/acme/cache-repo/pull/12',
-        state: 'OPEN',
-        isDraft: false,
-        baseRefName: 'main',
-        headRefName: 'feature',
-        additions: 1,
-        deletions: 0,
-        createdAt: '2026-03-01T10:00:00Z',
-        updatedAt: '2026-03-01T11:00:00Z',
-        author: { login: 'octocat' },
-        assignees: [],
-        reviewRequests: [],
-        latestReviews: [],
-        labels: [],
-      },
-    ])
     process.env.GH_TEST_GRAPHQL_JSON = JSON.stringify({
       data: {
         repository: {
-          pr0: { commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] } },
+          pullRequests: {
+            nodes: [{
+              number: 12,
+              title: 'Cached list',
+              url: 'https://github.com/acme/cache-repo/pull/12',
+              state: 'OPEN',
+              isDraft: false,
+              baseRefName: 'main',
+              headRefName: 'feature',
+              additions: 1,
+              deletions: 0,
+              createdAt: '2026-03-01T10:00:00Z',
+              updatedAt: '2026-03-01T11:00:00Z',
+              author: { login: 'octocat' },
+              assignees: { nodes: [] },
+              reviewRequests: { nodes: [] },
+              latestReviews: { nodes: [] },
+              labels: { nodes: [] },
+              commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
+            }],
+          },
         },
       },
     })
@@ -928,11 +861,11 @@ describe('GitHub pull request list', () => {
       const afterDedupe = Number(readFileSync(countFile, 'utf8'))
 
       expirePullRequestListCache()
-      const originalListJson = process.env.GH_TEST_LIST_JSON
-      process.env.GH_TEST_LIST_JSON = 'not-json'
+      const originalGraphqlJson = process.env.GH_TEST_GRAPHQL_JSON
+      process.env.GH_TEST_GRAPHQL_JSON = 'not-json'
       await expect(listPullRequests(directory, 'open')).resolves.toMatchObject({ stale: true })
       await new Promise((resolve) => setTimeout(resolve, 50))
-      process.env.GH_TEST_LIST_JSON = originalListJson
+      process.env.GH_TEST_GRAPHQL_JSON = originalGraphqlJson
       await expect(listPullRequests(directory, 'open')).resolves.toMatchObject({
         stale: true,
         items: [{ number: 12 }],
@@ -948,8 +881,6 @@ describe('GitHub pull request list', () => {
     } finally {
       delete process.env.GH_TEST_LIST_DELAY_MS
       process.env.PATH = originalPath
-      if (originalList == null) delete process.env.GH_TEST_LIST_JSON
-      else process.env.GH_TEST_LIST_JSON = originalList
       if (originalGraphql == null) delete process.env.GH_TEST_GRAPHQL_JSON
       else process.env.GH_TEST_GRAPHQL_JSON = originalGraphql
       rmSync(directory, { recursive: true, force: true })

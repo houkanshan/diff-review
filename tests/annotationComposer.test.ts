@@ -188,6 +188,18 @@ describe('difftastic annotation placement', () => {
     expect(idsAt(placed, 0, 1, 'new')).toEqual(['once'])
     expect(idsAt(placed, 1, 1, 'new')).toEqual([])
   })
+
+  test('places replies on the same row as the parent', () => {
+    const parent = annotation('src/a.ts', 'parent')
+    const reply = annotation('src/a.ts', 'reply')
+    reply.replyToId = parent.id
+    const placed = placeDifftasticAnnotations(
+      [parent, reply],
+      [hunk({ kind: 'insert', oldLine: null, newLine: 4 })],
+    )
+
+    expect(idsAt(placed, 0, 0, 'new')).toEqual(['parent', 'reply'])
+  })
 })
 
 describe('annotationCoversLine', () => {

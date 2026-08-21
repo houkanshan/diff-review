@@ -215,7 +215,7 @@ async function refreshPullRequestList(
   const existing = pullRequestListInflight.get(inflightKey)
   if (existing != null) return existing
   const epoch = pullRequestListEpoch
-  const inflight = loadPullRequestSummaries(root, view).then((items) => {
+  const inflight = loadPullRequestSummaries(root, view, repositoryKey).then((items) => {
     const resolvedKey = repositoryKeyFromSummaries(items) ?? repositoryKey
     if (resolvedKey != null) rememberRepositoryKey(root, resolvedKey)
     if (resolvedKey != null && epoch === pullRequestListEpoch) {
@@ -237,34 +237,64 @@ async function refreshPullRequestList(
 async function loadPullRequestSummaries(
   root: string,
   view: PullRequestListView,
+  repositoryKey: string | null,
 ): Promise<PullRequestSummary[]> {
-  const filter = pullRequestListFilter(view)
-  const output = await runGitHub(
-    [
-      'pr',
-      'list',
-      '--state',
-      filter.state,
-      ...(filter.label == null ? [] : ['--label', filter.label]),
-      '--limit',
-      '50',
-      '--json',
-      SUMMARY_FIELDS,
-    ],
-    root,
+  const key = repositoryKey ?? await githubRepositoryKey(root)
+  if (key == null) {
+    throw new AppError('GITHUB_COMMAND_FAILED', 'Could not resolve GitHub repository', 400)
+  }
+  const separator = key.indexOf('/')
+  const owner = key.slice(0, separator)
+  const name = key.slice(separator + 1)
+  const output = await runGitHub(['api', 'graphql', '-f', `query=${pullRequestListQuery(owner, name, view)}`], root)
+  const response = expectObject(parseJson(output, 'GitHub pull request list'))
+  const nodes = expectArray(
+    optionalObject(optionalObject(optionalObject(response.data)?.repository)?.pullRequests)?.nodes,
   )
-  const summaries = expectArray(parseJson(output, 'GitHub pull request list')).map((row) => (
-    parsePullRequestSummary(row, 'unknown')
-  ))
-  const checkStatuses = await listPullRequestCheckStatuses(root, summaries).catch((error: unknown) => {
-    console.error(`diff-review: could not load pull request checks: ${errorMessage(error)}`)
-    return null
-  })
-  if (checkStatuses == null) return summaries
-  return summaries.map((summary) => ({
-    ...summary,
-    checkStatus: checkStatuses.get(summary.number) ?? 'none',
-  }))
+  return nodes.map(parseGraphQLPullRequestListNode)
+}
+
+function pullRequestListQuery(
+  owner: string,
+  name: string,
+  view: PullRequestListView,
+): string {
+  const filter = pullRequestListFilter(view)
+  const states = filter.state === 'open'
+    ? '[OPEN]'
+    : filter.state === 'merged'
+      ? '[MERGED]'
+      : '[OPEN, CLOSED, MERGED]'
+  const labels = filter.label == null ? '' : `, labels: ${JSON.stringify([filter.label])}`
+  return `query { repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) {
+    pullRequests(first: 20, states: ${states}${labels}, orderBy: {field: CREATED_AT, direction: DESC}) {
+      nodes {
+        number title url state isDraft baseRefName headRefName additions deletions createdAt updatedAt
+        author { login name }
+        assignees(first: 100) { nodes { login name } }
+        reviewRequests(first: 100) {
+          nodes { requestedReviewer { __typename ... on User { login name } ... on Team { slug name } } }
+        }
+        latestReviews(first: 100) { nodes { author { login name } } }
+        labels(first: 100) { nodes { name color } }
+        commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+      }
+    }
+  } }`
+}
+
+function parseGraphQLPullRequestListNode(value: unknown): PullRequestSummary {
+  const raw = expectObject(value)
+  return parsePullRequestSummary({
+    ...raw,
+    assignees: expectArray(optionalObject(raw.assignees)?.nodes),
+    reviewRequests: expectArray(optionalObject(raw.reviewRequests)?.nodes).flatMap((request) => {
+      const reviewer = optionalObject(request)?.requestedReviewer
+      return reviewer == null ? [] : [reviewer]
+    }),
+    latestReviews: expectArray(optionalObject(raw.latestReviews)?.nodes),
+    labels: expectArray(optionalObject(raw.labels)?.nodes),
+  }, parseCheckRollupState(checkRollupState(raw)))
 }
 
 export async function getPullRequestDetails(
@@ -753,25 +783,6 @@ function pullRequestListFilter(
     case 'merged':
       return { state: 'merged' }
   }
-}
-
-async function listPullRequestCheckStatuses(
-  root: string,
-  summaries: PullRequestSummary[],
-): Promise<Map<number, PullRequestCheckStatus>> {
-  if (summaries.length === 0) return new Map()
-  const repository = parseGitHubRepositoryUrl(summaries[0].url)
-  const selections = summaries.map((summary, index) =>
-    `pr${index}: pullRequest(number: ${summary.number}) { commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } }`,
-  ).join('\n')
-  const query = `query { repository(owner: ${JSON.stringify(repository.owner)}, name: ${JSON.stringify(repository.name)}) { ${selections} } }`
-  const output = await runGitHub(['api', 'graphql', '-f', `query=${query}`], root)
-  const response = expectObject(parseJson(output, 'GitHub pull request checks'))
-  const repositoryResult = expectObject(expectObject(response.data).repository)
-  return new Map(summaries.map((summary, index) => [
-    summary.number,
-    parseCheckRollupState(checkRollupState(repositoryResult[`pr${index}`])),
-  ]))
 }
 
 function checkRollupState(value: unknown): string | null {
