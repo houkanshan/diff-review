@@ -76,12 +76,20 @@ export function applyHoveredRange(
   if (annotation == null || annotation.filePath !== context.item.id) return
 
   for (const element of root.querySelectorAll<HTMLElement>('[data-line-type]')) {
-    const lineType = element.dataset.lineType
-    const side = lineType === 'change-addition' ? 'new' : lineType === 'change-deletion' ? 'old' : null
     const line = Number(element.dataset.line ?? element.dataset.columnNumber)
-    if (side == null || !Number.isFinite(line)) continue
-    if (annotationCoversLine(annotation, side, line)) {
+    if (!Number.isFinite(line)) continue
+    if (hoveredLineSides(element).some((side) => annotationCoversLine(annotation, side, line))) {
       element.setAttribute('data-review-hover', '')
     }
   }
+}
+
+function hoveredLineSides(element: HTMLElement): Array<'old' | 'new'> {
+  const lineType = element.dataset.lineType
+  if (lineType === 'change-addition') return ['new']
+  if (lineType === 'change-deletion') return ['old']
+  if (lineType !== 'context' && lineType !== 'context-expanded') return []
+  if (element.closest('[data-deletions]') != null) return ['old']
+  if (element.closest('[data-additions]') != null) return ['new']
+  return ['old', 'new']
 }

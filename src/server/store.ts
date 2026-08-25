@@ -257,6 +257,25 @@ export class ReviewStore {
     ))
   }
 
+  findPullRequestHeadRevision(
+    repositoryRoot: string,
+    number: number,
+    headOid: string,
+  ): ReviewSession | null {
+    const rows = this.database
+      .prepare(`
+        SELECT * FROM sessions
+        WHERE repository_root = ? AND revision_head_oid = ?
+        ORDER BY updated_at DESC
+      `)
+      .all(repositoryRoot, headOid) as unknown as SessionRow[]
+    const row = rows.find((candidate) => {
+      const target = JSON.parse(candidate.target_json) as ReviewTarget
+      return target.kind === 'pr' && target.number === number
+    })
+    return row == null ? null : this.sessionFromRow(row)
+  }
+
   findLocalRevision(
     repositoryRoot: string,
     baseOid: string,

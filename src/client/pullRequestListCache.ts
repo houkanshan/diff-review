@@ -10,7 +10,7 @@ import type {
 } from '../shared/types'
 
 const STORAGE_PREFIX = 'diff-review-pull-requests:'
-const STORAGE_VERSION = 1
+const STORAGE_VERSION = 2
 
 const PULL_REQUEST_STATES = new Set<PullRequestState>(['OPEN', 'CLOSED', 'MERGED'])
 const CHECK_STATUSES = new Set<PullRequestCheckStatus>(['none', 'unknown', 'pending', 'pass', 'fail'])
@@ -29,6 +29,8 @@ export function parseStoredPullRequestList(raw: string | null): PullRequestListR
     if (!isRecord(parsed) || parsed.version !== STORAGE_VERSION || !isRecord(parsed.list)) return undefined
     const items = parsed.list.items
     if (!Array.isArray(items) || typeof parsed.list.fetchedAt !== 'string') return undefined
+    const pageInfo = parseStoredPageInfo(parsed.list.pageInfo)
+    if (pageInfo == null) return undefined
     const summaries: PullRequestSummary[] = []
     for (const item of items) {
       const summary = parsePullRequestSummary(item)
@@ -39,6 +41,7 @@ export function parseStoredPullRequestList(raw: string | null): PullRequestListR
       items: summaries,
       fetchedAt: parsed.list.fetchedAt,
       stale: parsed.list.stale === true,
+      pageInfo,
     }
   } catch {
     return undefined
@@ -70,6 +73,15 @@ export function storePullRequestList(
     )
   } catch {
     // Ignore quota / private-mode failures.
+  }
+}
+
+function parseStoredPageInfo(value: unknown): PullRequestListResponse['pageInfo'] | undefined {
+  if (!isRecord(value) || typeof value.hasNextPage !== 'boolean') return undefined
+  if (value.endCursor !== null && typeof value.endCursor !== 'string') return undefined
+  return {
+    hasNextPage: value.hasNextPage,
+    endCursor: value.endCursor === '' ? null : value.endCursor,
   }
 }
 

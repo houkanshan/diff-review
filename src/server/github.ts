@@ -12,6 +12,7 @@ import type {
   PullRequestDetails,
   PullRequestMergeable,
   PullRequestReviewEvent,
+  PullRequestListPageInfo,
   PullRequestListResponse,
   PullRequestListView,
   PullRequestState,
@@ -101,11 +102,17 @@ const issueReferenceCache = new Map<string, Promise<ResolvedIssueReference | nul
 const PULL_REQUEST_LIST_TTL_MS = 60_000
 const repositoryKeyByRoot = new Map<string, string>()
 let pullRequestListEpoch = 0
-const pullRequestListInflight = new Map<string, Promise<PullRequestSummary[]>>()
+const pullRequestListInflight = new Map<string, Promise<PullRequestListPage>>()
 const pullRequestListCache = new Map<string, {
   items: PullRequestSummary[]
   fetchedAt: number
+  pageInfo: PullRequestListPageInfo
 }>()
+
+interface PullRequestListPage {
+  items: PullRequestSummary[]
+  pageInfo: PullRequestListPageInfo
+}
 
 function issueReferenceKey(reference: { owner: string; repository: string; number: number }): string {
   return `${reference.owner.toLowerCase()}/${reference.repository.toLowerCase()}#${reference.number}`
@@ -119,8 +126,9 @@ function listResponse(
   items: PullRequestSummary[],
   fetchedAt: number,
   stale: boolean,
+  pageInfo: PullRequestListPageInfo,
 ): PullRequestListResponse {
-  return { items, fetchedAt: new Date(fetchedAt).toISOString(), stale }
+  return { items, fetchedAt: new Date(fetchedAt).toISOString(), stale, pageInfo }
 }
 
 function rememberRepositoryKey(root: string, repositoryKey: string): void {
@@ -175,56 +183,69 @@ export function resetPullRequestListCache(): void {
   pullRequestListCache.clear()
 }
 
+export function invalidatePullRequestDetailsCache(): void {
+  pullRequestDetailsEpoch += 1
+  pullRequestDetailsCache.clear()
+  pullRequestDetailsInflight.clear()
+}
+
 export function expirePullRequestListCache(): void {
   for (const [key, entry] of pullRequestListCache) {
-    pullRequestListCache.set(key, { items: entry.items, fetchedAt: 1 })
+    pullRequestListCache.set(key, {
+      items: entry.items,
+      fetchedAt: 1,
+      pageInfo: entry.pageInfo,
+    })
   }
 }
 
 export async function listPullRequests(
   root: string,
   view: PullRequestListView,
-  options?: { fresh?: boolean },
+  options?: { fresh?: boolean; after?: string },
 ): Promise<PullRequestListResponse> {
+  const after = options?.after
   const repositoryKey = await githubRepositoryKey(root)
-  const cacheKey = repositoryKey == null ? null : listCacheKey(repositoryKey, view)
+  const cacheKey = repositoryKey == null || after != null ? null : listCacheKey(repositoryKey, view)
   const entry = cacheKey == null ? undefined : pullRequestListCache.get(cacheKey)
-  if (options?.fresh !== true && entry != null) {
+  if (after == null && options?.fresh !== true && entry != null) {
     const stale = Date.now() - entry.fetchedAt >= PULL_REQUEST_LIST_TTL_MS
     if (stale) {
       void refreshPullRequestList(root, view, repositoryKey).catch((error: unknown) => {
         console.error(`diff-review: could not refresh pull request list: ${errorMessage(error)}`)
       })
     }
-    return listResponse(entry.items, entry.fetchedAt, stale)
+    return listResponse(entry.items, entry.fetchedAt, stale, entry.pageInfo)
   }
-  const items = await refreshPullRequestList(root, view, repositoryKey)
+  const page = await refreshPullRequestList(root, view, repositoryKey, after)
   const resolvedKey = repositoryKey ?? await githubRepositoryKey(root)
-  const fetchedAt = resolvedKey == null
+  const fetchedAt = after != null || resolvedKey == null
     ? Date.now()
     : pullRequestListCache.get(listCacheKey(resolvedKey, view))?.fetchedAt ?? Date.now()
-  return listResponse(items, fetchedAt, false)
+  return listResponse(page.items, fetchedAt, false, page.pageInfo)
 }
 
 async function refreshPullRequestList(
   root: string,
   view: PullRequestListView,
   repositoryKey: string | null,
-): Promise<PullRequestSummary[]> {
-  const inflightKey = repositoryKey == null ? `pending:${root}:${view}` : listCacheKey(repositoryKey, view)
+  after?: string,
+): Promise<PullRequestListPage> {
+  const inflightKey = `${repositoryKey == null ? `pending:${root}:${view}` : listCacheKey(repositoryKey, view)}:${after ?? ''}`
   const existing = pullRequestListInflight.get(inflightKey)
   if (existing != null) return existing
   const epoch = pullRequestListEpoch
-  const inflight = loadPullRequestSummaries(root, view, repositoryKey).then((items) => {
-    const resolvedKey = repositoryKeyFromSummaries(items) ?? repositoryKey
+  const inflight = loadPullRequestSummaries(root, view, repositoryKey, after).then((page) => {
+    const resolvedKey = repositoryKeyFromSummaries(page.items) ?? repositoryKey
     if (resolvedKey != null) rememberRepositoryKey(root, resolvedKey)
-    if (resolvedKey != null && epoch === pullRequestListEpoch) {
+    if (after == null && resolvedKey != null && epoch === pullRequestListEpoch) {
       pullRequestListCache.set(listCacheKey(resolvedKey, view), {
-        items,
+        items: page.items,
         fetchedAt: Date.now(),
+        pageInfo: page.pageInfo,
       })
     }
-    return items
+    return page
   }).finally(() => {
     if (pullRequestListInflight.get(inflightKey) === inflight) {
       pullRequestListInflight.delete(inflightKey)
@@ -238,7 +259,8 @@ async function loadPullRequestSummaries(
   root: string,
   view: PullRequestListView,
   repositoryKey: string | null,
-): Promise<PullRequestSummary[]> {
+  after?: string,
+): Promise<PullRequestListPage> {
   const key = repositoryKey ?? await githubRepositoryKey(root)
   if (key == null) {
     throw new AppError('GITHUB_COMMAND_FAILED', 'Could not resolve GitHub repository', 400)
@@ -246,18 +268,33 @@ async function loadPullRequestSummaries(
   const separator = key.indexOf('/')
   const owner = key.slice(0, separator)
   const name = key.slice(separator + 1)
-  const output = await runGitHub(['api', 'graphql', '-f', `query=${pullRequestListQuery(owner, name, view)}`], root)
-  const response = expectObject(parseJson(output, 'GitHub pull request list'))
-  const nodes = expectArray(
-    optionalObject(optionalObject(optionalObject(response.data)?.repository)?.pullRequests)?.nodes,
+  const output = await runGitHub(
+    ['api', 'graphql', '-f', `query=${pullRequestListQuery(owner, name, view, after)}`],
+    root,
   )
-  return nodes.map(parseGraphQLPullRequestListNode)
+  const response = expectObject(parseJson(output, 'GitHub pull request list'))
+  const pullRequests = optionalObject(optionalObject(optionalObject(response.data)?.repository)?.pullRequests)
+  const nodes = expectArray(pullRequests?.nodes)
+  return {
+    items: nodes.map(parseGraphQLPullRequestListNode),
+    pageInfo: parsePullRequestListPageInfo(pullRequests?.pageInfo),
+  }
+}
+
+function parsePullRequestListPageInfo(value: unknown): PullRequestListPageInfo {
+  const raw = optionalObject(value)
+  const endCursor = raw?.endCursor
+  return {
+    hasNextPage: raw?.hasNextPage === true,
+    endCursor: typeof endCursor === 'string' && endCursor !== '' ? endCursor : null,
+  }
 }
 
 function pullRequestListQuery(
   owner: string,
   name: string,
   view: PullRequestListView,
+  after?: string,
 ): string {
   const filter = pullRequestListFilter(view)
   const states = filter.state === 'open'
@@ -266,16 +303,18 @@ function pullRequestListQuery(
       ? '[MERGED]'
       : '[OPEN, CLOSED, MERGED]'
   const labels = filter.label == null ? '' : `, labels: ${JSON.stringify([filter.label])}`
+  const afterArg = after == null || after === '' ? '' : `, after: ${JSON.stringify(after)}`
   return `query { repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) {
-    pullRequests(first: 20, states: ${states}${labels}, orderBy: {field: CREATED_AT, direction: DESC}) {
+    pullRequests(first: 20, states: ${states}${labels}${afterArg}, orderBy: {field: CREATED_AT, direction: DESC}) {
+      pageInfo { hasNextPage endCursor }
       nodes {
         number title url state isDraft baseRefName headRefName additions deletions createdAt updatedAt
-        author { login name }
+        author { login ... on User { name } }
         assignees(first: 100) { nodes { login name } }
         reviewRequests(first: 100) {
           nodes { requestedReviewer { __typename ... on User { login name } ... on Team { slug name } } }
         }
-        latestReviews(first: 100) { nodes { author { login name } } }
+        latestReviews(first: 100) { nodes { author { login ... on User { name } } } }
         labels(first: 100) { nodes { name color } }
         commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
       }
@@ -297,11 +336,42 @@ function parseGraphQLPullRequestListNode(value: unknown): PullRequestSummary {
   }, parseCheckRollupState(checkRollupState(raw)))
 }
 
+const PULL_REQUEST_DETAILS_TTL_MS = 10_000
+let pullRequestDetailsEpoch = 0
+const pullRequestDetailsInflight = new Map<string, Promise<PullRequestDetails>>()
+const pullRequestDetailsCache = new Map<string, { details: PullRequestDetails; fetchedAt: number }>()
+
 export async function getPullRequestDetails(
   root: string,
   number: number,
 ): Promise<PullRequestDetails> {
   validatePullRequestNumber(number)
+  const key = `${root}:${number}`
+  const cached = pullRequestDetailsCache.get(key)
+  if (cached != null && Date.now() - cached.fetchedAt < PULL_REQUEST_DETAILS_TTL_MS) {
+    return cached.details
+  }
+  const existing = pullRequestDetailsInflight.get(key)
+  if (existing != null) return existing
+  const epoch = pullRequestDetailsEpoch
+  const inflight = loadPullRequestDetails(root, number).then((details) => {
+    if (epoch === pullRequestDetailsEpoch) {
+      pullRequestDetailsCache.set(key, { details, fetchedAt: Date.now() })
+    }
+    return details
+  }).finally(() => {
+    if (pullRequestDetailsInflight.get(key) === inflight) {
+      pullRequestDetailsInflight.delete(key)
+    }
+  })
+  pullRequestDetailsInflight.set(key, inflight)
+  return inflight
+}
+
+async function loadPullRequestDetails(
+  root: string,
+  number: number,
+): Promise<PullRequestDetails> {
   const [detailsOutput, reviewsOutput, reviewCommentsOutput, timelineOutput] = await Promise.all([
     runGitHub(['pr', 'view', String(number), '--json', DETAILS_FIELDS], root),
     runGitHub(
@@ -597,7 +667,7 @@ export async function submitPullRequestReview(
 ): Promise<void> {
   validatePullRequestNumber(number)
   const comment = body.trim()
-  if (!comment && comments.length === 0) {
+  if (event === 'COMMENT' && !comment && comments.length === 0) {
     throw new AppError('INVALID_PULL_REQUEST_REVIEW', 'Review must include a summary or comments')
   }
   const revision = commitId.trim()

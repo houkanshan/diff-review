@@ -8,6 +8,7 @@ import type {
 } from '@pierre/diffs'
 
 import { annotationThreads, isAnnotationThreadRoot } from '../shared/annotationThreads'
+import { nearestVisibleLine, snapPierreLineNumber } from './annotationPlacement'
 import type { AnnotationIntent, DifftasticHunk, SessionAnnotation } from '../shared/types'
 
 export type ReviewLineAnnotation =
@@ -35,6 +36,26 @@ export const fileViewedAtom = atomFamily((filePath: string) => atom(false))
 export const composerSessionIdAtom = atom<string | null>(null)
 export const reviewCommentAvailableAtom = atom(false)
 
+export type InlineAnnotationUi = {
+  editingId: string | null
+  busyId: string | null
+  draft: string
+  draftIntent: AnnotationIntent
+}
+
+export const EMPTY_INLINE_ANNOTATION_UI: InlineAnnotationUi = {
+  editingId: null,
+  busyId: null,
+  draft: '',
+  draftIntent: 'annotation',
+}
+
+export const inlineAnnotationUiAtom = atomFamily((annotationId: string) =>
+  atom<InlineAnnotationUi>(EMPTY_INLINE_ANNOTATION_UI),
+)
+
+export const stickyOverlayIdsAtom = atom<ReadonlySet<string>>(new Set<string>())
+
 export function visibleAnnotationsForFile(
   annotations: SessionAnnotation[],
   filePath: string,
@@ -46,6 +67,14 @@ export function visibleAnnotationsForFile(
       annotation.archivedAt == null &&
       (annotation.filePath === filePath || annotation.filePath === prevName),
   )
+}
+
+export function fileIdForAnnotation(
+  annotation: { filePath: string },
+  files: readonly { name: string; prevName?: string | null }[],
+): string {
+  const renamed = files.find((file) => file.prevName === annotation.filePath)
+  return renamed?.name ?? annotation.filePath
 }
 
 export function annotationsForFile(
@@ -61,11 +90,14 @@ export function annotationsForFile(
   const visibleIds = new Set(visible.map((annotation) => annotation.id))
   const result: DiffLineAnnotation<ReviewLineAnnotation>[] = visible
     .filter((annotation) => isAnnotationThreadRoot(annotation, visibleIds))
-    .map((annotation) => ({
-    side: (annotation.endSide ?? annotation.side) === 'new' ? 'additions' : 'deletions',
-    lineNumber: annotation.endLine,
-    metadata: { kind: 'saved', annotation },
-  }))
+    .map((annotation) => {
+    const side = annotation.endSide ?? annotation.side
+    return {
+      side: side === 'new' ? 'additions' : 'deletions',
+      lineNumber: snapPierreLineNumber(fileDiff, side, annotation.endLine),
+      metadata: { kind: 'saved', annotation },
+    }
+  })
 
   if (
     selection != null &&
@@ -77,7 +109,11 @@ export function annotationsForFile(
       : selection.range.end
     result.push({
       side,
-      lineNumber,
+      lineNumber: snapPierreLineNumber(
+        fileDiff,
+        side === 'additions' ? 'new' : 'old',
+        lineNumber,
+      ),
       metadata: { kind: 'composer', selection },
     })
   }
@@ -153,20 +189,9 @@ function nearestVisibleSlot(
   target: number,
   candidates: Array<{ key: string; line: number }>,
 ): { key: string; line: number } | null {
-  let best: { key: string; line: number } | null = null
-  let bestDistance = Infinity
-  for (const candidate of candidates) {
-    const distance = Math.abs(candidate.line - target)
-    if (
-      best == null ||
-      distance < bestDistance ||
-      (distance === bestDistance && candidate.line < best.line)
-    ) {
-      best = candidate
-      bestDistance = distance
-    }
-  }
-  return best
+  const line = nearestVisibleLine(target, candidates.map((candidate) => candidate.line))
+  if (line == null) return null
+  return candidates.find((candidate) => candidate.line === line) ?? null
 }
 
 export function areCodeViewSelectionsEqual(

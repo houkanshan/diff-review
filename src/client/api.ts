@@ -8,6 +8,7 @@ import type {
   DifftasticFileDiff,
   OpenPullRequestInput,
   PiReviewStatus,
+  PullRequestDetails,
   PullRequestListResponse,
   PullRequestListView,
   PullRequestRevision,
@@ -56,11 +57,24 @@ export function getRepositoryInfo(repositoryPath: string): Promise<RepositoryInf
 export function getPullRequests(
   repositoryPath: string,
   view: PullRequestListView,
-  options?: { fresh?: boolean },
+  options?: { fresh?: boolean; after?: string },
 ): Promise<PullRequestListResponse> {
   const fresh = options?.fresh === true ? '&fresh=1' : ''
+  const after = options?.after == null || options.after === ''
+    ? ''
+    : `&after=${encodeURIComponent(options.after)}`
   return request(
-    `/api/pull-requests?repositoryPath=${encodeURIComponent(repositoryPath)}&view=${view}${fresh}`,
+    `/api/pull-requests?repositoryPath=${encodeURIComponent(repositoryPath)}&view=${view}${fresh}${after}`,
+    { timeoutMs: GITHUB_READ_TIMEOUT_MS },
+  )
+}
+
+export function getPullRequest(
+  number: number,
+  repositoryPath: string,
+): Promise<PullRequestDetails> {
+  return request(
+    `/api/pull-requests/${number}?repositoryPath=${encodeURIComponent(repositoryPath)}`,
     { timeoutMs: GITHUB_READ_TIMEOUT_MS },
   )
 }

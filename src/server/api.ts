@@ -24,6 +24,10 @@ import type {
 } from '../shared/types.js'
 import { sessionUsesFullCommitRange, targetSupportsStaging } from '../shared/types.js'
 import { pullRequestAllowsReviewEvent } from '../shared/pull-request.js'
+import {
+  reusablePullRequestSession,
+  selectOpenPullRequestSession,
+} from '../shared/pullRequestRevision.js'
 import { AppError, errorMessage } from './errors.js'
 import { getDifftasticAvailability, renderDifftasticFile } from './difftastic.js'
 import {
@@ -48,6 +52,7 @@ import {
   getPullRequestDetails,
   getPullRequestRevisionDetails,
   addPullRequestComment,
+  invalidatePullRequestDetailsCache,
   invalidatePullRequestListCache,
   listPullRequests,
   removePullRequestLabel,
@@ -135,6 +140,7 @@ export class ApiHandler {
     const fileDifftasticMatch = /^\/api\/sessions\/([^/]+)\/difftastic$/.exec(url.pathname)
     const piReviewMatch = /^\/api\/sessions\/([^/]+)\/pi-review$/.exec(url.pathname)
     const piRunLeaseMatch = /^\/api\/pi-runs\/([^/]+)\/lease$/.exec(url.pathname)
+    const pullRequestMatch = /^\/api\/pull-requests\/(\d+)$/.exec(url.pathname)
     const pullRequestOpenMatch = /^\/api\/pull-requests\/(\d+)\/open$/.exec(url.pathname)
     const pullRequestRevisionsMatch = /^\/api\/pull-requests\/(\d+)\/revisions$/.exec(
       url.pathname,
@@ -176,7 +182,18 @@ export class ApiHandler {
       const root = await resolveRepository(requiredQuery(url, 'repositoryPath'))
       const view = parsePullRequestListView(requiredQuery(url, 'view'))
       const fresh = url.searchParams.get('fresh') === '1'
-      sendJson(response, 200, await listPullRequests(root, view, { fresh }))
+      const after = url.searchParams.get('after') ?? undefined
+      sendJson(response, 200, await listPullRequests(root, view, {
+        fresh,
+        after: after == null || after === '' ? undefined : after,
+      }))
+      return
+    }
+
+    if (method === 'GET' && pullRequestMatch != null) {
+      const number = Number(pullRequestMatch[1])
+      const root = await resolveRepository(requiredQuery(url, 'repositoryPath'))
+      sendJson(response, 200, await getPullRequestDetails(root, number))
       return
     }
 
@@ -184,9 +201,12 @@ export class ApiHandler {
       const number = Number(pullRequestOpenMatch[1])
       const input = parseOpenPullRequestInput(await readJson(request))
       const root = await resolveRepository(input.repositoryPath)
-      const details = await getPullRequestDetails(root, number)
       const ignoreWhitespace = true
-      const resolved = await resolvePullRequestRevision(root, details, ignoreWhitespace)
+      const details = await getPullRequestDetails(root, number)
+      const existingCurrent = reusablePullRequestSession(
+        this.store.findPullRequestHeadRevision(root, number, details.headRefOid),
+        details.headRefOid,
+      )
       if (details.mergeable === 'CONFLICTING') {
         details.conflictFiles = await listMergeConflictFiles(
           root,
@@ -195,25 +215,16 @@ export class ApiHandler {
         )
       }
       const target: ReviewTarget = { kind: 'pr', number }
-      const currentSession = this.createOrReuseSession(
+      const currentSession = existingCurrent ?? this.createOrReuseSession(
         root,
         target,
-        resolved,
+        await resolvePullRequestRevision(root, details, ignoreWhitespace),
         ignoreWhitespace,
       )
-      const selectedSession = input.revisionId == null
-        ? currentSession
-        : this.store.getSession(input.revisionId)
-      if (
-        selectedSession.repositoryRoot !== root ||
-        selectedSession.target.kind !== 'pr' ||
-        selectedSession.target.number !== number
-      ) {
-        throw new AppError(
-          'INVALID_PULL_REQUEST_REVISION',
-          'The selected revision does not belong to this pull request',
-        )
-      }
+      const selectedSession = this.resolveOpenPullRequestSession(
+        currentSession,
+        input.revisionId,
+      )
       const workspace: PullRequestWorkspace = {
         details,
         currentSession,
@@ -232,6 +243,7 @@ export class ApiHandler {
       const input = parseUpdatePullRequestLabelInput(await readJson(request))
       const root = await resolveRepository(input.repositoryPath)
       await removePullRequestLabel(root, number, label)
+      invalidatePullRequestDetailsCache()
       await invalidatePullRequestListCache(root)
       response.writeHead(204).end()
       return
@@ -242,6 +254,7 @@ export class ApiHandler {
       const input = parseAddPullRequestCommentInput(await readJson(request))
       const root = await resolveRepository(input.repositoryPath)
       await addPullRequestComment(root, number, input.body, input.replyToId)
+      invalidatePullRequestDetailsCache()
       response.writeHead(204).end()
       return
     }
@@ -282,6 +295,7 @@ export class ApiHandler {
         session.id,
         pendingComments.map((annotation) => annotation.id),
       )
+      invalidatePullRequestDetailsCache()
       this.emitSessionUpdate(session.id)
       response.writeHead(204).end()
       return
@@ -292,6 +306,7 @@ export class ApiHandler {
       const input = parseSquashMergePullRequestInput(await readJson(request))
       const root = await resolveRepository(input.repositoryPath)
       await squashMergePullRequest(root, number, input.expectedHeadOid)
+      invalidatePullRequestDetailsCache()
       await invalidatePullRequestListCache(root)
       response.writeHead(204).end()
       return
@@ -772,6 +787,19 @@ export class ApiHandler {
       'Cache-Control': 'private, max-age=604800, immutable',
     })
     response.end(cached.body)
+  }
+
+  private resolveOpenPullRequestSession(
+    currentSession: ReviewSession,
+    revisionId: string | null | undefined,
+  ): ReviewSession {
+    if (revisionId == null || revisionId === currentSession.id) return currentSession
+    try {
+      return selectOpenPullRequestSession(currentSession, this.store.getSession(revisionId))
+    } catch (error) {
+      if (!(error instanceof AppError) || error.code !== 'SESSION_NOT_FOUND') throw error
+    }
+    return currentSession
   }
 
   private createOrReuseSession(

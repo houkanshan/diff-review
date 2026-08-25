@@ -111,7 +111,7 @@ printf '%s\\n' '{\"merged\":true,\"message\":\"Pull Request successfully merged\
     }
   })
 
-  test('rejects an empty review with no summary or comments', async () => {
+  test('rejects an empty comment review with no summary or comments', async () => {
     await expect(submitPullRequestReview('.', 42, 'COMMENT', '   ', 'def456', [])).rejects.toThrow(
       'Review must include a summary or comments',
     )
@@ -690,7 +690,7 @@ describe('GitHub pull request list', () => {
       '}',
       "if (args[0] === 'api' && args[1] === 'graphql') {",
       "  const query = args.find((arg) => arg.startsWith('query=')) ?? ''",
-      "  if (!query.includes('CREATED_AT') || !query.includes('statusCheckRollup { state }')) {",
+      "  if (!query.includes('pullRequests(first: 20,') || !query.includes('pageInfo { hasNextPage endCursor }') || !query.includes('orderBy: {field: CREATED_AT, direction: DESC}') || !query.includes('author { login ... on User { name } }') || !query.includes('statusCheckRollup { state }')) {",
       "    process.stderr.write('expected combined list query')",
       '    process.exit(1)',
       '  }',
@@ -708,6 +708,7 @@ describe('GitHub pull request list', () => {
       data: {
         repository: {
           pullRequests: {
+            pageInfo: { hasNextPage: true, endCursor: 'cursor-20' },
             nodes: [
               {
                 number: 12,
@@ -757,6 +758,7 @@ describe('GitHub pull request list', () => {
     try {
       await expect(listPullRequests(directory, 'open')).resolves.toMatchObject({
         stale: false,
+        pageInfo: { hasNextPage: true, endCursor: 'cursor-20' },
         items: [
         {
           number: 12,
@@ -774,6 +776,81 @@ describe('GitHub pull request list', () => {
       process.env.PATH = originalPath
       if (originalGraphql == null) delete process.env.GH_TEST_GRAPHQL_JSON
       else process.env.GH_TEST_GRAPHQL_JSON = originalGraphql
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test('loads the next page after a cursor without replacing the first-page cache', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-github-list-page-'))
+    const bin = path.join(directory, 'bin')
+    mkdirSync(bin)
+    writeFileSync(path.join(bin, 'gh'), [
+      '#!/usr/bin/env node',
+      'const args = process.argv.slice(2)',
+      "if (args[0] === 'repo' && args[1] === 'view') {",
+      "  process.stdout.write(JSON.stringify({ nameWithOwner: 'acme/repo' }))",
+      '  process.exit(0)',
+      '}',
+      "if (args[0] === 'api' && args[1] === 'graphql') {",
+      "  const query = args.find((arg) => arg.startsWith('query=')) ?? ''",
+      "  if (query.includes('after:') && query.includes('cursor-20')) {",
+      "    process.stdout.write(process.env.GH_TEST_GRAPHQL_PAGE_JSON)",
+      '    process.exit(0)',
+      '  }',
+      "  process.stdout.write(process.env.GH_TEST_GRAPHQL_JSON)",
+      '  process.exit(0)',
+      '}',
+      'process.exit(1)',
+    ].join('\n'))
+    chmodSync(path.join(bin, 'gh'), 0o755)
+    const originalPath = process.env.PATH
+    const originalGraphql = process.env.GH_TEST_GRAPHQL_JSON
+    const originalPage = process.env.GH_TEST_GRAPHQL_PAGE_JSON
+    process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`
+    const node = (number: number, title: string) => ({
+      number,
+      title,
+      url: `https://github.com/acme/repo/pull/${number}`,
+      state: 'OPEN',
+      isDraft: false,
+      baseRefName: 'main',
+      headRefName: 'feature',
+      additions: 1,
+      deletions: 0,
+      createdAt: '2026-03-01T10:00:00Z',
+      updatedAt: '2026-03-01T11:00:00Z',
+      author: { login: 'octocat' },
+      assignees: { nodes: [] },
+      reviewRequests: { nodes: [] },
+      latestReviews: { nodes: [] },
+      labels: { nodes: [] },
+      commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
+    })
+    process.env.GH_TEST_GRAPHQL_JSON = JSON.stringify({
+      data: { repository: { pullRequests: { pageInfo: { hasNextPage: true, endCursor: 'cursor-20' }, nodes: [node(12, 'First')] } } },
+    })
+    process.env.GH_TEST_GRAPHQL_PAGE_JSON = JSON.stringify({
+      data: { repository: { pullRequests: { pageInfo: { hasNextPage: false, endCursor: 'cursor-40' }, nodes: [node(11, 'Older')] } } },
+    })
+    try {
+      await expect(listPullRequests(directory, 'open')).resolves.toMatchObject({
+        items: [{ number: 12 }],
+        pageInfo: { hasNextPage: true, endCursor: 'cursor-20' },
+      })
+      await expect(listPullRequests(directory, 'open', { after: 'cursor-20' })).resolves.toMatchObject({
+        items: [{ number: 11, title: 'Older' }],
+        pageInfo: { hasNextPage: false, endCursor: 'cursor-40' },
+      })
+      await expect(listPullRequests(directory, 'open')).resolves.toMatchObject({
+        items: [{ number: 12 }],
+        pageInfo: { hasNextPage: true, endCursor: 'cursor-20' },
+      })
+    } finally {
+      process.env.PATH = originalPath
+      if (originalGraphql == null) delete process.env.GH_TEST_GRAPHQL_JSON
+      else process.env.GH_TEST_GRAPHQL_JSON = originalGraphql
+      if (originalPage == null) delete process.env.GH_TEST_GRAPHQL_PAGE_JSON
+      else process.env.GH_TEST_GRAPHQL_PAGE_JSON = originalPage
       rmSync(directory, { recursive: true, force: true })
     }
   })
@@ -810,6 +887,7 @@ describe('GitHub pull request list', () => {
       data: {
         repository: {
           pullRequests: {
+            pageInfo: { hasNextPage: false, endCursor: 'cursor-1' },
             nodes: [{
               number: 12,
               title: 'Cached list',

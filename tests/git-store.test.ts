@@ -795,6 +795,10 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
     expect(session.ignoreWhitespace).toBe(true)
     expect(store.findPullRequestRevision(fixture.repository, 42, baseOid, headOid)?.id)
       .toBe(session.id)
+    expect(store.findPullRequestHeadRevision(fixture.repository, 42, headOid)?.id)
+      .toBe(session.id)
+    expect(store.findPullRequestHeadRevision(fixture.repository, 43, headOid)).toBeNull()
+    expect(store.findPullRequestHeadRevision(fixture.repository, 42, baseOid)).toBeNull()
     expect(store.findPullRequestRevision(fixture.repository, 43, baseOid, headOid)).toBeNull()
 
     store.addAnnotation(session.id, {

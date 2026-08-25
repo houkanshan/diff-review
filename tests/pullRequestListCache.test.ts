@@ -26,6 +26,7 @@ const list: PullRequestListResponse = {
   items: [summary],
   fetchedAt: '2026-03-22T00:00:00.000Z',
   stale: false,
+  pageInfo: { hasNextPage: false, endCursor: null },
 }
 
 function encode(payload: unknown): string {
@@ -38,16 +39,17 @@ describe('parseStoredPullRequestList', () => {
     expect(parseStoredPullRequestList('')).toBeUndefined()
     expect(parseStoredPullRequestList('{')).toBeUndefined()
     expect(parseStoredPullRequestList(encode(list))).toBeUndefined()
-    expect(parseStoredPullRequestList(encode({ version: 1, list: { fetchedAt: list.fetchedAt } }))).toBeUndefined()
+    expect(parseStoredPullRequestList(encode({ version: 2, list: { fetchedAt: list.fetchedAt } }))).toBeUndefined()
+    expect(parseStoredPullRequestList(encode({ version: 1, list }))).toBeUndefined()
     expect(parseStoredPullRequestList(encode({
-      version: 1,
+      version: 2,
       list: { ...list, items: [{ ...summary, author: {} }] },
     }))).toBeUndefined()
   })
 
   it('reads a versioned list snapshot', () => {
-    expect(parseStoredPullRequestList(encode({ version: 1, list }))).toEqual(list)
-    expect(parseStoredPullRequestList(encode({ version: 1, list: { ...list, stale: true } }))).toEqual({
+    expect(parseStoredPullRequestList(encode({ version: 2, list }))).toEqual(list)
+    expect(parseStoredPullRequestList(encode({ version: 2, list: { ...list, stale: true } }))).toEqual({
       ...list,
       stale: true,
     })

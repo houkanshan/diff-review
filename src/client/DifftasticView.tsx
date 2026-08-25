@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import type { FileDiffMetadata } from '@pierre/diffs'
 import { Checkbox } from '@base-ui/react/checkbox'
+import { Tooltip } from '@base-ui/react/tooltip'
 import {
   Check as CheckIcon,
   ChevronDown as ChevronIcon,
@@ -17,8 +18,8 @@ import {
   visibleAnnotationsForFile,
 } from './annotationComposer'
 import { highlightFileLines, syntaxLanguageFor } from './syntaxHighlight'
-import { formatTimestamp, relativeTimeAgo } from './time'
 import { ShortcutTooltip } from './ShortcutTooltip'
+import { annotationThreads } from '../shared/annotationThreads'
 import type {
   DifftasticFileDiff,
   DifftasticHunkLine,
@@ -30,9 +31,14 @@ import type {
 const AnnotationHoverContext = createContext<{
   annotation: SessionAnnotation | null
   onHover(annotationId: string | null): void
+  renderAnnotation(
+    annotation: SessionAnnotation,
+    replies: SessionAnnotation[],
+  ): ReactNode
 }>({
   annotation: null,
   onHover() {},
+  renderAnnotation() { return null },
 })
 
 export type DifftasticScrollTarget = {
@@ -128,6 +134,7 @@ export function DifftasticView({
   onToggleCollapsed,
   onSetViewed,
   onVisibleFileChange,
+  renderAnnotation,
 }: {
   session: ReviewSession
   files: FileDiffMetadata[]
@@ -140,16 +147,44 @@ export function DifftasticView({
   onToggleCollapsed(filePath: string): void
   onSetViewed(filePath: string, viewed: boolean): Promise<void>
   onVisibleFileChange?(filePath: string): void
+  renderAnnotation(
+    annotation: SessionAnnotation,
+    replies: SessionAnnotation[],
+  ): ReactNode
 }) {
   const hover = useMemo(() => ({
     annotation: session.annotations.find((annotation) => annotation.id === hoveredAnnotationId) ?? null,
     onHover: onHoverAnnotation,
-  }), [hoveredAnnotationId, onHoverAnnotation, session.annotations])
+    renderAnnotation,
+  }), [hoveredAnnotationId, onHoverAnnotation, renderAnnotation, session.annotations])
+  const [gutterHint, setGutterHint] = useState<Element | null>(null)
   return (
     <AnnotationHoverContext.Provider value={hover}>
+    <Tooltip.Root
+      open={gutterHint != null}
+      onOpenChange={(open) => {
+        if (!open) setGutterHint(null)
+      }}
+    >
     <div
       className="diff-view difftastic-view"
+      onPointerOver={(event) => {
+        const gutter = gutterFromTarget(event.target, event.currentTarget)
+        if (gutter != null) setGutterHint(gutter)
+      }}
+      onPointerOut={(event) => {
+        if (gutterHint != null && event.relatedTarget instanceof Node && gutterHint.contains(event.relatedTarget)) {
+          return
+        }
+        const next = gutterFromTarget(event.relatedTarget, event.currentTarget)
+        if (next != null) {
+          setGutterHint(next)
+          return
+        }
+        setGutterHint(null)
+      }}
       onScroll={(event) => {
+        setGutterHint(null)
         const next = fileIdAtDifftasticScroll(event.currentTarget)
         if (next != null) onVisibleFileChange?.(next)
       }}
@@ -170,8 +205,28 @@ export function DifftasticView({
         />
       ))}
     </div>
+    <Tooltip.Portal>
+      <Tooltip.Positioner
+        className="tooltip-positioner"
+        side="right"
+        align="center"
+        sideOffset={6}
+        anchor={gutterHint}
+      >
+        <Tooltip.Popup className="tooltip-popup">
+          Switch to line diff to add an annotation
+        </Tooltip.Popup>
+      </Tooltip.Positioner>
+    </Tooltip.Portal>
+    </Tooltip.Root>
     </AnnotationHoverContext.Provider>
   )
+}
+
+function gutterFromTarget(target: EventTarget | null, root: Element): Element | null {
+  if (!(target instanceof Element)) return null
+  const gutter = target.closest('.difftastic-gutter')
+  return gutter != null && root.contains(gutter) ? gutter : null
 }
 
 function DifftasticFile({
@@ -311,7 +366,7 @@ function DifftasticFileBody({
       annotation == null ||
       (annotation.filePath !== filePath && annotation.filePath !== oldFilePath)
     ) {
-      return { annotation: null, onHover: hover.onHover }
+      return { annotation: null, onHover: hover.onHover, renderAnnotation: hover.renderAnnotation }
     }
     return hover
   }, [filePath, hover, oldFilePath])
@@ -337,66 +392,145 @@ function DifftasticFileBody({
   return (
     <AnnotationHoverContext.Provider value={fileHover}>
     <div className={`difftastic-hunks difftastic-${layout}`}>
-      {file.hunks.map((hunk, hunkIndex) => (
-        <div key={hunkIndex} className="difftastic-hunk">
-          {hunk.lines.map((line, lineIndex) => (
-            <DifftasticLine
-              key={lineIndex}
-              line={line}
-              layout={layout}
-              oldNotes={annotationsAtDifftasticRow(placed, hunkIndex, lineIndex, 'old')}
-              newNotes={annotationsAtDifftasticRow(placed, hunkIndex, lineIndex, 'new')}
-              oldTokens={line.oldLine == null ? null : oldTokens?.[line.oldLine - 1] ?? null}
-              newTokens={line.newLine == null ? null : newTokens?.[line.newLine - 1] ?? null}
-            />
-          ))}
-        </div>
-      ))}
+      {file.hunks.map((hunk, hunkIndex) => {
+        const previous = hunkIndex === 0 ? null : file.hunks[hunkIndex - 1]!
+        const skipped = previous == null ? 0 : skippedLinesBetween(previous.lines, hunk.lines)
+        return (
+          <div key={hunkIndex} className="difftastic-hunk">
+            {skipped > 0 && (
+              <div className="difftastic-hunk-gap">
+                {skipped} unchanged {skipped === 1 ? 'line' : 'lines'}
+              </div>
+            )}
+            {layout === 'split'
+              ? pairSplitLines(hunk.lines).map((row) => (
+                  <SplitLine
+                    key={`${row.old?.index ?? 'x'}-${row.new?.index ?? 'x'}`}
+                    old={row.old?.line ?? null}
+                    right={row.new?.line ?? null}
+                    oldNotes={row.old == null ? [] : annotationsAtDifftasticRow(placed, hunkIndex, row.old.index, 'old')}
+                    newNotes={row.new == null ? [] : annotationsAtDifftasticRow(placed, hunkIndex, row.new.index, 'new')}
+                    oldTokens={row.old?.line.oldLine == null ? null : oldTokens?.[row.old.line.oldLine - 1] ?? null}
+                    newTokens={row.new?.line.newLine == null ? null : newTokens?.[row.new.line.newLine - 1] ?? null}
+                  />
+                ))
+              : hunk.lines.map((line, lineIndex) => (
+                  <DifftasticLine
+                    key={lineIndex}
+                    line={line}
+                    oldNotes={annotationsAtDifftasticRow(placed, hunkIndex, lineIndex, 'old')}
+                    newNotes={annotationsAtDifftasticRow(placed, hunkIndex, lineIndex, 'new')}
+                    oldTokens={line.oldLine == null ? null : oldTokens?.[line.oldLine - 1] ?? null}
+                    newTokens={line.newLine == null ? null : newTokens?.[line.newLine - 1] ?? null}
+                  />
+                ))}
+          </div>
+        )
+      })}
     </div>
     </AnnotationHoverContext.Provider>
   )
 }
 
+interface SplitSide {
+  line: DifftasticHunkLine
+  index: number
+}
+
+interface SplitRow {
+  old: SplitSide | null
+  new: SplitSide | null
+}
+
+function pairSplitLines(lines: DifftasticHunkLine[]): SplitRow[] {
+  const rows: SplitRow[] = []
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!
+    const next = lines[index + 1]
+    if (line.kind === 'delete' && next?.kind === 'insert') {
+      rows.push({ old: { line, index }, new: { line: next, index: index + 1 } })
+      index += 1
+      continue
+    }
+    if (line.kind === 'insert' && next?.kind === 'delete') {
+      rows.push({ old: { line: next, index: index + 1 }, new: { line, index } })
+      index += 1
+      continue
+    }
+    if (line.kind === 'insert') {
+      rows.push({ old: null, new: { line, index } })
+      continue
+    }
+    if (line.kind === 'delete') {
+      rows.push({ old: { line, index }, new: null })
+      continue
+    }
+    rows.push({ old: { line, index }, new: { line, index } })
+  }
+  return rows
+}
+
+function splitSideKind(
+  side: 'old' | 'new',
+  line: DifftasticHunkLine | null,
+): DifftasticHunkLine['kind'] | 'empty' {
+  if (line == null) return 'empty'
+  if (side === 'old') return line.oldText == null ? 'empty' : line.kind
+  return line.newText == null ? 'empty' : line.kind
+}
+
+function SplitLine({
+  old,
+  right,
+  oldNotes,
+  newNotes,
+  oldTokens,
+  newTokens,
+}: {
+  old: DifftasticHunkLine | null
+  right: DifftasticHunkLine | null
+  oldNotes: SessionAnnotation[]
+  newNotes: SessionAnnotation[]
+  oldTokens: ThemedToken[] | null
+  newTokens: ThemedToken[] | null
+}) {
+  return (
+    <div className="difftastic-row">
+      <LineSide
+        side="old"
+        lineNumber={old?.oldLine ?? null}
+        text={old?.oldText ?? null}
+        spans={old?.oldSpans ?? []}
+        tokens={oldTokens}
+        kind={splitSideKind('old', old)}
+        annotations={oldNotes}
+      />
+      <LineSide
+        side="new"
+        lineNumber={right?.newLine ?? null}
+        text={right?.newText ?? null}
+        spans={right?.newSpans ?? []}
+        tokens={newTokens}
+        kind={splitSideKind('new', right)}
+        annotations={newNotes}
+      />
+    </div>
+  )
+}
+
 function DifftasticLine({
   line,
-  layout,
   oldNotes,
   newNotes,
   oldTokens,
   newTokens,
 }: {
   line: DifftasticHunkLine
-  layout: 'unified' | 'split'
   oldNotes: SessionAnnotation[]
   newNotes: SessionAnnotation[]
   oldTokens: ThemedToken[] | null
   newTokens: ThemedToken[] | null
 } ) {
-
-  if (layout === 'split') {
-    return (
-      <div className={`difftastic-row is-${line.kind}`}>
-        <LineSide
-          side="old"
-          lineNumber={line.oldLine}
-          text={line.oldText}
-          spans={line.oldSpans}
-          tokens={oldTokens}
-          kind={line.kind === 'insert' ? 'empty' : line.kind}
-          annotations={oldNotes}
-        />
-        <LineSide
-          side="new"
-          lineNumber={line.newLine}
-          text={line.newText}
-          spans={line.newSpans}
-          tokens={newTokens}
-          kind={line.kind === 'delete' ? 'empty' : line.kind}
-          annotations={newNotes}
-        />
-      </div>
-    )
-  }
 
   if (line.kind === 'change') {
     return (
@@ -516,68 +650,17 @@ function ReadOnlyAnnotations({
 }: {
   annotations: SessionAnnotation[]
 }) {
-  const { onHover } = useContext(AnnotationHoverContext)
+  const { renderAnnotation } = useContext(AnnotationHoverContext)
   if (annotations.length === 0) return null
-  const repliesByParent = new Map<string, SessionAnnotation[]>()
-  for (const annotation of annotations) {
-    if (annotation.replyToId == null) continue
-    const existing = repliesByParent.get(annotation.replyToId)
-    if (existing == null) repliesByParent.set(annotation.replyToId, [annotation])
-    else existing.push(annotation)
-  }
   return (
     <div className="difftastic-annotations">
-      {annotations.filter((annotation) => annotation.replyToId == null).map((annotation) => (
-        <div
-          key={annotation.id}
-          className={`inline-annotation ${annotation.source}`}
-          data-dft-note={annotation.id}
-          onPointerEnter={() => onHover(annotation.id)}
-          onPointerLeave={() => onHover(null)}
-        >
-          <div className="inline-source">
-            <div>
-              <span>{annotationSourceLabel(annotation)}</span>
-              <time className="note-time" title={formatTimestamp(annotation.createdAt)}>
-                {relativeTimeAgo(annotation.createdAt)}
-              </time>
-              <code>{lineLabel(annotation)}</code>
-            </div>
-          </div>
-          {annotation.comment != null ? <p>{annotation.comment}</p> : null}
-          {(repliesByParent.get(annotation.id) ?? []).map((reply) => (
-            <div key={reply.id} className={`note-reply ${reply.source}`}>
-              <div className="inline-source">
-                <div>
-                  <span>Reply</span>
-                  <time className="note-time" title={formatTimestamp(reply.createdAt)}>
-                    {relativeTimeAgo(reply.createdAt)}
-                  </time>
-                </div>
-              </div>
-              <p>{reply.comment}</p>
-            </div>
-          ))}
+      {annotationThreads(annotations).map(({ root, replies }) => (
+        <div key={root.id} data-dft-note={root.id}>
+          {renderAnnotation(root, replies)}
         </div>
       ))}
     </div>
   )
-}
-
-function annotationSourceLabel(annotation: SessionAnnotation): string {
-  if (annotation.source === 'agent') return 'Agent note'
-  if (annotation.submittedAt != null) return 'Submitted review comment'
-  if (annotation.intent === 'review-comment') return 'Pending review comment'
-  return 'Annotation'
-}
-
-function lineLabel(annotation: SessionAnnotation): string {
-  const prefix = annotation.side === 'new' ? '+' : '−'
-  if (annotation.endSide != null && annotation.endSide !== annotation.side) {
-    const endPrefix = annotation.endSide === 'new' ? '+' : '−'
-    return `${prefix}${annotation.startLine} → ${endPrefix}${annotation.endLine}`
-  }
-  return `${prefix}${annotation.startLine}${annotation.startLine === annotation.endLine ? '' : `–${annotation.endLine}`}`
 }
 
 function lineInHoveredRange(
@@ -817,4 +900,32 @@ function cssEscape(value: string): string {
 
 function formatLineNumber(line: number | null): string {
   return line == null ? '' : String(line)
+}
+
+function skippedLinesBetween(left: DifftasticHunkLine[], right: DifftasticHunkLine[]): number {
+  const oldGap = numericGap(lastLine(left, 'oldLine'), firstLine(right, 'oldLine'))
+  const newGap = numericGap(lastLine(left, 'newLine'), firstLine(right, 'newLine'))
+  if (oldGap == null && newGap == null) return 0
+  return Math.max(oldGap ?? 0, newGap ?? 0)
+}
+
+function lastLine(lines: DifftasticHunkLine[], key: 'oldLine' | 'newLine'): number | null {
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const value = lines[index]![key]
+    if (value != null) return value
+  }
+  return null
+}
+
+function firstLine(lines: DifftasticHunkLine[], key: 'oldLine' | 'newLine'): number | null {
+  for (const line of lines) {
+    const value = line[key]
+    if (value != null) return value
+  }
+  return null
+}
+
+function numericGap(left: number | null, right: number | null): number | null {
+  if (left == null || right == null) return null
+  return Math.max(0, right - left - 1)
 }

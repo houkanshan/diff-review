@@ -1141,28 +1141,45 @@ svg {
 .review-summary-field {
   display: grid;
   gap: 6px;
-  margin-top: 12px;
+  margin: 12px 0 0;
+  padding: 0;
+  border: 0;
   color: var(--muted);
   font-size: 10px;
   font-weight: 700;
 }
 
-.submit-review-popover select,
+.review-type-switch {
+  width: 100%;
+}
+
+.review-type-switch button {
+  flex: 1;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.review-type-switch button svg {
+  width: 13px;
+  height: 13px;
+}
+
 .submit-review-popover textarea {
   width: 100%;
+  padding: 9px 10px;
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 7px;
   outline: 0;
   background: var(--input);
   font: 12px/1.5 var(--font-sans);
+  resize: vertical;
 }
 
-.submit-review-popover select { height: 34px; padding: 0 9px; }
-
-.submit-review-popover textarea { padding: 9px 10px; resize: vertical; }
-
-.submit-review-popover select:focus,
 .submit-review-popover textarea:focus { border-color: var(--accent); }
 
 .review-comments-preview {
@@ -1332,6 +1349,10 @@ svg {
   min-width: 0;
   height: 28px;
   padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
   overflow: hidden;
   color: var(--faint);
   border: 0;
@@ -1345,6 +1366,16 @@ svg {
 
 .pr-view-tabs button:hover { color: var(--text); background: var(--hover); }
 .pr-view-tabs button.active { color: var(--text); background: var(--surface-raised); }
+.pr-view-tabs .loading-ring {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-width: 1.5px;
+}
+.pr-tab-error {
+  flex: none;
+  color: var(--red);
+}
 
 .pr-list {
   min-height: 0;
@@ -1471,6 +1502,37 @@ svg {
 }
 
 .pr-list-message.error { color: var(--red); }
+
+.pr-load-more {
+  width: 100%;
+  height: 28px;
+  margin: 4px 0 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--muted);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: transparent;
+  font-size: 9px;
+  font-weight: 720;
+}
+
+.pr-load-more:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.pr-load-more:disabled {
+  opacity: 0.7;
+}
+
+.pr-load-more .loading-ring {
+  width: 10px;
+  height: 10px;
+  border-width: 1.5px;
+}
 
 .loading-ring {
   width: 16px;
@@ -1756,6 +1818,15 @@ body.resizing-panels * {
   background: var(--diff-bg);
 }
 
+.diff-view-host {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  transform: translateZ(0);
+}
+
 .diff-view {
   width: 100%;
   height: 100%;
@@ -1866,12 +1937,27 @@ body.resizing-panels * {
   color: var(--red);
 }
 
-.difftastic-hunk {
-  border-bottom: 1px solid var(--diff-separator);
+.difftastic-hunk-gap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 28px;
+  padding: 6px 12px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--diff-separator) 70%, var(--diff-gutter));
+  border-block: 1px solid var(--border);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  letter-spacing: 0.02em;
 }
 
-.difftastic-hunk:last-child {
-  border-bottom: 0;
+.difftastic-hunk-gap::before,
+.difftastic-hunk-gap::after {
+  content: '';
+  flex: 1;
+  height: 0;
+  border-top: 1px dashed var(--border-strong);
 }
 
 .difftastic-row,
@@ -1905,6 +1991,7 @@ body.resizing-panels * {
   background: var(--diff-gutter);
   text-align: right;
   user-select: none;
+  cursor: help;
 }
 
 .difftastic-row.is-range-hover,
@@ -1941,41 +2028,39 @@ body.resizing-panels * {
   overflow-wrap: normal;
 }
 
-.difftastic-row.is-insert,
- .difftastic-row.is-insert .difftastic-code,
- .difftastic-row.is-insert .difftastic-line-body,
- .difftastic-side.is-insert {
+.difftastic-unified .difftastic-row.is-insert,
+.difftastic-unified .difftastic-row.is-insert .difftastic-code,
+.difftastic-unified .difftastic-row.is-insert .difftastic-line-body,
+.difftastic-side.is-insert,
+.difftastic-side.is-change.is-new {
   background: var(--diffs-bg-addition);
 }
 
-.difftastic-row.is-delete,
- .difftastic-row.is-delete .difftastic-code,
- .difftastic-row.is-delete .difftastic-line-body,
- .difftastic-side.is-delete {
-  background: var(--diffs-bg-deletion);
-}
-
-.difftastic-row.is-change .difftastic-side.is-old,
+.difftastic-unified .difftastic-row.is-delete,
+.difftastic-unified .difftastic-row.is-delete .difftastic-code,
+.difftastic-unified .difftastic-row.is-delete .difftastic-line-body,
+.difftastic-side.is-delete,
 .difftastic-side.is-change.is-old {
   background: var(--diffs-bg-deletion);
 }
 
-.difftastic-row.is-change .difftastic-side.is-new,
-.difftastic-side.is-change.is-new {
-  background: var(--diffs-bg-addition);
+.difftastic-side.is-empty {
+  background: color-mix(in srgb, var(--diff-gutter) 80%, var(--diff-bg));
 }
 
 .dft-change {
   border-radius: 2px;
 }
 
-.difftastic-row.is-insert .dft-change,
-.difftastic-side.is-insert .dft-change {
+.difftastic-unified .difftastic-row.is-insert .dft-change,
+.difftastic-side.is-insert .dft-change,
+.difftastic-side.is-change.is-new .dft-change {
   background: var(--diffs-bg-addition-emphasis);
 }
 
-.difftastic-row.is-delete .dft-change,
-.difftastic-side.is-delete .dft-change {
+.difftastic-unified .difftastic-row.is-delete .dft-change,
+.difftastic-side.is-delete .dft-change,
+.difftastic-side.is-change.is-old .dft-change {
   background: var(--diffs-bg-deletion-emphasis);
 }
 
@@ -3452,6 +3537,26 @@ body.resizing-panels * {
   transform: scale(0.96);
 }
 
+.annotation-sticky-layer {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.annotation-sticky-card {
+  position: fixed;
+  right: auto;
+  bottom: 0;
+  pointer-events: auto;
+}
+
+.annotation-sticky-card .inline-annotation {
+  margin: 0;
+  width: 100%;
+}
+
 .inline-annotation {
   width: min(590px, calc(100% - 12px));
   margin: 3px 6px 4px;
@@ -3461,6 +3566,13 @@ body.resizing-panels * {
   border-radius: 4px;
   background: var(--surface-raised);
   box-shadow: 0 2px 7px var(--shadow-soft);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 16px;
+}
+
+.inline-annotation.is-spacer {
+  visibility: hidden;
 }
 
 .inline-annotation.agent {

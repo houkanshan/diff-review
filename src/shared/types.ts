@@ -228,10 +228,16 @@ export interface PullRequestSummary {
   checkStatus: PullRequestCheckStatus
 }
 
+export interface PullRequestListPageInfo {
+  hasNextPage: boolean
+  endCursor: string | null
+}
+
 export interface PullRequestListResponse {
   items: PullRequestSummary[]
   fetchedAt: string
   stale: boolean
+  pageInfo: PullRequestListPageInfo
 }
 
 export type MinimizedCommentReason =

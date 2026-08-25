@@ -22,7 +22,7 @@ import { Tooltip } from '@base-ui/react/tooltip'
 import type { GitStatusEntry } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
 import { Provider, createStore, useAtom, useAtomValue, useSetAtom, useStore } from 'jotai'
-import { keepPreviousData, skipToken, useQuery, useQueryClient } from '@tanstack/react-query'
+import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   readStoredPullRequestList,
   storePullRequestList,
@@ -60,6 +60,7 @@ import {
   UnfoldVertical as ExpandFilesIcon,
   TextWrap as WrapIcon,
   CircleCheck,
+  CircleX as RequestChangesIcon,
 } from 'lucide-react'
 import Markdown from 'react-markdown'
 import rehypeRaw from 'rehype-raw'
@@ -102,6 +103,7 @@ import type {
   PullRequestReviewEvent,
   PullRequestCheckRun,
   PullRequestCheckRunStatus,
+  PullRequestListResponse,
   PullRequestListView,
   PullRequestRevision,
   PullRequestSummary,
@@ -112,6 +114,7 @@ import type {
   SessionAnnotation,
 } from '../shared/types'
 import { pullRequestAllowsReviewEvent } from '../shared/pull-request'
+import { repairedPullRequestRevisionId } from '../shared/pullRequestRevision'
 import { annotationThreads } from '../shared/annotationThreads'
 import { groupConversationActivities, type ReviewCommentThread } from '../shared/pullRequestActivity'
 import {
@@ -124,6 +127,7 @@ import {
   getFilePair,
   getDifftasticAvailability,
   getPiReviewStatus,
+  getPullRequest,
   getPullRequestRevisions,
   getPullRequests,
   getRepositoryInfo,
@@ -154,14 +158,19 @@ import {
   EMPTY_COMPOSER_DRAFT,
   areCodeViewSelectionsEqual,
   buildCodeViewItems,
+  fileIdForAnnotation,
   composerDraftAtom,
   composerSelectionAtom,
   composerSessionIdAtom,
   fileCollapsedAtom,
   fileViewedAtom,
+  inlineAnnotationUiAtom,
   reviewCommentAvailableAtom,
+  stickyOverlayIdsAtom,
   type ReviewLineAnnotation,
 } from './annotationComposer'
+import { PIERRE_COLLAPSED_CONTEXT_THRESHOLD } from './annotationPlacement'
+import { AnnotationStickyOverlay } from './AnnotationStickyOverlay'
 
 type DiffLayout = 'unified' | 'split'
 type DiffOverflow = 'wrap' | 'scroll'
@@ -208,7 +217,7 @@ function pullRequestWorkspaceQueryKey(
   return ['pull-request-workspace', repositoryPath, number, revisionId ?? 'current'] as const
 }
 
-function isAnnotationSubmitEnter(event: KeyboardEvent<HTMLTextAreaElement>) {
+function isTextareaSubmitEnter(event: KeyboardEvent<HTMLTextAreaElement>) {
   return event.key === 'Enter' &&
     !event.shiftKey &&
     !event.nativeEvent.isComposing &&
@@ -416,6 +425,9 @@ function PullRequestsPage({
   onThemeChange(theme: ThemePreference): void
 }) {
   const [view, setView] = useState<PullRequestListView>('open')
+  const [pendingPullRequestView, setPendingPullRequestView] = useState<PullRequestViewMode>('overview')
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [loadMoreError, setLoadMoreError] = useState<string | null>(null)
   const queryClient = useQueryClient()
   const number = route.pullRequestNumber
   const workspaceKey = useMemo(
@@ -436,20 +448,30 @@ function PullRequestsPage({
       return Number.isFinite(updatedAt) ? updatedAt : undefined
     },
     queryFn: async () => {
-      const list = await getPullRequests(route.repositoryPath, view)
+      const list = await getPullRequests(route.repositoryPath, view, { fresh: true })
       storePullRequestList(route.repositoryPath, view, list)
-      if (list.stale) {
-        void getPullRequests(route.repositoryPath, view, { fresh: true }).then((fresh) => {
-          storePullRequestList(route.repositoryPath, view, fresh)
-          queryClient.setQueryData(['pull-requests', route.repositoryPath, view], fresh)
-        }).catch(() => undefined)
-      }
       return list
     },
   })
+  const detailsQuery = useQuery({
+    queryKey: ['pull-request-details', route.repositoryPath, number],
+    queryFn: number == null
+      ? skipToken
+      : () => getPullRequest(number, route.repositoryPath),
+  })
   const workspaceQuery = useQuery({
     queryKey: workspaceKey,
-    placeholderData: keepPreviousData,
+    placeholderData: (previousData, previousQuery) => {
+      const previousKey = previousQuery?.queryKey
+      if (
+        previousData == null ||
+        previousKey?.[1] !== route.repositoryPath ||
+        previousKey?.[2] !== number
+      ) {
+        return undefined
+      }
+      return previousData
+    },
     queryFn: number == null
       ? skipToken
       : () => openPullRequest(number, {
@@ -460,17 +482,19 @@ function PullRequestsPage({
   const repository = repositoryQuery.data ?? null
   const pullRequests = pullRequestsQuery.data?.items ?? []
   const workspace = workspaceQuery.data
-  const details = workspace?.details ?? null
+  const details = workspace?.details ?? detailsQuery.data ?? null
   const session = workspace?.selectedSession ?? null
   const currentSessionId = workspace?.currentSession.id ?? null
   const revisions = workspace?.revisions ?? []
   const piStatus = workspace?.piStatus ?? { state: 'idle' }
-  const listLoading = pullRequestsQuery.isPending
-  const listError = pullRequestsQuery.data == null
-    ? queryErrorMessage(pullRequestsQuery.error)
-    : null
-  const detailLoading = number != null && workspaceQuery.isPending
-  const detailError = queryErrorMessage(workspaceQuery.error)
+  const listLoading = pullRequestsQuery.isFetching && !loadingMore
+  const listError = queryErrorMessage(pullRequestsQuery.error)
+  const hasNextPage = pullRequestsQuery.data?.pageInfo.hasNextPage === true
+  const endCursor = pullRequestsQuery.data?.pageInfo.endCursor ?? null
+  const detailLoading = number != null && detailsQuery.isPending && workspaceQuery.isPending
+  const detailError = queryErrorMessage(detailsQuery.error)
+    ?? queryErrorMessage(workspaceQuery.error)
+  const revisionLoading = number != null && workspaceQuery.isPending
 
   const updateWorkspace = useCallback(
     (update: (current: PullRequestWorkspace) => PullRequestWorkspace) => {
@@ -499,13 +523,25 @@ function PullRequestsPage({
       queryClient.invalidateQueries({
         queryKey: ['pull-request-workspace', route.repositoryPath, pullRequestNumber],
       }),
+      queryClient.invalidateQueries({
+        queryKey: ['pull-request-details', route.repositoryPath, pullRequestNumber],
+      }),
       queryClient.invalidateQueries({ queryKey: ['pull-requests', route.repositoryPath] }),
     ])
   }, [queryClient, route.repositoryPath])
 
   useEffect(() => {
-    if (number == null || route.revisionId != null || workspace == null) return
-    const revisionId = workspace.currentSession.id
+    setPendingPullRequestView('overview')
+  }, [number])
+
+  useEffect(() => {
+    const revisionId = repairedPullRequestRevisionId({
+      pullRequestNumber: number,
+      requestedRevisionId: route.revisionId,
+      isPlaceholderData: workspaceQuery.isPlaceholderData,
+      workspace: workspace ?? null,
+    })
+    if (revisionId == null || workspace == null || number == null) return
     queryClient.setQueryData(
       pullRequestWorkspaceQueryKey(route.repositoryPath, number, revisionId),
       workspace,
@@ -518,6 +554,7 @@ function PullRequestsPage({
     route.repositoryPath,
     route.revisionId,
     workspace,
+    workspaceQuery.isPlaceholderData,
   ])
 
   useEffect(() => {
@@ -548,11 +585,46 @@ function PullRequestsPage({
       items={pullRequests}
       selectedNumber={route.pullRequestNumber}
       loading={listLoading}
-      error={listError}
-      onViewChange={setView}
+      loadingMore={loadingMore}
+      hasNextPage={hasNextPage}
+      error={listError ?? loadMoreError}
+      onViewChange={(nextView) => {
+        setLoadMoreError(null)
+        setView(nextView)
+      }}
       onSelect={(nextNumber) => {
         if (nextNumber === route.pullRequestNumber) return
         onOpenPullRequests(route.repositoryPath, nextNumber)
+      }}
+      onLoadMore={() => {
+        if (loadingMore || endCursor == null) return
+        setLoadingMore(true)
+        setLoadMoreError(null)
+        void getPullRequests(route.repositoryPath, view, { after: endCursor })
+          .then((page) => {
+            queryClient.setQueryData<PullRequestListResponse>(
+              ['pull-requests', route.repositoryPath, view],
+              (current) => {
+                const seen = new Set((current?.items ?? []).map((item) => item.number))
+                const items = [
+                  ...(current?.items ?? []),
+                  ...page.items.filter((item) => !seen.has(item.number)),
+                ]
+                return {
+                  items,
+                  fetchedAt: current?.fetchedAt ?? page.fetchedAt,
+                  stale: current?.stale === true,
+                  pageInfo: page.pageInfo,
+                }
+              },
+            )
+          })
+          .catch((error: unknown) => {
+            setLoadMoreError(queryErrorMessage(error) ?? 'Could not load more pull requests.')
+          })
+          .finally(() => {
+            setLoadingMore(false)
+          })
       }}
     />
   )
@@ -590,18 +662,92 @@ function PullRequestsPage({
           <div className="topbar-spacer" />
           <ThemePicker value={themePreference} onChange={onThemeChange} />
         </header>
-        <div className="pr-empty-workspace">
-          {rail}
-          <section className="pr-selection-empty">
-            {detailError != null ? (
-              <><span>Pull request unavailable</span><p>{detailError}</p></>
-            ) : detailLoading ? (
-              <><span className="loading-ring" /><p>Resolving pull request revision…</p></>
-            ) : (
-              <><span className="empty-glyph">↗</span><p>Select a pull request to begin.</p></>
-            )}
-          </section>
-        </div>
+        {details == null ? (
+          <div className="pr-empty-workspace">
+            {rail}
+            <section className="pr-selection-empty">
+              {detailError != null ? (
+                <><span>Pull request unavailable</span><p>{detailError}</p></>
+              ) : detailLoading ? (
+                <><span className="loading-ring" /><p>Loading pull request…</p></>
+              ) : (
+                <><span className="empty-glyph">↗</span><p>Select a pull request to begin.</p></>
+              )}
+            </section>
+          </div>
+        ) : (
+          <div className={`workspace pr-workspace pr-${pendingPullRequestView}-mode`}>
+            {rail}
+            <PullRequestViewHeader
+              key={details.number}
+              view={pendingPullRequestView}
+              details={details}
+              onViewChange={setPendingPullRequestView}
+              onRemoveAdditionalReviewLabel={async () => {
+                await removePullRequestLabel(
+                  details.number,
+                  'additional-review-needed',
+                  { repositoryPath: route.repositoryPath },
+                )
+                queryClient.setQueryData(
+                  ['pull-request-details', route.repositoryPath, details.number],
+                  (current: PullRequestDetails | undefined) => current == null ? undefined : ({
+                    ...current,
+                    labels: current.labels.filter(
+                      (label) => label.name !== 'additional-review-needed',
+                    ),
+                  }),
+                )
+                refreshPullRequestData(details.number)
+              }}
+              currentRevision={false}
+              reviewComments={[]}
+              reviewReady={false}
+              onSubmitReview={async () => undefined}
+              onSquashMerge={async () => undefined}
+            />
+            <section
+              id="pull-request-overview"
+              className={`pr-overview-stage${pendingPullRequestView === 'overview' ? '' : ' is-hidden'}`}
+              role="tabpanel"
+              aria-labelledby="pull-request-overview-tab"
+              aria-hidden={pendingPullRequestView !== 'overview'}
+            >
+              {detailError != null && <div className="error-banner">{detailError}</div>}
+              <PullRequestConversation
+                details={details}
+                oldRevision={false}
+                resolvedTheme={resolvedTheme}
+                onNavigate={() => undefined}
+                onAddComment={async (body, replyToId) => {
+                  await addPullRequestComment(details.number, {
+                    repositoryPath: route.repositoryPath,
+                    body,
+                    replyToId,
+                  })
+                  refreshPullRequestData(details.number)
+                }}
+              />
+            </section>
+            <div
+              id="pull-request-diff"
+              className={`review-workspace-body${pendingPullRequestView !== 'diff' ? ' is-hidden' : ''}`}
+              role="tabpanel"
+              aria-labelledby="pull-request-diff-tab"
+              aria-hidden={pendingPullRequestView !== 'diff'}
+            >
+              <section className="pr-selection-empty">
+                {queryErrorMessage(workspaceQuery.error) != null ? (
+                  <><span>Diff unavailable</span><p>{queryErrorMessage(workspaceQuery.error)}</p></>
+                ) : revisionLoading ? (
+                  <><span className="loading-ring" /><p>Resolving pull request revision…</p></>
+                ) : (
+                  <><span className="empty-glyph">Δ</span><p>Diff is not ready yet.</p></>
+                )}
+              </section>
+            </div>
+          </div>
+        )}
       </main>
     )
   }
@@ -610,6 +756,7 @@ function PullRequestsPage({
     <ReviewWorkspaceStore sessionId={session.id}>
     <ReviewWorkspace
       session={session}
+      initialPullRequestView={pendingPullRequestView}
       error={detailError}
       onSessionChange={(nextSession) => updateWorkspace((current) => ({
         ...current,
@@ -726,6 +873,7 @@ function ReviewWorkspaceStore({
 
 function ReviewWorkspace({
   session,
+  initialPullRequestView = 'overview',
   error,
   onSessionChange,
   onOpenSession,
@@ -737,6 +885,7 @@ function ReviewWorkspace({
   pullRequest,
 }: {
   session: ReviewSession
+  initialPullRequestView?: PullRequestViewMode
   error: string | null
   onSessionChange(session: ReviewSession): void
   onOpenSession(id: string): void
@@ -751,9 +900,11 @@ function ReviewWorkspace({
   const [layout, setLayout] = useState<DiffLayout>('unified')
   const [renderer, setRenderer] = useState<DiffRenderer>(() => storedDiffRenderer())
   const [overflow, setOverflow] = useState<DiffOverflow>('wrap')
-  const [pullRequestView, setPullRequestView] = useState<PullRequestViewMode>('overview')
+  const [pullRequestView, setPullRequestView] = useState<PullRequestViewMode>(initialPullRequestView)
+  const previousSessionIdRef = useRef(session.id)
   const overviewScrollRef = useRef<HTMLElement>(null)
   const diffWorkspaceRef = useRef<HTMLDivElement>(null)
+  const [diffScroller, setDiffScroller] = useState<HTMLElement | null>(null)
   const lastPointerRef = useRef<{ x: number; y: number } | null>(null)
   const pullRequestScrollPositions = useRef<Record<PullRequestViewMode, number>>({
     overview: 0,
@@ -829,6 +980,8 @@ function ReviewWorkspace({
   }, [session.id])
 
   useEffect(() => {
+    if (previousSessionIdRef.current === session.id) return
+    previousSessionIdRef.current = session.id
     setPullRequestView('overview')
     pullRequestScrollPositions.current = { overview: 0, diff: 0 }
     window.requestAnimationFrame(() => {
@@ -870,8 +1023,13 @@ function ReviewWorkspace({
     () => filePaths.filter((name) => viewedFiles.has(name)),
     [filePaths, viewedFiles],
   )
+  const testFilePaths = useMemo(
+    () => filePaths.filter(isTestFilePath),
+    [filePaths],
+  )
   const anyFileExpanded = filePaths.some((name) => !collapsedFiles.has(name))
   const anyViewedExpanded = viewedFilePaths.some((name) => !collapsedFiles.has(name))
+  const anyTestExpanded = testFilePaths.some((name) => !collapsedFiles.has(name))
   const setFilesCollapsed = useCallback((paths: readonly string[], collapsed: boolean) => {
     for (const filePath of paths) {
       store.set(fileCollapsedAtom(filePath), collapsed)
@@ -924,7 +1082,7 @@ function ReviewWorkspace({
       hunkSeparators: 'line-info-basic',
       stickyHeaders: true,
       layout: { paddingTop: 0, paddingBottom: 0, gap: 0 },
-      collapsedContextThreshold: 10,
+      collapsedContextThreshold: PIERRE_COLLAPSED_CONTEXT_THRESHOLD,
       expansionLineCount: 20,
       lineDiffType: 'word-alt',
       itemMetrics: { lineHeight: 16 },
@@ -1081,6 +1239,33 @@ function ReviewWorkspace({
     await onReloadRef.current()
   }, [closeComposer])
 
+  const renderInlineAnnotation = useCallback((
+    annotation: SessionAnnotation,
+    replies: SessionAnnotation[],
+    interactive: boolean,
+  ) => (
+    <InlineAnnotation
+      interactive={interactive}
+      annotation={annotation}
+      onHover={setHoveredAnnotationId}
+      replies={replies}
+      onArchive={(annotationId) => setArchived(annotationId, true)}
+      onUpdateComment={editAnnotation}
+      onReply={annotation.source === 'agent' && annotation.replyToId == null
+        ? (comment) => addAnnotation(session.id, {
+            filePath: annotation.filePath,
+            side: annotation.side,
+            startLine: annotation.startLine,
+            endSide: annotation.endSide ?? undefined,
+            endLine: annotation.endLine,
+            comment,
+            source: 'user',
+            replyToId: annotation.id,
+          }).then(() => onReloadRef.current())
+        : undefined}
+    />
+  ), [editAnnotation, session.id, setArchived])
+
   const renderAnnotation = useCallback((annotation: DiffLineAnnotation<ReviewLineAnnotation>) => {
     const metadata = annotation.metadata
     if (metadata == null) return null
@@ -1090,32 +1275,20 @@ function ReviewWorkspace({
         onCancel={closeComposer}
         onSubmitted={handleComposerSubmitted}
       />
-    ) : (
-      <InlineAnnotation
-        annotation={metadata.annotation}
-        onHover={setHoveredAnnotationId}
-        replies={session.annotations.filter((item) =>
-          item.replyToId === metadata.annotation.id &&
-          item.archivedAt == null &&
-          item.comment != null
-        )}
-        onArchive={(annotationId) => setArchived(annotationId, true)}
-        onUpdateComment={editAnnotation}
-        onReply={metadata.annotation.source === 'agent' && metadata.annotation.replyToId == null
-          ? (comment) => addAnnotation(session.id, {
-              filePath: metadata.annotation.filePath,
-              side: metadata.annotation.side,
-              startLine: metadata.annotation.startLine,
-              endSide: metadata.annotation.endSide ?? undefined,
-              endLine: metadata.annotation.endLine,
-              comment,
-              source: 'user',
-              replyToId: metadata.annotation.id,
-            }).then(() => onReloadRef.current())
-          : undefined}
-      />
+    ) : renderInlineAnnotation(
+      metadata.annotation,
+      session.annotations.filter((item) =>
+        item.replyToId === metadata.annotation.id &&
+        item.archivedAt == null &&
+        item.comment != null
+      ),
+      false,
     )
-  }, [editAnnotation, session.annotations, session.id, setArchived])
+  }, [handleComposerSubmitted, renderInlineAnnotation, session.annotations])
+
+  useLayoutEffect(() => {
+    setDiffScroller(diffWorkspaceRef.current?.querySelector<HTMLElement>('.diff-view') ?? null)
+  }, [items.length, layout, renderer, resolvedTheme, session.id, session.patch])
 
   useEffect(() => {
     const onPointerMove = (event: PointerEvent) => {
@@ -1328,10 +1501,12 @@ function ReviewWorkspace({
             <FoldFilesMenu
               anyFileExpanded={anyFileExpanded}
               anyViewedExpanded={anyViewedExpanded}
+              anyTestExpanded={anyTestExpanded}
               fileCount={filePaths.length}
               viewedCount={viewedFilePaths.length}
               onToggleAll={() => setFilesCollapsed(filePaths, anyFileExpanded)}
               onToggleViewed={() => setFilesCollapsed(viewedFilePaths, anyViewedExpanded)}
+              onCollapseTests={() => setFilesCollapsed(testFilePaths, true)}
             />
             <ToggleGroup
               className="layout-switch"
@@ -1484,26 +1659,36 @@ function ReviewWorkspace({
                 }}
                 onSetViewed={setViewed}
                 onVisibleFileChange={setActiveFilePath}
+                renderAnnotation={(annotation, replies) => renderInlineAnnotation(annotation, replies, true)}
               />
             ) : (
-              <CodeView<ReviewLineAnnotation>
-                ref={viewerRef}
-                key={`${session.id}:${layout}:${resolvedTheme}:${patchContentKey(session.patch)}`}
-                className="diff-view"
-                items={items}
-                options={diffOptions}
-                selectedLines={selection}
-                onSelectedLinesChange={handleSelection}
-                onScroll={(scrollTop, viewer) => {
-                  const next = fileIdAtCodeViewScroll(viewer, items, scrollTop)
-                  if (next != null) {
-                    setActiveFilePath((current) => current === next ? current : next)
-                  }
-                }}
-                renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
-                renderHeaderMetadata={renderHeaderMetadata}
-                renderAnnotation={renderAnnotation}
-              />
+              <div className="diff-view-host">
+                <CodeView<ReviewLineAnnotation>
+                  ref={viewerRef}
+                  key={`${session.id}:${layout}:${resolvedTheme}:${patchContentKey(session.patch)}`}
+                  className="diff-view"
+                  items={items}
+                  options={diffOptions}
+                  selectedLines={selection}
+                  onSelectedLinesChange={handleSelection}
+                  onScroll={(scrollTop, viewer) => {
+                    const next = fileIdAtCodeViewScroll(viewer, items, scrollTop)
+                    if (next != null) {
+                      setActiveFilePath((current) => current === next ? current : next)
+                    }
+                  }}
+                  renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
+                  renderHeaderMetadata={renderHeaderMetadata}
+                  renderAnnotation={renderAnnotation}
+                />
+                <AnnotationStickyOverlay
+                  scroller={diffScroller}
+                  annotations={session.annotations}
+                  files={parsedFiles}
+                  collapsedFiles={collapsedFiles}
+                  renderCard={(annotation, replies) => renderInlineAnnotation(annotation, replies, true)}
+                />
+              </div>
             )}
           </section>
           <PanelResizeHandle
@@ -1615,20 +1800,30 @@ function PanelResizeHandle({
   )
 }
 
+function isTestFilePath(filePath: string): boolean {
+  const normalized = filePath.replaceAll('\\', '/')
+  if (normalized.includes('/__tests__/') || normalized.startsWith('__tests__/')) return true
+  return /(?:\.test\.tsx?|\.spec\.ts|\.spec\.js)$/.test(normalized)
+}
+
 function FoldFilesMenu({
   anyFileExpanded,
   anyViewedExpanded,
+  anyTestExpanded,
   fileCount,
   viewedCount,
   onToggleAll,
   onToggleViewed,
+  onCollapseTests,
 }: {
   anyFileExpanded: boolean
   anyViewedExpanded: boolean
+  anyTestExpanded: boolean
   fileCount: number
   viewedCount: number
   onToggleAll(): void
   onToggleViewed(): void
+  onCollapseTests(): void
 }) {
   const [open, setOpen] = useState(false)
   const [focusOnOpen, setFocusOnOpen] = useState(false)
@@ -1733,6 +1928,15 @@ function FoldFilesMenu({
             onClick={onToggleViewed}
           >
             {viewedLabel}
+          </button>
+          <button
+            type="button"
+            className="fold-files-option"
+            role="menuitem"
+            disabled={!anyTestExpanded}
+            onClick={onCollapseTests}
+          >
+            Collapse test files
           </button>
         </div>
       )}
@@ -1890,17 +2094,23 @@ function PullRequestRail({
   items,
   selectedNumber,
   loading,
+  loadingMore,
+  hasNextPage,
   error,
   onViewChange,
   onSelect,
+  onLoadMore,
 }: {
   view: PullRequestListView
   items: PullRequestSummary[]
   selectedNumber: number | null
   loading: boolean
+  loadingMore: boolean
+  hasNextPage: boolean
   error: string | null
   onViewChange(view: PullRequestListView): void
   onSelect(number: number): void
+  onLoadMore(): void
 }) {
   const views: { id: PullRequestListView; label: string }[] = [
     { id: 'open', label: 'Open' },
@@ -1914,23 +2124,30 @@ function PullRequestRail({
       <div className="pr-rail-heading">
         <div><span>Pull requests</span><strong>{loading ? '…' : items.length}</strong></div>
         <div className="pr-view-tabs" role="tablist" aria-label="Pull request view">
-          {views.map((item) => (
-            <button
-              key={item.id}
-              role="tab"
-              aria-selected={view === item.id}
-              className={view === item.id ? 'active' : ''}
-              onClick={() => onViewChange(item.id)}
-            >
-              {item.label}
-            </button>
-          ))}
+          {views.map((item) => {
+            const selected = view === item.id
+            return (
+              <button
+                key={item.id}
+                role="tab"
+                aria-selected={selected}
+                aria-busy={selected && loading}
+                className={selected ? 'active' : ''}
+                title={selected && error != null ? error : undefined}
+                onClick={() => onViewChange(item.id)}
+              >
+                <span>{item.label}</span>
+                {selected && loading ? <span className="loading-ring" /> : null}
+                {selected && !loading && error != null ? <span className="pr-tab-error">Error</span> : null}
+              </button>
+            )
+          })}
         </div>
       </div>
       <div className="pr-list">
-        {error != null ? (
+        {items.length === 0 && error != null ? (
           <div className="pr-list-message error">{error}</div>
-        ) : loading ? (
+        ) : items.length === 0 && loading ? (
           <div className="pr-list-message"><span className="loading-ring" /> Loading pull requests…</div>
         ) : items.length === 0 ? (
           <div className="pr-list-message">No pull requests in this view.</div>
@@ -1976,6 +2193,19 @@ function PullRequestRail({
             </div>
           </button>
         ))}
+        {items.length > 0 && hasNextPage ? (
+          <button
+            className="pr-load-more"
+            disabled={loadingMore}
+            onClick={onLoadMore}
+          >
+            {loadingMore ? <span className="loading-ring" /> : null}
+            {loadingMore ? 'Loading more…' : 'Load more'}
+          </button>
+        ) : null}
+        {items.length > 0 && error != null ? (
+          <div className="pr-list-message error">{error}</div>
+        ) : null}
       </div>
     </aside>
     <PanelResizeHandle
@@ -2051,6 +2281,11 @@ function PiExplanationControl({
                 autoFocus
                 value={additionalInstructions}
                 onChange={(event) => setAdditionalInstructions(event.target.value)}
+                onKeyDown={(event) => {
+                  if (!isTextareaSubmitEnter(event)) return
+                  event.preventDefault()
+                  event.currentTarget.form?.requestSubmit()
+                }}
                 placeholder="Optional focus, context, or audience…"
                 rows={4}
               />
@@ -2120,6 +2355,7 @@ function PullRequestViewHeader({
   details,
   currentRevision,
   reviewComments,
+  reviewReady = true,
   onViewChange,
   onRemoveAdditionalReviewLabel,
   onSubmitReview,
@@ -2129,6 +2365,7 @@ function PullRequestViewHeader({
   details: PullRequestDetails
   currentRevision: boolean
   reviewComments: SessionAnnotation[]
+  reviewReady?: boolean
   onViewChange(view: PullRequestViewMode): void
   onRemoveAdditionalReviewLabel(): Promise<void>
   onSubmitReview(event: PullRequestReviewEvent, body: string): Promise<void>
@@ -2203,12 +2440,14 @@ function PullRequestViewHeader({
             {labelBusy ? 'Removing…' : 'Remove addi. label'}
           </button>
         )}
-        <SubmitReviewPopover
-          key={`${details.number}:${details.state}`}
-          comments={reviewComments}
-          allowedEvents={reviewEventsForPullRequest(details.state)}
-          onSubmit={onSubmitReview}
-        />
+        {reviewReady && (
+          <SubmitReviewPopover
+            key={`${details.number}:${details.state}`}
+            comments={reviewComments}
+            allowedEvents={reviewEventsForPullRequest(details.state)}
+            onSubmit={onSubmitReview}
+          />
+        )}
         {details.state === 'OPEN' && (
           <button
             className="squash-merge-button"
@@ -2257,7 +2496,7 @@ function SubmitReviewPopover({
   const [body, setBody] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const canSubmit = Boolean(body.trim()) || comments.length > 0
+  const canSubmit = event !== 'COMMENT' || Boolean(body.trim()) || comments.length > 0
   const submit = async () => {
     if (!canSubmit) return
     setBusy(true)
@@ -2285,25 +2524,31 @@ function SubmitReviewPopover({
           <Popover.Popup className="submit-review-popover">
             <Popover.Title>Submit review</Popover.Title>
             {allowedEvents.length > 1 && (
-              <label className="review-type-field">
-                Review type
-                <select
-                  value={event}
+              <div className="review-type-field">
+                <span>Review type</span>
+                <ToggleGroup
+                  className="layout-switch review-type-switch"
+                  aria-label="Review type"
                   disabled={busy}
-                  onChange={(input) => {
-                    const next = input.target.value
+                  value={[event]}
+                  onValueChange={(value) => {
+                    const next = value.at(0)
                     if (next === 'APPROVE' || next === 'COMMENT' || next === 'REQUEST_CHANGES') {
                       if (allowedEvents.includes(next)) setEvent(next)
                     }
                   }}
                 >
-                  {allowedEvents.includes('COMMENT') && <option value="COMMENT">Comment</option>}
-                  {allowedEvents.includes('APPROVE') && <option value="APPROVE">Approve</option>}
-                  {allowedEvents.includes('REQUEST_CHANGES') && (
-                    <option value="REQUEST_CHANGES">Request changes</option>
+                  {allowedEvents.includes('COMMENT') && (
+                    <Toggle value="COMMENT"><CommentIcon />Comment</Toggle>
                   )}
-                </select>
-              </label>
+                  {allowedEvents.includes('APPROVE') && (
+                    <Toggle value="APPROVE"><CheckIcon />Approve</Toggle>
+                  )}
+                  {allowedEvents.includes('REQUEST_CHANGES') && (
+                    <Toggle value="REQUEST_CHANGES"><RequestChangesIcon />Request changes</Toggle>
+                  )}
+                </ToggleGroup>
+              </div>
             )}
             <label className="review-summary-field">
               Review summary
@@ -4622,17 +4867,31 @@ function CommentEditor({
   comment,
   intent,
   reviewCommentAvailable = false,
+  autoFocus = true,
+  value: controlledValue,
+  intentValue,
+  onValueChange,
+  onIntentChange,
   onCancel,
   onSave,
 }: {
   comment: string
   intent?: AnnotationIntent
   reviewCommentAvailable?: boolean
+  autoFocus?: boolean
+  value?: string
+  intentValue?: AnnotationIntent
+  onValueChange?(value: string): void
+  onIntentChange?(intent: AnnotationIntent): void
   onCancel(): void
   onSave(comment: string, intent?: AnnotationIntent): Promise<void>
 }) {
-  const [value, setValue] = useState(comment)
-  const [draftIntent, setDraftIntent] = useState<AnnotationIntent>(intent ?? 'annotation')
+  const [localValue, setLocalValue] = useState(comment)
+  const [localIntent, setLocalIntent] = useState<AnnotationIntent>(intent ?? 'annotation')
+  const value = controlledValue ?? localValue
+  const draftIntent = intentValue ?? localIntent
+  const setValue = onValueChange ?? setLocalValue
+  const setDraftIntent = onIntentChange ?? setLocalIntent
   const [busy, setBusy] = useState(false)
   const save = async () => {
     if (busy || !value.trim()) return
@@ -4649,11 +4908,11 @@ function CommentEditor({
   return (
     <div className="note-editor">
       <textarea
-        autoFocus
+        autoFocus={autoFocus}
         value={value}
         onChange={(event) => setValue(event.target.value)}
         onKeyDown={(event) => {
-          if (!isAnnotationSubmitEnter(event)) return
+          if (!isTextareaSubmitEnter(event)) return
           event.preventDefault()
           void save()
         }}
@@ -4794,7 +5053,7 @@ function InlineComposer({
         onChange={(event) => setDraft((current) => ({ ...current, comment: event.target.value }))}
         placeholder="What should the reviewer know?"
         onKeyDown={(event) => {
-          if (!isAnnotationSubmitEnter(event)) return
+          if (!isTextareaSubmitEnter(event)) return
           event.preventDefault()
           void submit()
         }}
@@ -4825,6 +5084,7 @@ function InlineComposer({
 function InlineAnnotation({
   annotation,
   replies,
+  interactive = true,
   onHover,
   onArchive,
   onUpdateComment,
@@ -4832,13 +5092,23 @@ function InlineAnnotation({
 }: {
   annotation: SessionAnnotation
   replies: SessionAnnotation[]
+  interactive?: boolean
   onHover?(annotationId: string | null): void
   onArchive(annotationId: string): Promise<void>
   onUpdateComment(annotationId: string, comment: string, intent?: AnnotationIntent): Promise<void>
   onReply?(comment: string): Promise<void>
 }) {
-  const [busyId, setBusyId] = useState<string | null>(null)
-  const [editingId, setEditingId] = useState<string | null>(null)
+  const [ui, setUi] = useAtom(inlineAnnotationUiAtom(annotation.id))
+  const overlayIds = useAtomValue(stickyOverlayIdsAtom)
+  const spacer = !interactive && overlayIds.has(annotation.id)
+  const live = interactive || !spacer
+  const busyId = ui.busyId
+  const editingId = ui.editingId
+  const setBusyId = (busyId: string | null) => setUi((current) => ({ ...current, busyId }))
+  const openEditor = (editingId: string, draft: string, draftIntent: AnnotationIntent = 'annotation') => {
+    setUi((current) => ({ ...current, editingId, draft, draftIntent }))
+  }
+  const closeEditor = () => setUi((current) => ({ ...current, editingId: null, draft: '' }))
   const reviewCommentAvailable = useAtomValue(reviewCommentAvailableAtom) &&
     annotation.endSide == null &&
     annotation.source === 'user' &&
@@ -4846,9 +5116,12 @@ function InlineAnnotation({
   const editing = editingId === annotation.id
   return (
     <div
-      className={`inline-annotation ${annotation.source}`}
-      onPointerEnter={() => onHover?.(annotation.id)}
-      onPointerLeave={() => onHover?.(null)}
+      className={`inline-annotation ${annotation.source}${spacer ? ' is-spacer' : ''}`}
+      data-annotation-id={annotation.id}
+      inert={!live ? true : undefined}
+      aria-hidden={!live ? true : undefined}
+      onPointerEnter={() => live ? onHover?.(annotation.id) : undefined}
+      onPointerLeave={() => live ? onHover?.(null) : undefined}
     >
       <div className="inline-source">
         <div>
@@ -4868,7 +5141,7 @@ function InlineAnnotation({
           {onReply != null && editingId !== 'reply' && (
             <AnnotationIconButton
               label="Reply"
-              onClick={() => setEditingId('reply')}
+              onClick={() => openEditor('reply', '')}
             >
               <ReplyIcon />
             </AnnotationIconButton>
@@ -4876,7 +5149,7 @@ function InlineAnnotation({
           {annotation.source === 'user' && annotation.comment != null && !editing && (
             <AnnotationIconButton
               label="Edit comment"
-              onClick={() => setEditingId(annotation.id)}
+              onClick={() => openEditor(annotation.id, annotation.comment ?? '', annotation.intent)}
             >
               <EditIcon />
             </AnnotationIconButton>
@@ -4902,10 +5175,15 @@ function InlineAnnotation({
           comment={annotation.comment ?? ''}
           intent={annotation.intent}
           reviewCommentAvailable={reviewCommentAvailable}
-          onCancel={() => setEditingId(null)}
+          autoFocus={live}
+          value={ui.draft}
+          intentValue={ui.draftIntent}
+          onValueChange={(draft) => setUi((current) => ({ ...current, draft }))}
+          onIntentChange={(draftIntent) => setUi((current) => ({ ...current, draftIntent }))}
+          onCancel={closeEditor}
           onSave={async (comment, intent) => {
             await onUpdateComment(annotation.id, comment, intent)
-            setEditingId(null)
+            closeEditor()
           }}
         />
       ) : annotation.comment != null ? (
@@ -4914,10 +5192,13 @@ function InlineAnnotation({
       {editingId === 'reply' && onReply != null && (
         <CommentEditor
           comment=""
-          onCancel={() => setEditingId(null)}
+          autoFocus={live}
+          value={ui.draft}
+          onValueChange={(draft) => setUi((current) => ({ ...current, draft }))}
+          onCancel={closeEditor}
           onSave={async (comment) => {
             await onReply(comment)
-            setEditingId(null)
+            closeEditor()
           }}
         />
       )}
@@ -4936,7 +5217,7 @@ function InlineAnnotation({
                 {reply.source === 'user' && reply.comment != null && !replyEditing && (
                   <AnnotationIconButton
                     label="Edit comment"
-                    onClick={() => setEditingId(reply.id)}
+                    onClick={() => openEditor(reply.id, reply.comment ?? '')}
                   >
                     <EditIcon />
                   </AnnotationIconButton>
@@ -4960,10 +5241,13 @@ function InlineAnnotation({
             {replyEditing ? (
               <CommentEditor
                 comment={reply.comment ?? ''}
-                onCancel={() => setEditingId(null)}
+                autoFocus={live}
+                value={ui.draft}
+                onValueChange={(draft) => setUi((current) => ({ ...current, draft }))}
+                onCancel={closeEditor}
                 onSave={async (comment) => {
                   await onUpdateComment(reply.id, comment)
-                  setEditingId(null)
+                  closeEditor()
                 }}
               />
             ) : (
@@ -5123,11 +5407,6 @@ function annotationRangeFromSelection(selection: CodeViewLineSelection): {
 
 function selectionSideToDiffSide(side: 'deletions' | 'additions' | undefined): DiffSide {
   return side === 'deletions' ? 'old' : 'new'
-}
-
-function fileIdForAnnotation(annotation: SessionAnnotation, files: FileDiffMetadata[]): string {
-  const renamed = files.find((file) => file.prevName === annotation.filePath)
-  return renamed?.name ?? annotation.filePath
 }
 
 function fileIdAtCodeViewScroll(

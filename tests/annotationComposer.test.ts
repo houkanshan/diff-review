@@ -7,6 +7,7 @@ import {
   annotationsAtDifftasticRow,
   annotationsForFile,
   buildCodeViewItems,
+  fileIdForAnnotation,
   placeDifftasticAnnotations,
 } from '../src/client/annotationComposer.js'
 import type { DifftasticHunk, SessionAnnotation } from '../src/shared/types.js'
@@ -66,6 +67,48 @@ describe('annotation composer items', () => {
       },
     ])
     expect(annotationsForFile([], other, selection('src/a.ts'))).toEqual([])
+  })
+
+  test('snaps a folded Pierre line onto the nearest visible hunk line', () => {
+    const file = fileDiff('handlers/borrower.go')
+    file.isPartial = false
+    file.additionLines = Array.from({ length: 2500 }, () => 'x')
+    file.deletionLines = Array.from({ length: 2500 }, () => 'x')
+    file.hunks = [{
+      collapsedBefore: 0,
+      additionStart: 2320,
+      additionCount: 9,
+      additionLines: 8,
+      additionLineIndex: 0,
+      deletionStart: 2320,
+      deletionCount: 1,
+      deletionLines: 0,
+      deletionLineIndex: 0,
+      hunkContent: [],
+      splitLineStart: 0,
+      splitLineCount: 9,
+      unifiedLineStart: 0,
+      unifiedLineCount: 9,
+    }, {
+      collapsedBefore: 70,
+      additionStart: 2399,
+      additionCount: 4,
+      additionLines: 2,
+      additionLineIndex: 9,
+      deletionStart: 2399,
+      deletionCount: 2,
+      deletionLines: 0,
+      deletionLineIndex: 1,
+      hunkContent: [],
+      splitLineStart: 9,
+      splitLineCount: 4,
+      unifiedLineStart: 9,
+      unifiedLineCount: 4,
+    }] as FileDiffMetadata['hunks']
+    const note = annotation('handlers/borrower.go')
+    note.startLine = 2323
+    note.endLine = 2329
+    expect(annotationsForFile([note], file, null)[0]?.lineNumber).toBe(2328)
   })
 
   test('does not place replies as their own line annotations', () => {
@@ -229,6 +272,17 @@ describe('annotationCoversLine', () => {
     expect(annotationCoversLine(note, 'new', 12)).toBe(true)
     expect(annotationCoversLine(note, 'old', 11)).toBe(false)
     expect(annotationCoversLine(note, 'new', 10)).toBe(false)
+  })
+
+  test('maps a rename old path to the current file id', () => {
+    expect(fileIdForAnnotation(
+      { filePath: 'old.ts' },
+      [{ name: 'new.ts', prevName: 'old.ts' }],
+    )).toBe('new.ts')
+    expect(fileIdForAnnotation(
+      { filePath: 'same.ts' },
+      [{ name: 'new.ts', prevName: 'old.ts' }],
+    )).toBe('same.ts')
   })
 })
 
