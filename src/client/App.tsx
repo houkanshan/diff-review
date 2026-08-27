@@ -53,7 +53,6 @@ import {
   RotateCcw as RestoreIcon,
   Rocket as DeployIcon,
   Tag as TagIcon,
-  SunMoon as ThemeIcon,
   Unlock as UnlockIcon,
   UserMinus as UserMinusIcon,
   UserPlus as UserPlusIcon,
@@ -61,7 +60,11 @@ import {
   Reply as ReplyIcon,
   FoldVertical as CollapseFilesIcon,
   UnfoldVertical as ExpandFilesIcon,
-  TextWrap as WrapIcon,
+  Rows3 as StackIcon,
+  Columns2 as SplitIcon,
+  AlignJustify as LineDiffIcon,
+  Braces as StructuralDiffIcon,
+  Settings2 as SettingsIcon,
   CircleCheck,
   CircleX as RequestChangesIcon,
 } from 'lucide-react'
@@ -680,7 +683,6 @@ function PullRequestsPage({
             onOpenPullRequests={onOpenPullRequests}
           />
           <div className="topbar-spacer" />
-          <ThemePicker value={themePreference} onChange={onThemeChange} />
         </header>
         {details == null ? (
           <section className="pr-selection-empty">
@@ -1578,12 +1580,34 @@ function ReviewWorkspace({
                 if (next === 'unified' || next === 'split') setLayout(next)
               }}
             >
-              <Toggle value="unified">
-                Stack
-              </Toggle>
-              <Toggle value="split">
-                Split
-              </Toggle>
+              <Tooltip.Root>
+                <Tooltip.Trigger
+                  render={
+                    <Toggle value="unified" aria-label="Stacked layout">
+                      <StackIcon />
+                    </Toggle>
+                  }
+                />
+                <Tooltip.Portal>
+                  <Tooltip.Positioner className="tooltip-positioner" sideOffset={6}>
+                    <Tooltip.Popup className="tooltip-popup">Stacked layout</Tooltip.Popup>
+                  </Tooltip.Positioner>
+                </Tooltip.Portal>
+              </Tooltip.Root>
+              <Tooltip.Root>
+                <Tooltip.Trigger
+                  render={
+                    <Toggle value="split" aria-label="Split layout">
+                      <SplitIcon />
+                    </Toggle>
+                  }
+                />
+                <Tooltip.Portal>
+                  <Tooltip.Positioner className="tooltip-positioner" sideOffset={6}>
+                    <Tooltip.Popup className="tooltip-popup">Split layout</Tooltip.Popup>
+                  </Tooltip.Positioner>
+                </Tooltip.Portal>
+              </Tooltip.Root>
             </ToggleGroup>
             <RendererSwitch
               value={renderer === 'difftastic' && difftasticReady ? 'difftastic' : 'pierre'}
@@ -1597,13 +1621,14 @@ function ReviewWorkspace({
             <DiffOptionsMenu
               wrap={overflow === 'wrap'}
               ignoreWhitespace={session.ignoreWhitespace}
+              theme={themePreference}
               busy={busy}
               onWrapChange={(wrap) => setOverflow(wrap ? 'wrap' : 'scroll')}
               onIgnoreWhitespaceChange={updateIgnoreWhitespace}
+              onThemeChange={onThemeChange}
             />
           </>
         )}
-        <ThemePicker value={themePreference} onChange={onThemeChange} />
         <button
           className="icon-button"
           onClick={refresh}
@@ -1900,7 +1925,6 @@ function FoldFilesMenu({
 }) {
   const [open, setOpen] = useState(false)
   const [focusOnOpen, setFocusOnOpen] = useState(false)
-  const openTimerRef = useRef(0)
   const closeTimerRef = useRef(0)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -1908,7 +1932,6 @@ function FoldFilesMenu({
   const viewedLabel = anyViewedExpanded ? 'Collapse viewed' : 'Expand viewed'
 
   const clearHoverTimers = useCallback(() => {
-    window.clearTimeout(openTimerRef.current)
     window.clearTimeout(closeTimerRef.current)
   }, [])
 
@@ -1943,7 +1966,7 @@ function FoldFilesMenu({
       className="fold-files-control"
       onMouseEnter={() => {
         clearHoverTimers()
-        openTimerRef.current = window.setTimeout(() => setOpen(true), 100)
+        setOpen(true)
       }}
       onMouseLeave={() => {
         clearHoverTimers()
@@ -2017,50 +2040,33 @@ function FoldFilesMenu({
   )
 }
 
-function ThemePicker({
+function ThemeOptions({
   value,
   onChange,
-  className = '',
 }: {
   value: ThemePreference
   onChange(theme: ThemePreference): void
-  className?: string
 }) {
   return (
-    <Menu.Root>
-      <Menu.Trigger
-        className={`icon-button theme-trigger ${className}`.trim()}
-        aria-label="Choose color theme"
-        title={`Theme: ${value}`}
-      >
-        <ThemeIcon />
-      </Menu.Trigger>
-      <Menu.Portal>
-        <Menu.Positioner className="popup-positioner" sideOffset={8} align="end">
-          <Menu.Popup className="theme-menu">
-            <Menu.Group>
-              <Menu.GroupLabel className="menu-kicker">Color theme</Menu.GroupLabel>
-              <Menu.RadioGroup value={value} onValueChange={onChange}>
-                {(['system', 'light', 'dark'] as const).map((theme) => (
-                  <Menu.RadioItem
-                    key={theme}
-                    value={theme}
-                    closeOnClick
-                    className="theme-option"
-                  >
-                    <Menu.RadioItemIndicator className="theme-check">
-                      <CheckIcon />
-                    </Menu.RadioItemIndicator>
-                    <span>{theme === 'system' ? 'System' : capitalize(theme)}</span>
-                    <small>{theme === 'system' ? 'Follow device' : `${capitalize(theme)} colors`}</small>
-                  </Menu.RadioItem>
-                ))}
-              </Menu.RadioGroup>
-            </Menu.Group>
-          </Menu.Popup>
-        </Menu.Positioner>
-      </Menu.Portal>
-    </Menu.Root>
+    <Menu.Group>
+      <Menu.GroupLabel className="menu-kicker">Color theme</Menu.GroupLabel>
+      <Menu.RadioGroup value={value} onValueChange={onChange}>
+        {(['system', 'light', 'dark'] as const).map((theme) => (
+          <Menu.RadioItem
+            key={theme}
+            value={theme}
+            closeOnClick
+            className="theme-option"
+          >
+            <Menu.RadioItemIndicator keepMounted className="theme-check">
+              <CheckIcon />
+            </Menu.RadioItemIndicator>
+            <span>{theme === 'system' ? 'System' : capitalize(theme)}</span>
+            <small>{theme === 'system' ? 'Follow device' : `${capitalize(theme)} colors`}</small>
+          </Menu.RadioItem>
+        ))}
+      </Menu.RadioGroup>
+    </Menu.Group>
   )
 }
 
@@ -2075,6 +2081,8 @@ function RendererSwitch({
   hint: string
   onChange(next: 'pierre' | 'difftastic'): void
 }) {
+  const structuralDescription = 'Structural diff powered by difftastic. Easier to read, but fewer features.'
+
   return (
     <ToggleGroup
       className="layout-switch"
@@ -2085,25 +2093,36 @@ function RendererSwitch({
         if (next === 'pierre' || next === 'difftastic') onChange(next)
       }}
     >
-      <Toggle value="pierre">Line</Toggle>
-      {structuralDisabled ? (
-        <Tooltip.Root>
-          <Tooltip.Trigger
-            render={
-              <Toggle value="difftastic" disabled>
-                Structural
-              </Toggle>
-            }
-          />
-          <Tooltip.Portal>
-            <Tooltip.Positioner className="tooltip-positioner" sideOffset={6}>
-              <Tooltip.Popup className="tooltip-popup">{hint}</Tooltip.Popup>
-            </Tooltip.Positioner>
-          </Tooltip.Portal>
-        </Tooltip.Root>
-      ) : (
-        <Toggle value="difftastic">Structural</Toggle>
-      )}
+      <Tooltip.Root>
+        <Tooltip.Trigger
+          render={
+            <Toggle value="pierre" aria-label="Line diff">
+              <LineDiffIcon />
+            </Toggle>
+          }
+        />
+        <Tooltip.Portal>
+          <Tooltip.Positioner className="tooltip-positioner" sideOffset={6}>
+            <Tooltip.Popup className="tooltip-popup">Line diff</Tooltip.Popup>
+          </Tooltip.Positioner>
+        </Tooltip.Portal>
+      </Tooltip.Root>
+      <Tooltip.Root>
+        <Tooltip.Trigger
+          render={
+            <Toggle value="difftastic" aria-label="Structural diff" disabled={structuralDisabled}>
+              <StructuralDiffIcon />
+            </Toggle>
+          }
+        />
+        <Tooltip.Portal>
+          <Tooltip.Positioner className="tooltip-positioner" sideOffset={6}>
+            <Tooltip.Popup className="tooltip-popup">
+              {structuralDisabled ? `${structuralDescription} ${hint}` : structuralDescription}
+            </Tooltip.Popup>
+          </Tooltip.Positioner>
+        </Tooltip.Portal>
+      </Tooltip.Root>
     </ToggleGroup>
   )
 }
@@ -2111,21 +2130,25 @@ function RendererSwitch({
 function DiffOptionsMenu({
   wrap,
   ignoreWhitespace,
+  theme,
   busy,
   onWrapChange,
   onIgnoreWhitespaceChange,
+  onThemeChange,
 }: {
   wrap: boolean
   ignoreWhitespace: boolean
+  theme: ThemePreference
   busy: boolean
   onWrapChange(wrap: boolean): void
   onIgnoreWhitespaceChange(ignoreWhitespace: boolean): void
+  onThemeChange(theme: ThemePreference): void
 }) {
   return (
     <Menu.Root>
-      <Menu.Trigger className="diff-options-trigger" aria-label="Diff options">
-        <WrapIcon />
-        <span>Options</span>
+      <Menu.Trigger className="diff-options-trigger" aria-label="Review settings">
+        <SettingsIcon />
+        <span>Settings</span>
         <ChevronIcon />
       </Menu.Trigger>
       <Menu.Portal>
@@ -2155,6 +2178,7 @@ function DiffOptionsMenu({
                 <span>Ignore whitespace</span>
               </Menu.CheckboxItem>
             </Menu.Group>
+            <ThemeOptions value={theme} onChange={onThemeChange} />
           </Menu.Popup>
         </Menu.Positioner>
       </Menu.Portal>

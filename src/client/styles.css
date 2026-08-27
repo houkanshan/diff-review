@@ -706,6 +706,10 @@ svg {
   color: var(--accent);
 }
 
+.theme-check[data-unchecked] {
+  visibility: hidden;
+}
+
 .diff-options-menu {
   width: 205px;
   padding: 6px;
@@ -753,15 +757,19 @@ svg {
 }
 
 .layout-switch button {
+  width: 28px;
   height: 28px;
-  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   color: var(--faint);
   border: 0;
   border-radius: 5px;
   background: transparent;
   font-size: 9px;
   font-weight: 700;
-  letter-spacing: 0.01em;
+  line-height: 1;
 }
 
 .layout-switch button[data-pressed] {
