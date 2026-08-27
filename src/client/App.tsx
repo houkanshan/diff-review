@@ -19,6 +19,7 @@ import { Popover } from '@base-ui/react/popover'
 import { Toggle } from '@base-ui/react/toggle'
 import { ToggleGroup } from '@base-ui/react/toggle-group'
 import { Tooltip } from '@base-ui/react/tooltip'
+import { ReviewPanelsDrawer, useCompactReviewLayout } from './ReviewPanelsDrawer'
 import type { GitStatusEntry } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
 import { Provider, createStore, useAtom, useAtomValue, useSetAtom, useStore } from 'jotai'
@@ -966,6 +967,8 @@ function ReviewWorkspace({
   )
   const [busy, setBusy] = useState(false)
   const [commentsCopied, setCommentsCopied] = useState(false)
+  const [panelsOpen, setPanelsOpen] = useState(false)
+  const compactLayout = useCompactReviewLayout()
   const viewedFiles = useMemo(() => new Set(session.viewedFiles), [session.viewedFiles])
   const [collapsedFiles, setCollapsedFiles] = useState(() => new Set(session.viewedFiles))
   const previousItemsRef = useRef<CodeViewItem<ReviewLineAnnotation>[]>([])
@@ -1016,6 +1019,10 @@ function ReviewWorkspace({
   useEffect(() => {
     setReviewCommentAvailable(pullRequest != null && sessionUsesFullCommitRange(session))
   }, [pullRequest, setReviewCommentAvailable])
+
+  useEffect(() => {
+    if (!compactLayout) setPanelsOpen(false)
+  }, [compactLayout])
 
   useEffect(() => {
     setCollapsedFiles(new Set(session.viewedFiles))
@@ -1467,18 +1474,6 @@ function ReviewWorkspace({
   })
   const difftastic = difftasticQuery.data
   const difftasticReady = difftastic?.available === true
-  const selectFile = useCallback((id: string) => {
-    setActiveFilePath(id)
-    setFileCollapsed(id, false)
-    if (renderer === 'difftastic') {
-      scheduleDifftasticScroll(diffWorkspaceRef.current, id)
-      return
-    }
-    window.requestAnimationFrame(() => {
-      viewerRef.current?.scrollTo({ type: 'item', id, align: 'start', offset: 8 })
-    })
-  }, [renderer, setFileCollapsed])
-
   const switchPullRequestView = useCallback((next: PullRequestViewMode) => {
     if (next === pullRequestView) return
     const currentScroller = pullRequestView === 'overview'
@@ -1529,10 +1524,79 @@ function ReviewWorkspace({
     })
   }, [pullRequest, renderer, setFileCollapsed, switchPullRequestView])
 
+  const selectFile = useCallback((id: string) => {
+    setActiveFilePath(id)
+    setFileCollapsed(id, false)
+    setPanelsOpen(false)
+    if (pullRequest != null) switchPullRequestView('diff')
+    if (renderer === 'difftastic') {
+      scheduleDifftasticScroll(diffWorkspaceRef.current, id)
+      return
+    }
+    window.requestAnimationFrame(() => {
+      viewerRef.current?.scrollTo({ type: 'item', id, align: 'start', offset: 8 })
+    })
+  }, [pullRequest, renderer, setFileCollapsed, switchPullRequestView])
+
+  const navigateToAnnotation = useCallback((annotation: SessionAnnotation) => {
+    const fileId = fileIdForAnnotation(annotation, parsedFiles)
+    setActiveFilePath(fileId)
+    setFileCollapsed(fileId, false)
+    setPanelsOpen(false)
+    if (pullRequest != null) switchPullRequestView('diff')
+    if (renderer === 'difftastic') {
+      scheduleDifftasticScroll(diffWorkspaceRef.current, fileId, {
+        line: annotation.endLine,
+        side: annotation.endSide ?? annotation.side,
+        annotationId: annotation.id,
+      })
+      return
+    }
+    viewerRef.current?.scrollTo({
+      type: 'line',
+      id: fileId,
+      lineNumber: annotation.endLine,
+      side: annotation.side === 'new' ? 'additions' : 'deletions',
+      align: 'center',
+      behavior: 'smooth-auto',
+    })
+  }, [parsedFiles, pullRequest, renderer, setFileCollapsed, switchPullRequestView])
+
   const workspaceStyle = {
     '--left-panel-width': `${leftPanelWidth}px`,
     '--right-panel-width': `${rightPanelWidth}px`,
   } as CSSProperties
+
+  const renderFileRail = () => (
+    <FileRail
+      files={parsedFiles}
+      viewedFiles={viewedFiles}
+      resolvedTheme={resolvedTheme}
+      activeFilePath={activeFilePath}
+      onSelect={selectFile}
+    />
+  )
+  const renderInspector = () => (
+    <Inspector
+      session={session}
+      files={parsedFiles}
+      activeFilePath={activeFilePath}
+      piStatus={pullRequest?.piStatus}
+      commentsCopied={commentsCopied}
+      hasHumanComments={hasHumanComments}
+      onCopyComments={copyHumanComments}
+      onSetArchived={setArchived}
+      onUpdateComment={editAnnotation}
+      onReload={onReload}
+      onAddGlobalComment={addUserGlobalComment}
+      onUpdateGlobalComment={editGlobalComment}
+      onSetGlobalArchived={archiveGlobalComment}
+      onArchiveAll={archiveAll}
+      onOpenSession={onOpenSession}
+      onHoverAnnotation={setHoveredAnnotationId}
+      onNavigate={navigateToAnnotation}
+    />
+  )
 
   const content = (
     <>
@@ -1541,6 +1605,12 @@ function ReviewWorkspace({
           <span className="brand-mark">Δ</span>
           <span>Diff Review</span>
         </div>
+        <ReviewPanelsDrawer
+          open={panelsOpen}
+          onOpenChange={setPanelsOpen}
+          files={compactLayout ? renderFileRail() : null}
+          inspector={compactLayout ? renderInspector() : null}
+        />
         <RepositoryPicker
           repositoryRoot={session.repositoryRoot}
           repositoryName={session.repositoryName}
@@ -1717,13 +1787,7 @@ function ReviewWorkspace({
           aria-labelledby={pullRequest == null ? undefined : 'pull-request-diff-tab'}
           aria-hidden={pullRequest == null ? undefined : pullRequestView !== 'diff'}
         >
-          <FileRail
-            files={parsedFiles}
-            viewedFiles={viewedFiles}
-            resolvedTheme={resolvedTheme}
-            activeFilePath={activeFilePath}
-            onSelect={selectFile}
-          />
+          {compactLayout ? null : renderFileRail()}
           <PanelResizeHandle
             label="Resize file panel"
             side="left"
@@ -1807,45 +1871,7 @@ function ReviewWorkspace({
               storePanelWidth('right', width)
             }}
           />
-          <Inspector
-            session={session}
-            files={parsedFiles}
-            activeFilePath={activeFilePath}
-            piStatus={pullRequest?.piStatus}
-            commentsCopied={commentsCopied}
-            hasHumanComments={hasHumanComments}
-            onCopyComments={copyHumanComments}
-            onSetArchived={setArchived}
-            onUpdateComment={editAnnotation}
-            onReload={onReload}
-            onAddGlobalComment={addUserGlobalComment}
-            onUpdateGlobalComment={editGlobalComment}
-            onSetGlobalArchived={archiveGlobalComment}
-            onArchiveAll={archiveAll}
-            onOpenSession={onOpenSession}
-            onHoverAnnotation={setHoveredAnnotationId}
-            onNavigate={(annotation) => {
-              const fileId = fileIdForAnnotation(annotation, parsedFiles)
-              setActiveFilePath(fileId)
-              setFileCollapsed(fileId, false)
-              if (renderer === 'difftastic') {
-                scheduleDifftasticScroll(diffWorkspaceRef.current, fileId, {
-                  line: annotation.endLine,
-                  side: annotation.endSide ?? annotation.side,
-                  annotationId: annotation.id,
-                })
-                return
-              }
-              viewerRef.current?.scrollTo({
-                type: 'line',
-                id: fileId,
-                lineNumber: annotation.endLine,
-                side: annotation.side === 'new' ? 'additions' : 'deletions',
-                align: 'center',
-                behavior: 'smooth-auto',
-              })
-            }}
-          />
+          {compactLayout ? null : renderInspector()}
         </div>
       </div>
     </>
@@ -3953,14 +3979,18 @@ function ReviewSourcePicker({
 
   const pullRequestNumber =
     currentSession?.target.kind === 'pr' ? currentSession.target.number : null
+  const triggerLabel = mode === 'pr' ? 'Pull requests' : 'Local diffs'
+  const triggerValue = mode === 'pr'
+    ? pullRequestNumber != null ? `#${pullRequestNumber}` : null
+    : currentRevision
+  const triggerTitle = triggerValue != null ? `${triggerLabel} ${triggerValue}` : triggerLabel
 
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Trigger className="local-review-trigger">
+      <Popover.Trigger className="local-review-trigger" title={triggerTitle}>
         {mode === 'pr' ? <PullRequestIcon /> : <BranchIcon />}
-        <span>{mode === 'pr' ? 'Pull requests' : 'Local diffs'}</span>
-        {mode === 'pr' && pullRequestNumber != null && <code>#{pullRequestNumber}</code>}
-        {mode === 'local' && currentRevision != null && <code>{currentRevision}</code>}
+        <span>{triggerLabel}</span>
+        {triggerValue != null && <code>{triggerValue}</code>}
         <ChevronIcon />
       </Popover.Trigger>
       <Popover.Portal>

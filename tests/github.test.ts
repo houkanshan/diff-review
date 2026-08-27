@@ -702,7 +702,7 @@ describe('GitHub pull request list', () => {
       '}',
       "if (args[0] === 'api' && args[1] === 'graphql') {",
       "  const query = args.find((arg) => arg.startsWith('query=')) ?? ''",
-      "  if (!query.includes('pullRequests(first: 20,') || !query.includes('pageInfo { hasNextPage endCursor }') || !query.includes('orderBy: {field: CREATED_AT, direction: DESC}') || !query.includes('latestReviews(first: 100) { nodes { state author') || !query.includes('comments(last: 20) { nodes { author { __typename login } } }') || !query.includes('reviews(last: 20)') || !query.includes('statusCheckRollup { state }')) {",
+      "  if (!query.includes('pullRequests(first: 20,') || !query.includes('pageInfo { hasNextPage endCursor }') || !query.includes('orderBy: {field: UPDATED_AT, direction: DESC}') || !query.includes('latestReviews(first: 100) { nodes { state author') || !query.includes('comments(last: 20) { nodes { author { __typename login } } }') || !query.includes('reviews(last: 20)') || !query.includes('statusCheckRollup { state }')) {",
       "    process.stderr.write('expected combined list query')",
       '    process.exit(1)',
       '  }',

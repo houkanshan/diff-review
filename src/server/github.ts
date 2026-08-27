@@ -306,7 +306,7 @@ function pullRequestListQuery(
   const labels = filter.label == null ? '' : `, labels: ${JSON.stringify([filter.label])}`
   const afterArg = after == null || after === '' ? '' : `, after: ${JSON.stringify(after)}`
   return `query { repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) {
-    pullRequests(first: 20, states: ${states}${labels}${afterArg}, orderBy: {field: CREATED_AT, direction: DESC}) {
+    pullRequests(first: 20, states: ${states}${labels}${afterArg}, orderBy: {field: UPDATED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor }
       nodes {
         number title url state isDraft baseRefName headRefName additions deletions createdAt updatedAt

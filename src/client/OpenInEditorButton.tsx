@@ -4,7 +4,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { editorLabel, type EditorId } from '../shared/editor'
 import { ClientError, openInEditor } from './api'
-import { hoveredDiffLineFromPath, type HoveredDiffLine } from './editor'
+import {
+  hoveredDiffLineAtClientPoint,
+  hoveredDiffLineFromPath,
+  type HoveredDiffLine,
+} from './editor'
 
 const BUTTON_SIZE = 22
 const BUTTON_INSET = 8
@@ -20,21 +24,38 @@ export function OpenInEditorButton({
 }) {
   const buttonRef = useRef<HTMLButtonElement>(null)
   const hoverRef = useRef<HoveredDiffLine | null>(null)
+  const pointerRef = useRef<{ x: number; y: number } | null>(null)
   const [hover, setHover] = useState<HoveredDiffLine | null>(null)
   const [position, setPosition] = useState<{ x: number; y: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [opening, setOpening] = useState(false)
 
+  const hide = useCallback(() => {
+    hoverRef.current = null
+    setHover(null)
+  }, [])
+
   const syncPosition = useCallback((next: HoveredDiffLine | null) => {
-    hoverRef.current = next
-    setHover(next)
-    if (next == null || stage == null) return
-    const stageRect = stage.getBoundingClientRect()
-    const lineRect = next.element.getBoundingClientRect()
-    if (lineRect.bottom <= stageRect.top || lineRect.top >= stageRect.bottom) {
-      setPosition(null)
+    if (next == null || stage == null) {
+      hide()
       return
     }
+    if (!next.element.isConnected) {
+      hide()
+      return
+    }
+    const stageRect = stage.getBoundingClientRect()
+    const lineRect = next.element.getBoundingClientRect()
+    if (
+      lineRect.width <= 0 && lineRect.height <= 0 ||
+      lineRect.bottom <= stageRect.top ||
+      lineRect.top >= stageRect.bottom
+    ) {
+      hide()
+      return
+    }
+    hoverRef.current = next
+    setHover(next)
     const x = Math.min(lineRect.right, stageRect.right) - stageRect.left - BUTTON_SIZE - BUTTON_INSET
     const y = lineRect.top - stageRect.top + (lineRect.height - BUTTON_SIZE) / 2
     setPosition({
@@ -44,7 +65,7 @@ export function OpenInEditorButton({
         Math.max(BUTTON_INSET, stageRect.height - BUTTON_SIZE - BUTTON_INSET),
       ),
     })
-  }, [stage])
+  }, [hide, stage])
 
   useEffect(() => {
     if (stage == null) return
@@ -55,6 +76,7 @@ export function OpenInEditorButton({
       )
 
     const onPointerMove = (event: PointerEvent) => {
+      pointerRef.current = { x: event.clientX, y: event.clientY }
       if (targetIsButton(event.target)) return
       const next = hoveredDiffLineFromPath(event.composedPath())
       const current = hoverRef.current
@@ -67,10 +89,21 @@ export function OpenInEditorButton({
     }
     const onPointerLeave = (event: PointerEvent) => {
       if (targetIsButton(event.relatedTarget)) return
-      syncPosition(null)
+      pointerRef.current = null
+      hide()
     }
+    let frame = 0
     const onScrollOrResize = () => {
-      syncPosition(hoverRef.current)
+      if (frame !== 0) return
+      frame = window.requestAnimationFrame(() => {
+        frame = 0
+        const pointer = pointerRef.current
+        if (pointer == null) {
+          hide()
+          return
+        }
+        syncPosition(hoveredDiffLineAtClientPoint(pointer.x, pointer.y))
+      })
     }
 
     stage.addEventListener('pointermove', onPointerMove)
@@ -78,12 +111,13 @@ export function OpenInEditorButton({
     stage.addEventListener('scroll', onScrollOrResize, true)
     window.addEventListener('resize', onScrollOrResize)
     return () => {
+      if (frame !== 0) window.cancelAnimationFrame(frame)
       stage.removeEventListener('pointermove', onPointerMove)
       stage.removeEventListener('pointerleave', onPointerLeave)
       stage.removeEventListener('scroll', onScrollOrResize, true)
       window.removeEventListener('resize', onScrollOrResize)
     }
-  }, [stage, syncPosition])
+  }, [hide, stage, syncPosition])
 
   const open = async () => {
     const target = hoverRef.current

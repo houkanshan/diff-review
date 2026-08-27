@@ -48,6 +48,22 @@ export function difftasticOpenLineNumber(
   return newLine ?? oldLine
 }
 
+export function hoveredDiffLineAtClientPoint(x: number, y: number): HoveredDiffLine | null {
+  for (const top of document.elementsFromPoint(x, y)) {
+    if (!(top instanceof HTMLElement)) continue
+    if (top.classList.contains('open-in-editor-button')) continue
+    let node: Element = top
+    while (node instanceof HTMLElement && node.shadowRoot != null) {
+      const inner = node.shadowRoot.elementFromPoint(x, y)
+      if (inner == null || inner === node) break
+      node = inner
+    }
+    const found = hoveredDiffLineFromPath(composedAncestors(node))
+    if (found != null) return found
+  }
+  return null
+}
+
 export function hoveredDiffLineFromPath(path: readonly EventTarget[]): HoveredDiffLine | null {
   const filePath = fileIdFromPath(path)
   if (filePath == null) return null
@@ -97,6 +113,20 @@ function fileIdFromPath(path: readonly EventTarget[]): string | null {
     }
   }
   return null
+}
+
+function composedAncestors(start: Element): EventTarget[] {
+  const path: EventTarget[] = []
+  let node: EventTarget | null = start
+  while (node instanceof Node) {
+    path.push(node)
+    if (node instanceof ShadowRoot) {
+      node = node.host
+      continue
+    }
+    node = node.parentNode
+  }
+  return path
 }
 
 function positiveInt(value: string | undefined): number | null {
