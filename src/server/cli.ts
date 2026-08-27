@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process'
-import { closeSync, mkdirSync, openSync } from 'node:fs'
+import { closeSync, copyFileSync, existsSync, mkdirSync, openSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -16,6 +16,7 @@ import type {
 } from '../shared/types.js'
 import { DEFAULT_HOST, DEFAULT_PORT, serveDaemon } from './daemon.js'
 import { AppError, errorMessage } from './errors.js'
+import { findPackageRoot } from './packageRoot.js'
 
 const BASE_URL = `http://${DEFAULT_HOST}:${process.env.DIFF_REVIEW_PORT ?? DEFAULT_PORT}`
 
@@ -35,6 +36,11 @@ async function main(): Promise<void> {
     await ensureDaemon()
     const result = await createSession(args.slice(2))
     printSession(result.session, result.json)
+    return
+  }
+
+  if (args[0] === 'setup-skill') {
+    setupSkill()
     return
   }
 
@@ -66,6 +72,22 @@ async function main(): Promise<void> {
   const result = await createSession(args)
   printSession(result.session, result.json)
   await openBrowser(`${BASE_URL}/s/${result.session.id}`)
+}
+
+function setupSkill(): void {
+  const packageRoot = findPackageRoot(path.dirname(fileURLToPath(import.meta.url)))
+  const source = packageRoot == null
+    ? null
+    : path.join(packageRoot, 'skills', 'explain-diff', 'SKILL.md')
+  if (source == null || !existsSync(source)) {
+    throw new AppError('SKILL_NOT_FOUND', 'The bundled explain-diff skill could not be found')
+  }
+
+  const destinationDirectory = path.join(homedir(), '.agents', 'skills', 'explain-diff')
+  const destination = path.join(destinationDirectory, 'SKILL.md')
+  mkdirSync(destinationDirectory, { recursive: true })
+  copyFileSync(source, destination)
+  console.log(`Installed explain-diff skill to ${destination}`)
 }
 
 async function createSession(args: string[]): Promise<{ session: ReviewSession; json: boolean }> {
@@ -355,6 +377,7 @@ function printHelp(): void {
   diff-review [revision-range] [--repo <path>]
   diff-review --staged | --unstaged | --pr <number>
   diff-review session create [revision-range] [--repo <path>] [--json]
+  diff-review setup-skill
   diff-review pi resume <run-id>
   diff-review annotate <session-id> --comment <text> [--json]
   diff-review annotate <session-id> --file <path> \\
@@ -365,6 +388,7 @@ Examples:
   diff-review
   diff-review origin/master...HEAD
   diff-review session create --pr 42 --json
+  diff-review setup-skill
   diff-review pi resume pir_abc123
   diff-review annotate drs_abc123 --comment "Summary of the change"
   diff-review annotate drs_abc123 --file src/retry.ts --new-line 42-48 \\

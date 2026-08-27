@@ -1,3 +1,4 @@
+import type { EditorId } from '../shared/editor'
 import type {
   AddAnnotationInput,
   UpdateAnnotationInput,
@@ -185,6 +186,16 @@ export function setIgnoreWhitespace(
   return request(`/api/sessions/${encodeURIComponent(id)}/whitespace`, {
     method: 'POST',
     body: JSON.stringify({ ignoreWhitespace }),
+  })
+}
+
+export function openInEditor(
+  id: string,
+  input: { filePath: string; line: number; editor: EditorId },
+): Promise<void> {
+  return request(`/api/sessions/${encodeURIComponent(id)}/open-editor`, {
+    method: 'POST',
+    body: JSON.stringify(input),
   })
 }
 

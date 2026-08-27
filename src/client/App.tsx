@@ -121,6 +121,7 @@ import type {
   ReviewTarget,
   SessionAnnotation,
 } from '../shared/types'
+import { EDITORS, parseEditorId, type EditorId } from '../shared/editor'
 import { pullRequestAllowsReviewEvent } from '../shared/pull-request'
 import { repairedPullRequestRevisionId } from '../shared/pullRequestRevision'
 import { annotationThreads } from '../shared/annotationThreads'
@@ -159,7 +160,9 @@ import {
 } from './api'
 import { applyHoveredRange, applyImportance } from './importance'
 import { formatTimestamp, relativeTime, relativeTimeAgo } from './time'
+import { storedEditor, storeEditor } from './editor'
 import { DifftasticView, scrollDifftasticTarget } from './DifftasticView'
+import { OpenInEditorButton } from './OpenInEditorButton'
 import { ShortcutTooltip } from './ShortcutTooltip'
 import { subscribeSessionEvents } from './sessionEvents'
 import {
@@ -936,7 +939,9 @@ function ReviewWorkspace({
   const viewerRef = useRef<CodeViewHandle<ReviewLineAnnotation>>(null)
   const [layout, setLayout] = useState<DiffLayout>('unified')
   const [renderer, setRenderer] = useState<DiffRenderer>(() => storedDiffRenderer())
+  const [editor, setEditor] = useState<EditorId>(() => storedEditor())
   const [overflow, setOverflow] = useState<DiffOverflow>('wrap')
+  const [diffStage, setDiffStage] = useState<HTMLElement | null>(null)
   const [pullRequestView, setPullRequestView] = useState<PullRequestViewMode>(initialPullRequestView)
   const previousSessionIdRef = useRef(session.id)
   const overviewScrollRef = useRef<HTMLElement>(null)
@@ -1621,10 +1626,15 @@ function ReviewWorkspace({
             <DiffOptionsMenu
               wrap={overflow === 'wrap'}
               ignoreWhitespace={session.ignoreWhitespace}
+              editor={editor}
               theme={themePreference}
               busy={busy}
               onWrapChange={(wrap) => setOverflow(wrap ? 'wrap' : 'scroll')}
               onIgnoreWhitespaceChange={updateIgnoreWhitespace}
+              onEditorChange={(next) => {
+                setEditor(next)
+                storeEditor(next)
+              }}
               onThemeChange={onThemeChange}
             />
           </>
@@ -1726,6 +1736,7 @@ function ReviewWorkspace({
             }}
           />
           <section
+            ref={setDiffStage}
             className="diff-stage"
             onClick={(event) => {
               const fileId = fileHeaderIdFromEvent(event.nativeEvent)
@@ -1783,6 +1794,7 @@ function ReviewWorkspace({
                 />
               </div>
             )}
+            <OpenInEditorButton sessionId={session.id} editor={editor} stage={diffStage} />
           </section>
           <PanelResizeHandle
             label="Resize annotations panel"
@@ -2040,6 +2052,41 @@ function FoldFilesMenu({
   )
 }
 
+function EditorOptions({
+  value,
+  onChange,
+}: {
+  value: EditorId
+  onChange(editor: EditorId): void
+}) {
+  return (
+    <Menu.Group>
+      <Menu.GroupLabel className="menu-kicker">Default editor</Menu.GroupLabel>
+      <Menu.RadioGroup
+        value={value}
+        onValueChange={(next) => {
+          const parsed = parseEditorId(next)
+          if (parsed != null) onChange(parsed)
+        }}
+      >
+        {EDITORS.map((item) => (
+          <Menu.RadioItem
+            key={item.id}
+            value={item.id}
+            closeOnClick
+            className="theme-option"
+          >
+            <Menu.RadioItemIndicator keepMounted className="theme-check">
+              <CheckIcon />
+            </Menu.RadioItemIndicator>
+            <span>{item.label}</span>
+          </Menu.RadioItem>
+        ))}
+      </Menu.RadioGroup>
+    </Menu.Group>
+  )
+}
+
 function ThemeOptions({
   value,
   onChange,
@@ -2130,18 +2177,22 @@ function RendererSwitch({
 function DiffOptionsMenu({
   wrap,
   ignoreWhitespace,
+  editor,
   theme,
   busy,
   onWrapChange,
   onIgnoreWhitespaceChange,
+  onEditorChange,
   onThemeChange,
 }: {
   wrap: boolean
   ignoreWhitespace: boolean
+  editor: EditorId
   theme: ThemePreference
   busy: boolean
   onWrapChange(wrap: boolean): void
   onIgnoreWhitespaceChange(ignoreWhitespace: boolean): void
+  onEditorChange(editor: EditorId): void
   onThemeChange(theme: ThemePreference): void
 }) {
   return (
@@ -2178,6 +2229,7 @@ function DiffOptionsMenu({
                 <span>Ignore whitespace</span>
               </Menu.CheckboxItem>
             </Menu.Group>
+            <EditorOptions value={editor} onChange={onEditorChange} />
             <ThemeOptions value={theme} onChange={onThemeChange} />
           </Menu.Popup>
         </Menu.Positioner>

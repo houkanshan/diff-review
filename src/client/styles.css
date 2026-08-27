@@ -711,8 +711,10 @@ svg {
 }
 
 .diff-options-menu {
-  width: 205px;
+  width: 228px;
+  max-height: min(640px, calc(100vh - 76px));
   padding: 6px;
+  overflow: auto;
 }
 
 .diff-option {
@@ -1861,6 +1863,44 @@ body.resizing-panels * {
   min-height: 0;
   overflow: hidden;
   background: var(--diff-bg);
+}
+
+.open-in-editor-button {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 6;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: var(--muted);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  box-shadow: 0 4px 12px var(--shadow);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 80ms ease;
+}
+
+.open-in-editor-button.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.open-in-editor-button:hover,
+.open-in-editor-button:focus-visible {
+  color: var(--text);
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.open-in-editor-button svg {
+  width: 12px;
+  height: 12px;
 }
 
 .diff-view-host {

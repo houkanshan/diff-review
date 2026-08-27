@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 
 import { ApiHandler } from './api.js'
 import { AppError } from './errors.js'
+import { findPackageRoot } from './packageRoot.js'
 import { ReviewStore } from './store.js'
 
 export const DEFAULT_PORT = 47_658
@@ -39,14 +40,8 @@ export async function serveDaemon(): Promise<void> {
 }
 
 function findClientDirectory(): string | null {
-  let current = path.dirname(fileURLToPath(import.meta.url))
-  while (true) {
-    if (existsSync(path.join(current, 'package.json'))) {
-      const client = path.join(current, 'dist', 'client')
-      return existsSync(path.join(client, 'index.html')) ? client : null
-    }
-    const parent = path.dirname(current)
-    if (parent === current) return null
-    current = parent
-  }
+  const packageRoot = findPackageRoot(path.dirname(fileURLToPath(import.meta.url)))
+  if (packageRoot == null) return null
+  const client = path.join(packageRoot, 'dist', 'client')
+  return existsSync(path.join(client, 'index.html')) ? client : null
 }

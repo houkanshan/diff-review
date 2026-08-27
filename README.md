@@ -10,7 +10,10 @@ Requires Node.js 22.12 or newer and Git. GitHub PR review also requires an authe
 npm install
 npm run build
 npm link
+diff-review setup-skill
 ```
+
+`setup-skill` installs the bundled `/explain-diff` skill at `~/.agents/skills/explain-diff/SKILL.md`. Run it again after updating Diff Review to refresh the skill.
 
 Open a review from any Git repository:
 
@@ -70,7 +73,6 @@ diff-review pi resume pir_abc123
 Saved runs remain available for 14 days after their last use. The daemon checks for expired runs at startup and every six hours. Automatic cleanup skips active runs and worktrees with modified or untracked files; annotations remain in Diff Review after the worktree and Pi session are removed.
 
 Run assets are stored under `~/.diff-review/worktrees` and `~/.diff-review/pi-sessions`, or the corresponding `DIFF_REVIEW_DATA_DIR`.
-
 
 ## Development
 

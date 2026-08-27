@@ -28,8 +28,10 @@ import {
   reusablePullRequestSession,
   selectOpenPullRequestSession,
 } from '../shared/pullRequestRevision.js'
+import { editorIdList, parseEditorId, type EditorId } from '../shared/editor.js'
 import { AppError, errorMessage } from './errors.js'
 import { getDifftasticAvailability, renderDifftasticFile } from './difftastic.js'
+import { openFileInEditor } from './editor.js'
 import {
   getRepositoryInfo,
   readSnapshotFile,
@@ -136,6 +138,7 @@ export class ApiHandler {
       /^\/api\/sessions\/([^/]+)\/annotations\/archive$/.exec(url.pathname)
     const fileStageMatch = /^\/api\/sessions\/([^/]+)\/files\/stage$/.exec(url.pathname)
     const fileViewedMatch = /^\/api\/sessions\/([^/]+)\/files\/viewed$/.exec(url.pathname)
+    const openEditorMatch = /^\/api\/sessions\/([^/]+)\/open-editor$/.exec(url.pathname)
     const fileMatch = /^\/api\/sessions\/([^/]+)\/file$/.exec(url.pathname)
     const fileDifftasticMatch = /^\/api\/sessions\/([^/]+)\/difftastic$/.exec(url.pathname)
     const piReviewMatch = /^\/api\/sessions\/([^/]+)\/pi-review$/.exec(url.pathname)
@@ -646,6 +649,21 @@ export class ApiHandler {
       const updated = this.store.setFileViewed(sessionId, filePath, input.viewed)
       this.emitSessionUpdate(sessionId)
       sendJson(response, 200, updated)
+      return
+    }
+
+    if (method === 'POST' && openEditorMatch != null) {
+      const sessionId = openEditorMatch[1] ?? ''
+      const session = this.store.getSession(sessionId)
+      const input = parseOpenEditorInput(await readJson(request))
+      const filePath = validateReviewFilePath(session.patch, input.filePath)
+      await openFileInEditor({
+        repositoryRoot: session.repositoryRoot,
+        filePath,
+        line: input.line,
+        editor: input.editor,
+      })
+      sendJson(response, 200, { ok: true })
       return
     }
 
@@ -1166,6 +1184,23 @@ function parseViewedFileInput(value: unknown): { filePath: string; viewed: boole
 function parseFileInput(value: unknown): { filePath: string } {
   const object = expectObject(value)
   return { filePath: expectString(object.filePath, 'filePath') }
+}
+
+function parseOpenEditorInput(value: unknown): {
+  filePath: string
+  line: number
+  editor: EditorId
+} {
+  const object = expectObject(value)
+  const editor = parseEditorId(object.editor)
+  if (editor == null) {
+    throw new AppError('INVALID_INPUT', `editor must be one of: ${editorIdList()}`)
+  }
+  const line = Number(object.line)
+  if (!Number.isInteger(line) || line <= 0) {
+    throw new AppError('INVALID_INPUT', 'line must be a positive integer')
+  }
+  return { filePath: expectString(object.filePath, 'filePath'), line, editor }
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
