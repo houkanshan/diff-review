@@ -35,7 +35,10 @@ import {
   Flag as FlagIcon,
   GitMerge as MergeIcon,
   GitPullRequest as PullRequestIcon,
+  GitPullRequestClosed as PullRequestClosedIcon,
+  GitPullRequestDraft as PullRequestDraftIcon,
   Check as CheckIcon,
+  LoaderCircle as CheckRunningIcon,
   CheckCheck as ChecksPassedIcon,
   ChevronDown as ChevronIcon,
   CircleDot as IssueIcon,
@@ -94,6 +97,7 @@ import type {
   AnnotationIntent,
   DiffSide,
   GitHubIssueReference,
+  GitHubReviewer,
   GitHubUser,
   MinimizedCommentReason,
   PiReviewRun,
@@ -101,6 +105,7 @@ import type {
   PullRequestActivity,
   PullRequestDetails,
   PullRequestReviewEvent,
+  PullRequestReviewStatus,
   PullRequestCheckRun,
   PullRequestCheckRunStatus,
   PullRequestListResponse,
@@ -192,7 +197,6 @@ interface PullRequestWorkspaceContext {
   details: PullRequestDetails
   revisions: PullRequestRevision[]
   currentSessionId: string
-  list: ReactNode
   piStatus: PiReviewStatus
   onSelectRevision(sessionId: string): void
   onOpenCommit(commitId: string): Promise<void>
@@ -404,6 +408,8 @@ function RootRedirect({
   )
 }
 
+const PULL_REQUEST_FOCUS_REFRESH_THRESHOLD_MS = 10 * 60_000
+
 function PullRequestsPage({
   route,
   onOpenSession,
@@ -441,6 +447,8 @@ function PullRequestsPage({
   const pullRequestsQuery = useQuery({
     queryKey: ['pull-requests', route.repositoryPath, view],
     staleTime: 0,
+    refetchOnWindowFocus: (query) =>
+      Date.now() - query.state.dataUpdatedAt >= PULL_REQUEST_FOCUS_REFRESH_THRESHOLD_MS,
     initialData: () => readStoredPullRequestList(route.repositoryPath, view),
     initialDataUpdatedAt: () => {
       const stored = readStoredPullRequestList(route.repositoryPath, view)
@@ -581,6 +589,7 @@ function PullRequestsPage({
 
   const rail = (
     <PullRequestRail
+      key={route.repositoryPath}
       view={view}
       items={pullRequests}
       selectedNumber={route.pullRequestNumber}
@@ -640,7 +649,7 @@ function PullRequestsPage({
 
   if (session == null || details == null || currentSessionId == null) {
     return (
-      <main className="review-shell">
+      <PullRequestPageShell rail={rail}>
         <header className="topbar">
           <div className="brand">
             <span className="brand-mark">Δ</span>
@@ -663,21 +672,17 @@ function PullRequestsPage({
           <ThemePicker value={themePreference} onChange={onThemeChange} />
         </header>
         {details == null ? (
-          <div className="pr-empty-workspace">
-            {rail}
-            <section className="pr-selection-empty">
-              {detailError != null ? (
-                <><span>Pull request unavailable</span><p>{detailError}</p></>
-              ) : detailLoading ? (
-                <><span className="loading-ring" /><p>Loading pull request…</p></>
-              ) : (
-                <><span className="empty-glyph">↗</span><p>Select a pull request to begin.</p></>
-              )}
-            </section>
-          </div>
+          <section className="pr-selection-empty">
+            {detailError != null ? (
+              <><span>Pull request unavailable</span><p>{detailError}</p></>
+            ) : detailLoading ? (
+              <><span className="loading-ring" /><p>Loading pull request…</p></>
+            ) : (
+              <><span className="empty-glyph">↗</span><p>Select a pull request to begin.</p></>
+            )}
+          </section>
         ) : (
-          <div className={`workspace pr-workspace pr-${pendingPullRequestView}-mode`}>
-            {rail}
+          <>
             <PullRequestViewHeader
               key={details.number}
               view={pendingPullRequestView}
@@ -746,112 +751,129 @@ function PullRequestsPage({
                 )}
               </section>
             </div>
-          </div>
+          </>
         )}
-      </main>
+      </PullRequestPageShell>
     )
   }
 
   return (
-    <ReviewWorkspaceStore sessionId={session.id}>
-    <ReviewWorkspace
-      session={session}
-      initialPullRequestView={pendingPullRequestView}
-      error={detailError}
-      onSessionChange={(nextSession) => updateWorkspace((current) => ({
-        ...current,
-        currentSession: current.currentSession.id === nextSession.id
-          ? nextSession
-          : current.currentSession,
-        selectedSession: nextSession,
-      }))}
-      onOpenSession={onOpenSession}
-      onOpenPullRequests={onOpenPullRequests}
-      onReload={async () => {
-        const nextSession = await getSession(session.id)
-        updateWorkspace((current) => ({
-          ...current,
-          currentSession: current.currentSession.id === nextSession.id
-            ? nextSession
-            : current.currentSession,
-          selectedSession: nextSession,
-        }))
-      }}
-      themePreference={themePreference}
-      resolvedTheme={resolvedTheme}
-      onThemeChange={onThemeChange}
-      pullRequest={{
-        details,
-        revisions,
-        currentSessionId,
-        list: rail,
-        piStatus,
-        onSelectRevision: (id) => onOpenPullRequests(route.repositoryPath, number, id),
-        onOpenCommit: async (commitId) => {
-          const next = await createSession({
-            repositoryPath: route.repositoryPath,
-            target: { kind: 'range', expression: commitId },
-          })
-          onOpenSession(next.id)
-        },
-        onStartPiReview: async (additionalInstructions) => {
-          const nextPiStatus = await startPiReview(session.id, { additionalInstructions })
-          updateWorkspace((current) => ({ ...current, piStatus: nextPiStatus }))
-        },
-        onRemoveAdditionalReviewLabel: async () => {
-          await removePullRequestLabel(
-            details.number,
-            'additional-review-needed',
-            { repositoryPath: route.repositoryPath },
-          )
-          queryClient.setQueriesData<PullRequestWorkspace>(
-            { queryKey: ['pull-request-workspace', route.repositoryPath, details.number] },
-            (current) => current == null ? undefined : ({
+    <PullRequestPageShell rail={rail}>
+      <ReviewWorkspaceStore sessionId={session.id}>
+        <ReviewWorkspace
+          embedded
+          session={session}
+          initialPullRequestView={pendingPullRequestView}
+          error={detailError}
+          onSessionChange={(nextSession) => updateWorkspace((current) => ({
+            ...current,
+            currentSession: current.currentSession.id === nextSession.id
+              ? nextSession
+              : current.currentSession,
+            selectedSession: nextSession,
+          }))}
+          onOpenSession={onOpenSession}
+          onOpenPullRequests={onOpenPullRequests}
+          onReload={async () => {
+            const nextSession = await getSession(session.id)
+            updateWorkspace((current) => ({
               ...current,
-              details: {
-                ...current.details,
-                labels: current.details.labels.filter(
-                  (label) => label.name !== 'additional-review-needed',
-                ),
-              },
-            }),
-          )
-          await Promise.all([
-            queryClient.invalidateQueries({
-              queryKey: ['pull-request-workspace', route.repositoryPath, details.number],
-            }),
-            queryClient.invalidateQueries({
-              queryKey: ['pull-requests', route.repositoryPath],
-            }),
-          ])
-        },
-        onAddComment: async (body, replyToId) => {
-          await addPullRequestComment(details.number, {
-            repositoryPath: route.repositoryPath,
-            body,
-            replyToId,
-          })
-          refreshPullRequestData(details.number)
-        },
-        onSubmitReview: async (event, body) => {
-          await submitPullRequestReview(details.number, {
-            repositoryPath: route.repositoryPath,
-            event,
-            body,
-            sessionId: session.id,
-          })
-          refreshPullRequestData(details.number)
-        },
-        onSquashMerge: async () => {
-          await squashMergePullRequest(details.number, {
-            repositoryPath: route.repositoryPath,
-            expectedHeadOid: pullRequestRevisionHead(session),
-          })
-          refreshPullRequestData(details.number)
-        },
-      }}
-    />
-    </ReviewWorkspaceStore>
+              currentSession: current.currentSession.id === nextSession.id
+                ? nextSession
+                : current.currentSession,
+              selectedSession: nextSession,
+            }))
+          }}
+          themePreference={themePreference}
+          resolvedTheme={resolvedTheme}
+          onThemeChange={onThemeChange}
+          pullRequest={{
+            details,
+            revisions,
+            currentSessionId,
+            piStatus,
+            onSelectRevision: (id) => onOpenPullRequests(route.repositoryPath, number, id),
+            onOpenCommit: async (commitId) => {
+              const next = await createSession({
+                repositoryPath: route.repositoryPath,
+                target: { kind: 'range', expression: commitId },
+              })
+              onOpenSession(next.id)
+            },
+            onStartPiReview: async (additionalInstructions) => {
+              const nextPiStatus = await startPiReview(session.id, { additionalInstructions })
+              updateWorkspace((current) => ({ ...current, piStatus: nextPiStatus }))
+            },
+            onRemoveAdditionalReviewLabel: async () => {
+              await removePullRequestLabel(
+                details.number,
+                'additional-review-needed',
+                { repositoryPath: route.repositoryPath },
+              )
+              queryClient.setQueriesData<PullRequestWorkspace>(
+                { queryKey: ['pull-request-workspace', route.repositoryPath, details.number] },
+                (current) => current == null ? undefined : ({
+                  ...current,
+                  details: {
+                    ...current.details,
+                    labels: current.details.labels.filter(
+                      (label) => label.name !== 'additional-review-needed',
+                    ),
+                  },
+                }),
+              )
+              await Promise.all([
+                queryClient.invalidateQueries({
+                  queryKey: ['pull-request-workspace', route.repositoryPath, details.number],
+                }),
+                queryClient.invalidateQueries({
+                  queryKey: ['pull-requests', route.repositoryPath],
+                }),
+              ])
+            },
+            onAddComment: async (body, replyToId) => {
+              await addPullRequestComment(details.number, {
+                repositoryPath: route.repositoryPath,
+                body,
+                replyToId,
+              })
+              refreshPullRequestData(details.number)
+            },
+            onSubmitReview: async (event, body) => {
+              await submitPullRequestReview(details.number, {
+                repositoryPath: route.repositoryPath,
+                event,
+                body,
+                sessionId: session.id,
+              })
+              refreshPullRequestData(details.number)
+            },
+            onSquashMerge: async () => {
+              await squashMergePullRequest(details.number, {
+                repositoryPath: route.repositoryPath,
+                expectedHeadOid: pullRequestRevisionHead(session),
+              })
+              refreshPullRequestData(details.number)
+            },
+          }}
+        />
+      </ReviewWorkspaceStore>
+    </PullRequestPageShell>
+  )
+}
+
+function PullRequestPageShell({
+  rail,
+  children,
+}: {
+  rail: ReactNode
+  children: ReactNode
+}) {
+  return (
+    <main className="review-shell pr-review-shell">
+      {rail}
+      {children}
+    </main>
   )
 }
 
@@ -883,6 +905,7 @@ function ReviewWorkspace({
   resolvedTheme,
   onThemeChange,
   pullRequest,
+  embedded = false,
 }: {
   session: ReviewSession
   initialPullRequestView?: PullRequestViewMode
@@ -895,6 +918,7 @@ function ReviewWorkspace({
   resolvedTheme: ResolvedTheme
   onThemeChange(theme: ThemePreference): void
   pullRequest?: PullRequestWorkspaceContext
+  embedded?: boolean
 }) {
   const viewerRef = useRef<CodeViewHandle<ReviewLineAnnotation>>(null)
   const [layout, setLayout] = useState<DiffLayout>('unified')
@@ -1466,8 +1490,8 @@ function ReviewWorkspace({
     '--right-panel-width': `${rightPanelWidth}px`,
   } as CSSProperties
 
-  return (
-    <main className="review-shell">
+  const content = (
+    <>
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark">Δ</span>
@@ -1571,7 +1595,6 @@ function ReviewWorkspace({
           : ` pr-workspace pr-${pullRequestView}-mode`}`}
         style={workspaceStyle}
       >
-        {pullRequest?.list}
         {pullRequest != null && (
           <>
             <PullRequestViewHeader
@@ -1740,8 +1763,10 @@ function ReviewWorkspace({
           />
         </div>
       </div>
-    </main>
+    </>
   )
+  if (embedded) return content
+  return <main className="review-shell">{content}</main>
 }
 
 function PanelResizeHandle({
@@ -2089,6 +2114,22 @@ function DiffOptionsMenu({
   )
 }
 
+function PullRequestStateIcon({ pullRequest }: { pullRequest: PullRequestSummary }) {
+  const props = { size: 12, strokeWidth: 2.2, 'aria-hidden': true as const }
+  if (pullRequest.isDraft) return <PullRequestDraftIcon {...props} />
+  if (pullRequest.state === 'MERGED') return <MergeIcon {...props} />
+  if (pullRequest.state === 'CLOSED') return <PullRequestClosedIcon {...props} />
+  return <PullRequestIcon {...props} />
+}
+
+function CheckStatusIcon({ status }: { status: PullRequestSummary['checkStatus'] }) {
+  const props = { size: 12, strokeWidth: 2.8, 'aria-hidden': true as const }
+  if (status === 'pass') return <CheckIcon {...props} />
+  if (status === 'fail') return <CloseIcon {...props} />
+  if (status === 'pending') return <CheckRunningIcon {...props} />
+  return null
+}
+
 function PullRequestRail({
   view,
   items,
@@ -2157,39 +2198,63 @@ function PullRequestRail({
             className={`pr-list-item${selectedNumber === pullRequest.number ? ' selected' : ''}`}
             onClick={() => onSelect(pullRequest.number)}
           >
-            <div className="pr-item-kicker">
-              <span className={`pr-state ${pullRequest.isDraft ? 'draft' : pullRequest.state.toLowerCase()}`}>
-                {pullRequest.isDraft ? 'Draft' : titleCase(pullRequest.state)}
-              </span>
-              <span className={`check-state ${pullRequest.checkStatus}`}>
-                <i />{checkStatusLabel(pullRequest.checkStatus)}
-              </span>
+            <span
+              className={`pr-state-icon ${pullRequest.isDraft ? 'draft' : pullRequest.state.toLowerCase()}`}
+              title={pullRequest.isDraft ? 'Draft' : titleCase(pullRequest.state)}
+              aria-label={pullRequest.isDraft ? 'Draft' : titleCase(pullRequest.state)}
+            >
+              <PullRequestStateIcon pullRequest={pullRequest} />
+            </span>
+            <span
+              className={`check-state-icon ${pullRequest.checkStatus}`}
+              title={checkStatusLabel(pullRequest.checkStatus)}
+              aria-label={checkStatusLabel(pullRequest.checkStatus)}
+            >
+              <CheckStatusIcon status={pullRequest.checkStatus} />
+            </span>
+            <span className="pr-item-title">
               <code>#{pullRequest.number}</code>
-            </div>
-            <strong className="pr-item-title">{pullRequest.title}</strong>
-            <div className="pr-item-people">
-              <UserAvatar user={pullRequest.author} />
-              <span>{pullRequest.author.login}</span>
-              {pullRequest.assignees.length > 0 && (
-                <span>→ {pullRequest.assignees.map((assignee) => assignee.login).join(', ')}</span>
-              )}
+              {pullRequest.title}
+            </span>
+            <div className="pr-item-meta">
+              <span className="pr-item-people" title={pullRequest.author.login} aria-label={pullRequest.author.login}>
+                <UserAvatar user={pullRequest.author} />
+              </span>
               {pullRequest.reviewers.length > 0 && (
-                <span className="pr-item-reviewers" title={pullRequest.reviewers.map((reviewer) => reviewer.login).join(', ')}>
+                <span
+                  className="pr-item-reviewers"
+                  title={pullRequest.reviewers.map((reviewer) => reviewer.login).join(', ')}
+                  aria-label={pullRequest.reviewers.map((reviewer) => reviewer.login).join(', ')}
+                >
                   {pullRequest.reviewers.map((reviewer) => (
-                    <UserAvatar key={reviewer.login} user={reviewer} />
+                    <span className="pr-item-reviewer" key={reviewer.login}>
+                      <UserAvatar user={reviewer} />
+                    </span>
                   ))}
                 </span>
               )}
-            </div>
-            <div className="pr-item-stats">
-              <span className="addition">+{pullRequest.additions}</span>
-              <span className="deletion">−{pullRequest.deletions}</span>
-              <time title={`Created ${formatTimestamp(pullRequest.createdAt)}`}>
-                created {relativeTime(pullRequest.createdAt)}
-              </time>
-              <time title={`Updated ${formatTimestamp(pullRequest.updatedAt)}`}>
-                updated {relativeTime(pullRequest.updatedAt)}
-              </time>
+              {pullRequest.commentCount > 0 && (
+                <span className="pr-item-comments" title={`${pullRequest.commentCount} comments and reviews`} aria-label={`${pullRequest.commentCount} comments and reviews`}>
+                  <CommentIcon size={12} strokeWidth={2} />
+                  {pullRequest.commentCount}
+                </span>
+              )}
+              <ReviewStatus status={aggregateReviewStatus(pullRequest.reviewers)} showLabel />
+              <span className="pr-item-stats">
+                <span className="addition">+{pullRequest.additions}</span>
+                <span className="deletion">−{pullRequest.deletions}</span>
+                <time
+                  title={pullRequest.updatedAt === pullRequest.createdAt
+                    ? `Created ${formatTimestamp(pullRequest.createdAt)}`
+                    : `Updated ${formatTimestamp(pullRequest.updatedAt)}`}
+                >
+                  {relativeTime(
+                    pullRequest.updatedAt === pullRequest.createdAt
+                      ? pullRequest.createdAt
+                      : pullRequest.updatedAt,
+                  )}
+                </time>
+              </span>
             </div>
           </button>
         ))}
@@ -2840,7 +2905,12 @@ function PullRequestSidebar({ details }: { details: PullRequestDetails }) {
             )}
       </details>
 
-      <SidebarPeople title="Reviewers" people={details.reviewers} emptyLabel="No reviewers" />
+      <SidebarPeople
+        title="Reviewers"
+        people={details.reviewers}
+        emptyLabel="No reviewers"
+        renderTrailing={(reviewer) => <ReviewStatus status={reviewer.reviewStatus} />}
+      />
       <SidebarPeople title="Assignees" people={details.assignees} emptyLabel="No assignees" />
 
       <section className="pr-sidebar-section">
@@ -2942,14 +3012,16 @@ function checkRunStatusSummary(checks: PullRequestCheckRun[]): string {
   return `${label} · ${checks.length}`
 }
 
-function SidebarPeople({
+function SidebarPeople<T extends GitHubUser>({
   title,
   people,
   emptyLabel,
+  renderTrailing,
 }: {
   title: string
-  people: GitHubUser[]
+  people: T[]
   emptyLabel: string
+  renderTrailing?: (person: T) => ReactNode
 }) {
   return (
     <section className="pr-sidebar-section">
@@ -2965,11 +3037,35 @@ function SidebarPeople({
                     <strong>{person.name ?? person.login}</strong>
                     {person.name != null && <small>{person.login}</small>}
                   </span>
+                  {renderTrailing?.(person)}
                 </div>
               ))}
             </div>
           )}
     </section>
+  )
+}
+
+function aggregateReviewStatus(reviewers: GitHubReviewer[]): PullRequestReviewStatus {
+  if (reviewers.some((reviewer) => reviewer.reviewStatus === 'rejected')) return 'rejected'
+  if (reviewers.some((reviewer) => reviewer.reviewStatus === 'approved')) return 'approved'
+  return 'none'
+}
+
+function ReviewStatus({
+  status,
+  showLabel = false,
+}: {
+  status: PullRequestReviewStatus
+  showLabel?: boolean
+}) {
+  if (status !== 'approved' && status !== 'rejected') return null
+  const label = status === 'approved' ? 'Approved' : 'Rejected'
+  return (
+    <span className={`review-status ${status}`} title={label} aria-label={label}>
+      {status === 'approved' ? <CheckIcon /> : <CloseIcon />}
+      {showLabel && <span>{label}</span>}
+    </span>
   )
 }
 

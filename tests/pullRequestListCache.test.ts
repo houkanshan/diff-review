@@ -20,6 +20,7 @@ const summary: PullRequestSummary = {
   reviewers: [],
   labels: [],
   checkStatus: 'pass',
+  commentCount: 3,
 }
 
 const list: PullRequestListResponse = {
@@ -39,17 +40,17 @@ describe('parseStoredPullRequestList', () => {
     expect(parseStoredPullRequestList('')).toBeUndefined()
     expect(parseStoredPullRequestList('{')).toBeUndefined()
     expect(parseStoredPullRequestList(encode(list))).toBeUndefined()
-    expect(parseStoredPullRequestList(encode({ version: 2, list: { fetchedAt: list.fetchedAt } }))).toBeUndefined()
-    expect(parseStoredPullRequestList(encode({ version: 1, list }))).toBeUndefined()
+    expect(parseStoredPullRequestList(encode({ version: 5, list: { fetchedAt: list.fetchedAt } }))).toBeUndefined()
+    expect(parseStoredPullRequestList(encode({ version: 4, list }))).toBeUndefined()
     expect(parseStoredPullRequestList(encode({
-      version: 2,
+      version: 5,
       list: { ...list, items: [{ ...summary, author: {} }] },
     }))).toBeUndefined()
   })
 
   it('reads a versioned list snapshot', () => {
-    expect(parseStoredPullRequestList(encode({ version: 2, list }))).toEqual(list)
-    expect(parseStoredPullRequestList(encode({ version: 2, list: { ...list, stale: true } }))).toEqual({
+    expect(parseStoredPullRequestList(encode({ version: 5, list }))).toEqual(list)
+    expect(parseStoredPullRequestList(encode({ version: 5, list: { ...list, stale: true } }))).toEqual({
       ...list,
       stale: true,
     })

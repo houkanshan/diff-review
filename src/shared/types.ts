@@ -191,12 +191,15 @@ export interface GitHubUser {
 
 export interface GitHubReviewer extends GitHubUser {
   kind: 'user' | 'team'
+  reviewStatus: PullRequestReviewStatus
 }
 
 export interface GitHubLabel {
   name: string
   color: string
 }
+
+export type PullRequestReviewStatus = 'none' | 'approved' | 'rejected'
 
 export interface GitHubIssueReference {
   token: string
@@ -226,6 +229,7 @@ export interface PullRequestSummary {
   reviewers: GitHubReviewer[]
   labels: GitHubLabel[]
   checkStatus: PullRequestCheckStatus
+  commentCount: number
 }
 
 export interface PullRequestListPageInfo {

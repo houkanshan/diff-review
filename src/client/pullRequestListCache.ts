@@ -5,15 +5,17 @@ import type {
   PullRequestCheckStatus,
   PullRequestListResponse,
   PullRequestListView,
+  PullRequestReviewStatus,
   PullRequestState,
   PullRequestSummary,
 } from '../shared/types'
 
 const STORAGE_PREFIX = 'diff-review-pull-requests:'
-const STORAGE_VERSION = 2
+const STORAGE_VERSION = 5
 
 const PULL_REQUEST_STATES = new Set<PullRequestState>(['OPEN', 'CLOSED', 'MERGED'])
 const CHECK_STATUSES = new Set<PullRequestCheckStatus>(['none', 'unknown', 'pending', 'pass', 'fail'])
+const REVIEW_STATUSES = new Set<PullRequestReviewStatus>(['none', 'approved', 'rejected'])
 
 export function pullRequestListStorageKey(
   repositoryPath: string,
@@ -100,6 +102,7 @@ function parsePullRequestSummary(value: unknown): PullRequestSummary | undefined
     typeof value.deletions !== 'number' ||
     typeof value.createdAt !== 'string' ||
     typeof value.updatedAt !== 'string' ||
+    typeof value.commentCount !== 'number' ||
     typeof value.checkStatus !== 'string' ||
     !CHECK_STATUSES.has(value.checkStatus as PullRequestCheckStatus)
   ) {
@@ -144,6 +147,7 @@ function parsePullRequestSummary(value: unknown): PullRequestSummary | undefined
     reviewers,
     labels,
     checkStatus: value.checkStatus as PullRequestCheckStatus,
+    commentCount: value.commentCount,
   }
 }
 
@@ -158,8 +162,18 @@ function parseGitHubUser(value: unknown): GitHubUser | undefined {
 
 function parseGitHubReviewer(value: unknown): GitHubReviewer | undefined {
   const user = parseGitHubUser(value)
-  if (user == null || !isRecord(value) || (value.kind !== 'user' && value.kind !== 'team')) return undefined
-  return { ...user, kind: value.kind }
+  if (
+    user == null ||
+    !isRecord(value) ||
+    (value.kind !== 'user' && value.kind !== 'team') ||
+    typeof value.reviewStatus !== 'string' ||
+    !REVIEW_STATUSES.has(value.reviewStatus as PullRequestReviewStatus)
+  ) return undefined
+  return {
+    ...user,
+    kind: value.kind,
+    reviewStatus: value.reviewStatus as PullRequestReviewStatus,
+  }
 }
 
 function parseGitHubLabel(value: unknown): GitHubLabel | undefined {

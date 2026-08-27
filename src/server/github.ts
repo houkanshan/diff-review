@@ -12,6 +12,7 @@ import type {
   PullRequestDetails,
   PullRequestMergeable,
   PullRequestReviewEvent,
+  PullRequestReviewStatus,
   PullRequestListPageInfo,
   PullRequestListResponse,
   PullRequestListView,
@@ -309,12 +310,14 @@ function pullRequestListQuery(
       pageInfo { hasNextPage endCursor }
       nodes {
         number title url state isDraft baseRefName headRefName additions deletions createdAt updatedAt
-        author { login ... on User { name } }
-        assignees(first: 100) { nodes { login name } }
+        author { login avatarUrl ... on User { name } }
+        assignees(first: 100) { nodes { login name avatarUrl } }
         reviewRequests(first: 100) {
-          nodes { requestedReviewer { __typename ... on User { login name } ... on Team { slug name } } }
+          nodes { requestedReviewer { __typename ... on User { login name avatarUrl } ... on Team { slug name avatarUrl } } }
         }
-        latestReviews(first: 100) { nodes { author { login ... on User { name } } } }
+        latestReviews(first: 100) { nodes { state author { login avatarUrl ... on User { name } } } }
+        comments(last: 20) { nodes { author { __typename login } } }
+        reviews(last: 20) { nodes { author { __typename login } } }
         labels(first: 100) { nodes { name color } }
         commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
       }
@@ -444,7 +447,7 @@ async function loadPullRequestDetails(
     mergedBy: parseOptionalUser(raw.mergedBy),
     mergeable: parsePullRequestMergeable(raw.mergeable),
     conflictFiles: [],
-    reviewers: parsePullRequestReviewers(raw.reviewRequests, raw.reviews),
+    reviewers: parsePullRequestReviewers(raw.reviewRequests, raw.latestReviews ?? raw.reviews),
     issueReferences,
     baseRefOid: expectString(raw.baseRefOid, 'baseRefOid'),
     headRefOid: expectString(raw.headRefOid, 'headRefOid'),
@@ -767,20 +770,26 @@ export function parsePullRequestReviewers(
   const requested = expectArray(requestsValue).map((reviewerValue): GitHubReviewer => {
     const reviewer = expectObject(reviewerValue)
     const kind = expectString(reviewer.__typename, 'reviewRequests.__typename')
-    if (kind === 'User') return { ...parseUser(reviewer), kind: 'user' }
+    if (kind === 'User') return { ...parseUser(reviewer), kind: 'user', reviewStatus: 'none' }
     if (kind === 'Team') {
       return {
         kind: 'team',
         login: expectString(reviewer.slug, 'reviewRequests.slug'),
         name: expectString(reviewer.name, 'reviewRequests.name'),
-        avatarUrl: null,
+        avatarUrl: optionalString(reviewer.avatarUrl),
+        reviewStatus: 'none',
       }
     }
     throw invalidGitHubResponse(`Unknown review request type: ${kind}`)
   })
   const completed = expectArray(reviewsValue).flatMap((reviewValue): GitHubReviewer[] => {
-    const author = parseOptionalUser(expectObject(reviewValue).author)
-    return author == null ? [] : [{ ...author, kind: 'user' }]
+    const review = expectObject(reviewValue)
+    const author = parseOptionalUser(review.author)
+    return author == null ? [] : [{
+      ...author,
+      kind: 'user',
+      reviewStatus: parsePullRequestReviewStatus(review.state),
+    }]
   })
   return [...new Map(
     [...requested, ...completed].map((reviewer) => [reviewer.login.toLowerCase(), reviewer]),
@@ -877,12 +886,50 @@ export function parseCheckRollupState(state: string | null): PullRequestCheckSta
 }
 
 
+export function parsePullRequestReviewStatus(value: unknown): PullRequestReviewStatus {
+  switch (optionalString(value)?.toUpperCase()) {
+    case 'APPROVED':
+      return 'approved'
+    case 'CHANGES_REQUESTED':
+      return 'rejected'
+    default:
+      return 'none'
+  }
+}
+
 export function parsePullRequestState(value: unknown): PullRequestState {
   const state = expectString(value, 'state').toUpperCase()
   if (state !== 'OPEN' && state !== 'CLOSED' && state !== 'MERGED') {
     throw invalidGitHubResponse(`Unknown pull request state: ${state}`)
   }
   return state
+}
+
+function parseCommentCount(raw: Record<string, unknown>): number {
+  const authorLogin = optionalString(optionalObject(raw.author)?.login)
+  return countHumanDiscussionNodes(raw.comments, authorLogin)
+    + countHumanDiscussionNodes(raw.reviews, authorLogin)
+}
+
+function countHumanDiscussionNodes(value: unknown, authorLogin: string | null | undefined): number {
+  const nodes = Array.isArray(value) ? value : optionalObject(value)?.nodes
+  if (!Array.isArray(nodes)) return 0
+  let count = 0
+  for (const node of nodes) {
+    const author = optionalObject(optionalObject(node)?.author)
+    if (author == null || isBotAuthor(author)) continue
+    const login = optionalString(author.login)
+    if (login == null) continue
+    if (authorLogin != null && login.toLowerCase() === authorLogin.toLowerCase()) continue
+    count += 1
+  }
+  return count
+}
+
+function isBotAuthor(author: Record<string, unknown>): boolean {
+  if (author.__typename === 'Bot') return true
+  const login = optionalString(author.login)
+  return login != null && (login.includes('[bot]') || login.includes('github-actions'))
 }
 
 function parsePullRequestSummary(
@@ -902,6 +949,7 @@ function parsePullRequestSummary(
     deletions: expectNonNegativeInteger(raw.deletions, 'deletions'),
     createdAt: expectString(raw.createdAt, 'createdAt'),
     updatedAt: expectString(raw.updatedAt, 'updatedAt'),
+    commentCount: parseCommentCount(raw),
     author: parseUser(raw.author),
     assignees: expectArray(raw.assignees).map(parseUser),
     reviewers: parsePullRequestReviewers(raw.reviewRequests, raw.latestReviews ?? raw.reviews),

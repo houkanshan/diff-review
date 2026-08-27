@@ -24,6 +24,7 @@ import {
   parsePullRequestChecks,
   parsePullRequestMergeable,
   parsePullRequestReviewers,
+  parsePullRequestReviewStatus,
   pendingReviewComments,
   parsePullRequestTimelineEvents,
   parseMinimizedComments,
@@ -455,26 +456,35 @@ describe('GitHub pull request sidebar data', () => {
     expect(() => parsePullRequestMergeable('blocked')).toThrow(/mergeable state/)
   })
 
+  test('maps GitHub review states to reviewer statuses', () => {
+    expect(parsePullRequestReviewStatus('APPROVED')).toBe('approved')
+    expect(parsePullRequestReviewStatus('changes_requested')).toBe('rejected')
+    expect(parsePullRequestReviewStatus('COMMENTED')).toBe('none')
+    expect(parsePullRequestReviewStatus(null)).toBe('none')
+  })
+
   test('preserves user and team review requests', () => {
     expect(parsePullRequestReviewers([
       { __typename: 'User', login: 'octocat' },
       { __typename: 'Team', name: 'Platform', slug: 'acme/platform' },
     ], [
-      { author: { login: 'octocat' } },
-      { author: { login: 'completed-reviewer', name: 'Completed Reviewer' } },
+      { state: 'APPROVED', author: { login: 'octocat' } },
+      { state: 'CHANGES_REQUESTED', author: { login: 'completed-reviewer', name: 'Completed Reviewer' } },
     ])).toEqual([
       {
         kind: 'user',
         login: 'octocat',
         name: null,
         avatarUrl: 'https://github.com/octocat.png?size=64',
+        reviewStatus: 'approved',
       },
-      { kind: 'team', login: 'acme/platform', name: 'Platform', avatarUrl: null },
+      { kind: 'team', login: 'acme/platform', name: 'Platform', avatarUrl: null, reviewStatus: 'none' },
       {
         kind: 'user',
         login: 'completed-reviewer',
         name: 'Completed Reviewer',
         avatarUrl: 'https://github.com/completed-reviewer.png?size=64',
+        reviewStatus: 'rejected',
       },
     ])
   })
@@ -482,19 +492,21 @@ describe('GitHub pull request sidebar data', () => {
   test('skips reviews whose author is missing', () => {
     expect(parsePullRequestReviewers(
       [{ __typename: 'User', login: 'octocat' }],
-      [{ author: null }, { author: { login: 'hubot' } }],
+      [{ author: null }, { state: 'APPROVED', author: { login: 'hubot' } }],
     )).toEqual([
       {
         kind: 'user',
         login: 'octocat',
         name: null,
         avatarUrl: 'https://github.com/octocat.png?size=64',
+        reviewStatus: 'none',
       },
       {
         kind: 'user',
         login: 'hubot',
         name: null,
         avatarUrl: 'https://github.com/hubot.png?size=64',
+        reviewStatus: 'approved',
       },
     ])
   })
@@ -690,7 +702,7 @@ describe('GitHub pull request list', () => {
       '}',
       "if (args[0] === 'api' && args[1] === 'graphql') {",
       "  const query = args.find((arg) => arg.startsWith('query=')) ?? ''",
-      "  if (!query.includes('pullRequests(first: 20,') || !query.includes('pageInfo { hasNextPage endCursor }') || !query.includes('orderBy: {field: CREATED_AT, direction: DESC}') || !query.includes('author { login ... on User { name } }') || !query.includes('statusCheckRollup { state }')) {",
+      "  if (!query.includes('pullRequests(first: 20,') || !query.includes('pageInfo { hasNextPage endCursor }') || !query.includes('orderBy: {field: CREATED_AT, direction: DESC}') || !query.includes('latestReviews(first: 100) { nodes { state author') || !query.includes('comments(last: 20) { nodes { author { __typename login } } }') || !query.includes('reviews(last: 20)') || !query.includes('statusCheckRollup { state }')) {",
       "    process.stderr.write('expected combined list query')",
       '    process.exit(1)',
       '  }',
@@ -727,7 +739,17 @@ describe('GitHub pull request list', () => {
                 reviewRequests: {
                   nodes: [{ requestedReviewer: { __typename: 'User', login: 'hubot' } }],
                 },
-                latestReviews: { nodes: [{ author: { login: 'reviewer' } }] },
+                latestReviews: { nodes: [{ state: 'CHANGES_REQUESTED', author: { login: 'reviewer' } }] },
+                comments: { nodes: [
+                  { author: { __typename: 'User', login: 'octocat' } },
+                  { author: { __typename: 'Bot', login: 'github-actions' } },
+                  { author: { __typename: 'User', login: 'dependabot[bot]' } },
+                  { author: null },
+                  { author: { __typename: 'User', login: 'reviewer' } },
+                ] },
+                reviews: { nodes: [
+                  { author: { __typename: 'User', login: 'hubot' } },
+                ] },
                 labels: { nodes: [] },
                 commits: { nodes: [{ commit: { statusCheckRollup: { state: 'FAILURE' } } }] },
               },
@@ -746,7 +768,7 @@ describe('GitHub pull request list', () => {
                 author: { login: 'hubot' },
                 assignees: { nodes: [] },
                 reviewRequests: { nodes: [] },
-                latestReviews: { nodes: [] },
+                latestReviews: { nodes: [{ state: 'APPROVED', author: { login: 'reviewer-two' } }] },
                 labels: { nodes: [] },
                 commits: { nodes: [{ commit: { statusCheckRollup: null } }] },
               },
@@ -765,11 +787,18 @@ describe('GitHub pull request list', () => {
           title: 'Fast list',
           checkStatus: 'fail',
           reviewers: [
-            { login: 'hubot', kind: 'user' },
-            { login: 'reviewer', kind: 'user' },
+            { login: 'hubot', kind: 'user', reviewStatus: 'none' },
+            { login: 'reviewer', kind: 'user', reviewStatus: 'rejected' },
           ],
+          commentCount: 2,
         },
-        { number: 13, title: 'No checks', checkStatus: 'none', reviewers: [] },
+        {
+          number: 13,
+          title: 'No checks',
+          checkStatus: 'none',
+          reviewers: [{ login: 'reviewer-two', kind: 'user', reviewStatus: 'approved' }],
+          commentCount: 0,
+        },
         ],
       })
     } finally {
