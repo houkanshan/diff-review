@@ -228,6 +228,17 @@ function isTextareaSubmitEnter(event: KeyboardEvent<HTMLTextAreaElement>) {
     event.keyCode !== 229
 }
 
+function hasDocumentSelection(): boolean {
+  const selection = window.getSelection()
+  if (selection != null && !selection.isCollapsed) return true
+
+  const activeElement = document.activeElement
+  if (activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement) {
+    return activeElement.selectionStart !== activeElement.selectionEnd
+  }
+  return false
+}
+
 function queryErrorMessage(error: unknown): string | null {
   if (error == null) return null
   return error instanceof Error ? error.message : String(error)
@@ -947,7 +958,7 @@ function ReviewWorkspace({
     storedPanelWidth('right', 310, 240, 480),
   )
   const [busy, setBusy] = useState(false)
-  const [copied, setCopied] = useState(false)
+  const [commentsCopied, setCommentsCopied] = useState(false)
   const viewedFiles = useMemo(() => new Set(session.viewedFiles), [session.viewedFiles])
   const [collapsedFiles, setCollapsedFiles] = useState(() => new Set(session.viewedFiles))
   const previousItemsRef = useRef<CodeViewItem<ReviewLineAnnotation>[]>([])
@@ -1401,20 +1412,46 @@ function ReviewWorkspace({
     }
   }, [onSessionChange, session.id])
 
-  const copyForAgent = useCallback(async () => {
-    const text = [
-      `Session: ${session.id}`,
-      `Repository: ${session.repositoryRoot}`,
-      `Review with: ${session.gitCommand}`,
-      '',
-      `Add a summary with: diff-review annotate ${session.id} --comment <text>`,
-      `Add notes with: diff-review annotate ${session.id} --file <path> --new-line <line[-end]> --comment <text> --importance <0..1>`,
-    ].join('\n')
-    await navigator.clipboard.writeText(text)
-    setCopied(true)
-    window.setTimeout(() => setCopied(false), 1600)
-  }, [session])
+  const humanAnnotations = useMemo(() => session.annotations.filter(
+    (annotation) =>
+      annotation.archivedAt == null &&
+      annotation.source === 'user' &&
+      Boolean(annotation.comment?.trim()),
+  ), [session.annotations])
+  const humanGlobalComments = useMemo(() => session.globalComments.filter(
+    (comment) => comment.archivedAt == null && comment.source === 'user',
+  ), [session.globalComments])
+  const hasHumanComments = humanAnnotations.length > 0 || humanGlobalComments.length > 0
+  const copyHumanComments = useCallback(async () => {
+    await navigator.clipboard.writeText(
+      await formatCommentsForAgent(
+        session.id,
+        humanGlobalComments.map((comment) => comment.comment).join('\n\n') || null,
+        humanAnnotations,
+        session.annotations,
+        parsedFiles,
+      ),
+    )
+    setCommentsCopied(true)
+    window.setTimeout(() => setCommentsCopied(false), 1600)
+  }, [humanAnnotations, humanGlobalComments, parsedFiles, session.annotations, session.id])
 
+  useEffect(() => {
+    const onCopy = (event: globalThis.KeyboardEvent) => {
+      const isCommandC =
+        event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.shiftKey &&
+        event.key.toLowerCase() === 'c'
+      if (!isCommandC) return
+      if (!hasHumanComments || hasDocumentSelection()) return
+      event.preventDefault()
+      void copyHumanComments()
+    }
+    document.addEventListener('keydown', onCopy)
+    return () => document.removeEventListener('keydown', onCopy)
+  }, [copyHumanComments, hasHumanComments])
 
   const difftasticQuery = useQuery({
     queryKey: ['difftastic-availability'],
@@ -1576,12 +1613,20 @@ function ReviewWorkspace({
           <RefreshIcon className={busy ? 'spinning' : ''} />
           {refreshAvailable ? <span className="icon-button-badge" aria-hidden="true" /> : null}
         </button>
-        {pullRequest == null ? (
-          <button className="agent-button" onClick={copyForAgent}>
-            <CopyIcon />
-            {copied ? 'Copied' : 'Agent instruction'}
+        <ShortcutTooltip
+          label={commentsCopied ? 'Copied' : 'Copy my comments'}
+          shortcut="⌘C"
+        >
+          <button
+            className="icon-button"
+            onClick={() => void copyHumanComments()}
+            aria-label={commentsCopied ? 'Copied' : 'Copy my comments'}
+            disabled={!hasHumanComments}
+          >
+            {commentsCopied ? <CheckIcon /> : <CopyIcon />}
           </button>
-        ) : (
+        </ShortcutTooltip>
+        {pullRequest != null && (
           <PiExplanationControl
             status={pullRequest.piStatus}
             onStart={pullRequest.onStartPiReview}
@@ -1730,6 +1775,9 @@ function ReviewWorkspace({
             files={parsedFiles}
             activeFilePath={activeFilePath}
             piStatus={pullRequest?.piStatus}
+            commentsCopied={commentsCopied}
+            hasHumanComments={hasHumanComments}
+            onCopyComments={copyHumanComments}
             onSetArchived={setArchived}
             onUpdateComment={editAnnotation}
             onReload={onReload}
@@ -4495,6 +4543,9 @@ function Inspector({
   files,
   activeFilePath,
   piStatus,
+  commentsCopied,
+  hasHumanComments,
+  onCopyComments,
   onSetArchived,
   onUpdateComment,
   onAddGlobalComment,
@@ -4510,6 +4561,9 @@ function Inspector({
   files: FileDiffMetadata[]
   activeFilePath: string | null
   piStatus?: PiReviewStatus
+  commentsCopied: boolean
+  hasHumanComments: boolean
+  onCopyComments(): Promise<void>
   onSetArchived(annotationId: string, archived: boolean): Promise<void>
   onUpdateComment(annotationId: string, comment: string, intent?: AnnotationIntent): Promise<void>
   onAddGlobalComment(comment: string): Promise<void>
@@ -4525,20 +4579,15 @@ function Inspector({
   const [view, setView] = useState<'active' | 'archived'>('active')
   const [busyId, setBusyId] = useState<string | null>(null)
   const [bulkBusy, setBulkBusy] = useState(false)
-  const [commentsCopied, setCommentsCopied] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [addingGlobal, setAddingGlobal] = useState(false)
   const notesListRef = useRef<HTMLDivElement>(null)
   const active = session.annotations.filter((annotation) => annotation.archivedAt == null)
   const archived = session.annotations.filter((annotation) => annotation.archivedAt != null)
-  const myComments = active.filter(
-    (annotation) => annotation.source === 'user' && Boolean(annotation.comment?.trim()),
-  )
   const visible = view === 'active' ? active : archived
   const activeGlobals = session.globalComments.filter((comment) => comment.archivedAt == null)
   const archivedGlobals = session.globalComments.filter((comment) => comment.archivedAt != null)
   const visibleGlobals = view === 'active' ? activeGlobals : archivedGlobals
-  const userGlobalComments = activeGlobals.filter((comment) => comment.source === 'user')
   const showGlobalComment = visibleGlobals.length > 0 || addingGlobal
   const activeCount = active.length + activeGlobals.length
   const archivedCount = archived.length + archivedGlobals.length
@@ -4574,26 +4623,14 @@ function Inspector({
                 <AddCommentIcon />
               </AnnotationIconButton>
             )}
-            {(userGlobalComments.length > 0 || myComments.length > 0) && (
+            {hasHumanComments ? (
               <AnnotationIconButton
                 label={commentsCopied ? 'Copied' : 'Copy my comments'}
-                onClick={async () => {
-                  await navigator.clipboard.writeText(
-                    await formatCommentsForAgent(
-                      session.id,
-                      userGlobalComments.map((comment) => comment.comment).join('\n\n') || null,
-                      myComments,
-                      session.annotations,
-                      files,
-                    ),
-                  )
-                  setCommentsCopied(true)
-                  window.setTimeout(() => setCommentsCopied(false), 1600)
-                }}
+                onClick={() => void onCopyComments()}
               >
                 {commentsCopied ? <CheckIcon /> : <CopyIcon />}
               </AnnotationIconButton>
-            )}
+            ) : null}
             {view === 'active' && activeCount > 0 && (
               <AnnotationIconButton
                 label="Archive all"
