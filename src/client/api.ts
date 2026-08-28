@@ -8,6 +8,7 @@ import type {
   DifftasticAvailability,
   DifftasticFileDiff,
   OpenPullRequestInput,
+  PiChatPage,
   PiReviewStatus,
   PullRequestDetails,
   PullRequestListResponse,
@@ -22,7 +23,6 @@ import type {
   SessionFreshness,
   SessionAnnotation,
   SessionGlobalComment,
-  StartPiReviewInput,
 } from '../shared/types'
 import { limitHeavyRequest } from './limitConcurrency'
 export class ClientError extends Error {
@@ -161,10 +161,22 @@ export function getPiReviewStatus(id: string): Promise<PiReviewStatus> {
   return request(`/api/sessions/${encodeURIComponent(id)}/pi-review`)
 }
 
-export function startPiReview(id: string, input: StartPiReviewInput): Promise<PiReviewStatus> {
-  return request(`/api/sessions/${encodeURIComponent(id)}/pi-review`, {
+export function getPiChat(
+  id: string,
+  input: { before?: string | null; limit?: number } = {},
+): Promise<PiChatPage> {
+  const query = new URLSearchParams()
+  if (input.before) query.set('before', input.before)
+  if (input.limit != null) query.set('limit', String(input.limit))
+  const suffix = query.size > 0 ? `?${query}` : ''
+  return request(`/api/sessions/${encodeURIComponent(id)}/pi-chat${suffix}`)
+}
+
+export function sendPiChat(id: string, message: string): Promise<PiChatPage> {
+  return request(`/api/sessions/${encodeURIComponent(id)}/pi-chat`, {
     method: 'POST',
-    body: JSON.stringify(input),
+    body: JSON.stringify({ message }),
+    timeoutMs: 60_000,
   })
 }
 

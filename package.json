@@ -23,6 +23,7 @@
     "@pierre/trees": "1.0.0-beta.6",
     "@tanstack/react-hotkeys": "0.10.0",
     "@tanstack/react-query": "5.101.4",
+    "@tanstack/react-virtual": "3.13.12",
     "jotai": "^2.20.2",
     "lucide-react": "^1.31.0",
     "mermaid": "11.16.1",
@@ -35,6 +36,7 @@
     "remark-gfm": "^4.0.1",
     "remark-parse": "^11.0.0",
     "shiki": "4.4.3",
+    "streamdown": "^2.6.0",
     "unified": "^11.0.5"
   },
   "devDependencies": {

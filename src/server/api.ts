@@ -20,7 +20,8 @@ import type {
   ReviewTarget,
   SessionFreshness,
   SessionUpdatedEvent,
-  StartPiReviewInput,
+  PiChatEvent,
+  SendPiChatInput,
 } from '../shared/types.js'
 import { sessionUsesFullCommitRange, targetSupportsStaging } from '../shared/types.js'
 import { pullRequestAllowsReviewEvent } from '../shared/pull-request.js'
@@ -86,7 +87,13 @@ export class ApiHandler {
     private readonly clientDirectory: string | null,
   ) {
     this.events.setMaxListeners(100)
-    this.piReviews = new PiReviewRunner(store, (sessionId) => this.emitSessionUpdate(sessionId))
+    this.piReviews = new PiReviewRunner(
+      store,
+      (sessionId) => this.emitSessionUpdate(sessionId),
+      (sessionId, overlay, transcriptRevision) => {
+        this.emitPiChat(sessionId, overlay, transcriptRevision)
+      },
+    )
     this.piReviews.initialize()
   }
 
@@ -142,7 +149,7 @@ export class ApiHandler {
     const fileMatch = /^\/api\/sessions\/([^/]+)\/file$/.exec(url.pathname)
     const fileDifftasticMatch = /^\/api\/sessions\/([^/]+)\/difftastic$/.exec(url.pathname)
     const piReviewMatch = /^\/api\/sessions\/([^/]+)\/pi-review$/.exec(url.pathname)
-    const piRunLeaseMatch = /^\/api\/pi-runs\/([^/]+)\/lease$/.exec(url.pathname)
+    const piChatMatch = /^\/api\/sessions\/([^/]+)\/pi-chat$/.exec(url.pathname)
     const pullRequestMatch = /^\/api\/pull-requests\/(\d+)$/.exec(url.pathname)
     const pullRequestOpenMatch = /^\/api\/pull-requests\/(\d+)\/open$/.exec(url.pathname)
     const pullRequestRevisionsMatch = /^\/api\/pull-requests\/(\d+)\/revisions$/.exec(
@@ -358,25 +365,25 @@ export class ApiHandler {
       return
     }
 
-    if (method === 'POST' && piReviewMatch != null) {
-      const input = parseStartPiReviewInput(await readJson(request))
+    if (method === 'GET' && piChatMatch != null) {
+      const before = url.searchParams.get('before')
+      const limitValue = url.searchParams.get('limit')
+      const limit = limitValue == null ? undefined : Number(limitValue)
       sendJson(
         response,
-        202,
-        this.piReviews.start(piReviewMatch[1] ?? '', input.additionalInstructions),
+        200,
+        this.piReviews.getChat(
+          piChatMatch[1] ?? '',
+          before,
+          limit != null && Number.isFinite(limit) ? limit : undefined,
+        ),
       )
       return
     }
 
-    if (piRunLeaseMatch != null && method === 'POST') {
-      const { pid } = parsePiLeaseInput(await readJson(request))
-      sendJson(response, 200, this.piReviews.acquireLease(piRunLeaseMatch[1] ?? '', pid))
-      return
-    }
-
-    if (piRunLeaseMatch != null && method === 'DELETE') {
-      const { pid } = parsePiLeaseInput(await readJson(request))
-      sendJson(response, 200, this.piReviews.releaseLease(piRunLeaseMatch[1] ?? '', pid))
+    if (method === 'POST' && piChatMatch != null) {
+      const input = parseSendPiChatInput(await readJson(request))
+      sendJson(response, 202, await this.piReviews.send(piChatMatch[1] ?? '', input.message))
       return
     }
 
@@ -753,16 +760,30 @@ export class ApiHandler {
       const event: SessionUpdatedEvent = { type: 'session-updated', sessionId }
       response.write(`data: ${JSON.stringify(event)}\n\n`)
     }
+    const chatListener = (event: PiChatEvent) => {
+      response.write(`data: ${JSON.stringify(event)}\n\n`)
+    }
     this.events.on('session-updated', listener)
+    this.events.on('pi-chat', chatListener)
     const heartbeat = setInterval(() => response.write(': heartbeat\n\n'), 20_000)
     request.on('close', () => {
       clearInterval(heartbeat)
       this.events.off('session-updated', listener)
+      this.events.off('pi-chat', chatListener)
     })
   }
 
   private emitSessionUpdate(sessionId: string): void {
     this.events.emit('session-updated', sessionId)
+  }
+
+  private emitPiChat(
+    sessionId: string,
+    overlay: PiChatEvent['overlay'],
+    transcriptRevision: string,
+  ): void {
+    const event: PiChatEvent = { type: 'pi-chat', sessionId, overlay, transcriptRevision }
+    this.events.emit('pi-chat', event)
   }
 
   private async serveAvatar(response: ServerResponse, source: string): Promise<void> {
@@ -973,21 +994,12 @@ function parseSquashMergePullRequestInput(value: unknown): SquashMergePullReques
   }
 }
 
-function parseStartPiReviewInput(value: unknown): StartPiReviewInput {
+function parseSendPiChatInput(value: unknown): SendPiChatInput {
   const object = expectObject(value)
-  if (typeof object.additionalInstructions !== 'string') {
-    throw new AppError('INVALID_INPUT', 'additionalInstructions must be a string')
+  if (typeof object.message !== 'string') {
+    throw new AppError('INVALID_INPUT', 'message must be a string')
   }
-  return { additionalInstructions: object.additionalInstructions.trim() }
-}
-
-function parsePiLeaseInput(value: unknown): { pid: number } {
-  const object = expectObject(value)
-  const pid = Number(object.pid)
-  if (!Number.isInteger(pid) || pid <= 0) {
-    throw new AppError('INVALID_INPUT', 'pid must be a positive integer')
-  }
-  return { pid }
+  return { message: object.message.trim() }
 }
 
 async function resolvePullRequestCommitSelection(

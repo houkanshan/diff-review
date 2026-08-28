@@ -399,6 +399,35 @@ export class ReviewStore {
     return row == null ? null : piReviewRunFromRow(row)
   }
 
+  latestPiReviewRunForChat(sessionId: string): PiReviewRun | null {
+    const ids = this.chatSessionIds(sessionId)
+    if (ids.length === 0) return null
+    if (ids.length === 1) return this.latestPiReviewRun(ids[0]!)
+    const placeholders = ids.map(() => '?').join(', ')
+    const row = this.database
+      .prepare(`
+        SELECT * FROM pi_review_runs
+        WHERE session_id IN (${placeholders})
+        ORDER BY started_at DESC, rowid DESC
+        LIMIT 1
+      `)
+      .get(...ids) as unknown as PiReviewRunRow | undefined
+    return row == null ? null : piReviewRunFromRow(row)
+  }
+
+  chatSessionIds(sessionId: string): string[] {
+    const session = this.getSession(sessionId)
+    if (session.target.kind !== 'pr') return [sessionId]
+    const pullRequestNumber = session.target.number
+    const rows = this.database
+      .prepare('SELECT id, target_json FROM sessions WHERE repository_root = ?')
+      .all(session.repositoryRoot) as Array<{ id: string; target_json: string }>
+    return rows.flatMap((row) => {
+      const target = JSON.parse(row.target_json) as ReviewTarget
+      return target.kind === 'pr' && target.number === pullRequestNumber ? [row.id] : []
+    })
+  }
+
   listPiReviewRunsEligibleForCleanup(now: string): PiReviewRun[] {
     const rows = this.database
       .prepare(`

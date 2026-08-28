@@ -8,7 +8,6 @@ import { fileURLToPath } from 'node:url'
 
 import type {
   ApiErrorShape,
-  PiReviewRun,
   ReviewSession,
   ReviewTarget,
   SessionAnnotation,
@@ -41,12 +40,6 @@ async function main(): Promise<void> {
 
   if (args[0] === 'setup-skill') {
     setupSkill()
-    return
-  }
-
-  if (args[0] === 'pi' && args[1] === 'resume') {
-    await ensureDaemon()
-    await resumePiReview(args[2])
     return
   }
 
@@ -164,43 +157,6 @@ async function addAnnotation(
     },
   )
   return { kind: 'line', payload: annotation, json: booleanFlag(parsed, 'json') }
-}
-
-async function resumePiReview(runId: string | undefined): Promise<void> {
-  if (!runId) throw new AppError('INVALID_ARGUMENTS', 'pi resume requires a run ID')
-  const leasePath = `/api/pi-runs/${encodeURIComponent(runId)}/lease`
-  const run = await requestJson<PiReviewRun>(leasePath, {
-    method: 'POST',
-    body: JSON.stringify({ pid: process.pid }),
-  })
-  try {
-    if (run.piSessionPath == null) {
-      throw new AppError('PI_SESSION_MISSING', 'The saved Pi session could not be found')
-    }
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn(
-        'pi',
-        [
-          '--session',
-          run.piSessionPath!,
-          '--approve',
-          '--tools',
-          'read,bash,grep,find,ls',
-        ],
-        { cwd: run.worktreePath, stdio: 'inherit', env: process.env },
-      )
-      child.on('error', reject)
-      child.on('close', (exitCode) => {
-        if (exitCode === 0) resolve()
-        else reject(new AppError('PI_RESUME_FAILED', `Pi exited with ${exitCode ?? 1}`))
-      })
-    })
-  } finally {
-    await requestJson<PiReviewRun>(leasePath, {
-      method: 'DELETE',
-      body: JSON.stringify({ pid: process.pid }),
-    }).catch(() => undefined)
-  }
 }
 
 async function targetFromArguments(args: ParsedArgs, repositoryPath: string): Promise<ReviewTarget> {
@@ -378,7 +334,6 @@ function printHelp(): void {
   diff-review --staged | --unstaged | --pr <number>
   diff-review session create [revision-range] [--repo <path>] [--json]
   diff-review setup-skill
-  diff-review pi resume <run-id>
   diff-review annotate <session-id> --comment <text> [--json]
   diff-review annotate <session-id> --file <path> \\
     (--old-line <line[-end]> | --new-line <line[-end]>) \\
@@ -389,7 +344,6 @@ Examples:
   diff-review origin/master...HEAD
   diff-review session create --pr 42 --json
   diff-review setup-skill
-  diff-review pi resume pir_abc123
   diff-review annotate drs_abc123 --comment "Summary of the change"
   diff-review annotate drs_abc123 --file src/retry.ts --new-line 42-48 \\
     --comment "Generated code; safe to skim" --importance 0

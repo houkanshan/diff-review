@@ -19,6 +19,8 @@ import { Popover } from '@base-ui/react/popover'
 import { Toggle } from '@base-ui/react/toggle'
 import { ToggleGroup } from '@base-ui/react/toggle-group'
 import { Tooltip } from '@base-ui/react/tooltip'
+import { PiChatControl } from './PiChatDrawer'
+import { PanelResizeHandle, storePanelWidth, storedPanelWidth } from './PanelResizeHandle'
 import { ReviewPanelsDrawer, useCompactReviewLayout } from './ReviewPanelsDrawer'
 import type { GitStatusEntry } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
@@ -104,7 +106,6 @@ import type {
   GitHubReviewer,
   GitHubUser,
   MinimizedCommentReason,
-  PiReviewRun,
   PiReviewStatus,
   PullRequestActivity,
   PullRequestDetails,
@@ -155,7 +156,6 @@ import {
   stageFile,
   squashMergePullRequest,
   submitPullRequestReview,
-  startPiReview,
   updateAnnotationComment,
   updateGlobalComment,
 } from './api'
@@ -207,7 +207,6 @@ interface PullRequestWorkspaceContext {
   piStatus: PiReviewStatus
   onSelectRevision(sessionId: string): void
   onOpenCommit(commitId: string): Promise<void>
-  onStartPiReview(additionalInstructions: string): Promise<void>
   onRemoveAdditionalReviewLabel(): Promise<void>
   onAddComment(body: string, replyToId?: string | null): Promise<void>
   onSubmitReview(event: PullRequestReviewEvent, body: string): Promise<void>
@@ -816,10 +815,6 @@ function PullRequestsPage({
                 target: { kind: 'range', expression: commitId },
               })
               onOpenSession(next.id)
-            },
-            onStartPiReview: async (additionalInstructions) => {
-              const nextPiStatus = await startPiReview(session.id, { additionalInstructions })
-              updateWorkspace((current) => ({ ...current, piStatus: nextPiStatus }))
             },
             onRemoveAdditionalReviewLabel: async () => {
               await removePullRequestLabel(
@@ -1581,7 +1576,6 @@ function ReviewWorkspace({
       session={session}
       files={parsedFiles}
       activeFilePath={activeFilePath}
-      piStatus={pullRequest?.piStatus}
       commentsCopied={commentsCopied}
       hasHumanComments={hasHumanComments}
       onCopyComments={copyHumanComments}
@@ -1732,10 +1726,7 @@ function ReviewWorkspace({
           </button>
         </ShortcutTooltip>
         {pullRequest != null && (
-          <PiExplanationControl
-            status={pullRequest.piStatus}
-            onStart={pullRequest.onStartPiReview}
-          />
+          <PiChatControl sessionId={session.id} status={pullRequest.piStatus} />
         )}
       </header>
 
@@ -1878,62 +1869,6 @@ function ReviewWorkspace({
   )
   if (embedded) return content
   return <main className="review-shell">{content}</main>
-}
-
-function PanelResizeHandle({
-  label,
-  side,
-  size,
-  min,
-  max,
-  onChange,
-}: {
-  label: string
-  side: 'left' | 'right'
-  size: number
-  min: number
-  max: number
-  onChange(size: number): void
-}) {
-  const dragStart = useRef<{ x: number; size: number } | null>(null)
-  const resize = (clientX: number) => {
-    if (dragStart.current == null) return
-    const delta = clientX - dragStart.current.x
-    const next = dragStart.current.size + (side === 'left' ? delta : -delta)
-    onChange(Math.min(max, Math.max(min, Math.round(next))))
-  }
-  const stop = () => {
-    dragStart.current = null
-    document.body.classList.remove('resizing-panels')
-  }
-
-  return (
-    <div
-      className="panel-resizer"
-      role="separator"
-      aria-label={label}
-      aria-orientation="vertical"
-      aria-valuemin={min}
-      aria-valuemax={max}
-      aria-valuenow={size}
-      tabIndex={0}
-      onPointerDown={(event) => {
-        dragStart.current = { x: event.clientX, size }
-        event.currentTarget.setPointerCapture(event.pointerId)
-        document.body.classList.add('resizing-panels')
-      }}
-      onPointerMove={(event) => resize(event.clientX)}
-      onPointerUp={stop}
-      onPointerCancel={stop}
-      onKeyDown={(event) => {
-        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
-        event.preventDefault()
-        const delta = event.key === 'ArrowRight' ? 10 : -10
-        const next = size + (side === 'left' ? delta : -delta)
-        onChange(Math.min(max, Math.max(min, next)))
-      }}
-    />
-  )
 }
 
 function isTestFilePath(filePath: string): boolean {
@@ -2435,85 +2370,6 @@ function PullRequestRail({
       }}
     />
     </>
-  )
-}
-
-function PiExplanationControl({
-  status,
-  onStart,
-}: {
-  status: PiReviewStatus
-  onStart(additionalInstructions: string): Promise<void>
-}) {
-  const [open, setOpen] = useState(false)
-  const [additionalInstructions, setAdditionalInstructions] = useState('')
-  const [error, setError] = useState<string | null>(null)
-  const running =
-    status.state === 'creating' ||
-    status.state === 'running' ||
-    (status.state !== 'idle' && status.activePid != null)
-
-  const start = async () => {
-    setError(null)
-    try {
-      await onStart(additionalInstructions.trim())
-      setAdditionalInstructions('')
-      setOpen(false)
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught))
-    }
-  }
-
-  return (
-    <Popover.Root open={open} onOpenChange={(nextOpen) => {
-      setOpen(nextOpen)
-      if (!nextOpen) setError(null)
-    }}>
-      <Popover.Trigger
-        className="agent-button"
-        disabled={running}
-        title={status.state !== 'idle' ? status.error ?? undefined : undefined}
-      >
-        <span className={running ? 'pi-pulse' : ''}>π</span>
-        {piExplanationButtonLabel(status)}
-      </Popover.Trigger>
-      <Popover.Portal>
-        <Popover.Positioner className="popup-positioner" sideOffset={8} align="end">
-          <Popover.Popup className="pi-explanation-menu">
-            <Popover.Title>Explain this PR with Pi</Popover.Title>
-            <Popover.Description>
-              Pi will add plain-language annotations for the purpose, behavior, risks, and tests.
-            </Popover.Description>
-            <form
-              onSubmit={(event) => {
-                event.preventDefault()
-                void start()
-              }}
-            >
-              <label htmlFor="pi-additional-instructions">Additional instructions</label>
-              <textarea
-                id="pi-additional-instructions"
-                autoFocus
-                value={additionalInstructions}
-                onChange={(event) => setAdditionalInstructions(event.target.value)}
-                onKeyDown={(event) => {
-                  if (!isTextareaSubmitEnter(event)) return
-                  event.preventDefault()
-                  event.currentTarget.form?.requestSubmit()
-                }}
-                placeholder="Optional focus, context, or audience…"
-                rows={4}
-              />
-              {error != null && <div className="menu-error">{error}</div>}
-              <div className="pi-explanation-actions">
-                <button type="button" onClick={() => setOpen(false)}>Cancel</button>
-                <button type="submit">Start</button>
-              </div>
-            </form>
-          </Popover.Popup>
-        </Popover.Positioner>
-      </Popover.Portal>
-    </Popover.Root>
   )
 }
 
@@ -4647,7 +4503,6 @@ function Inspector({
   session,
   files,
   activeFilePath,
-  piStatus,
   commentsCopied,
   hasHumanComments,
   onCopyComments,
@@ -4665,7 +4520,6 @@ function Inspector({
   session: ReviewSession
   files: FileDiffMetadata[]
   activeFilePath: string | null
-  piStatus?: PiReviewStatus
   commentsCopied: boolean
   hasHumanComments: boolean
   onCopyComments(): Promise<void>
@@ -4696,9 +4550,6 @@ function Inspector({
   const showGlobalComment = visibleGlobals.length > 0 || addingGlobal
   const activeCount = active.length + activeGlobals.length
   const archivedCount = archived.length + archivedGlobals.length
-  const piRun = piStatus == null || piStatus.state === 'idle' ? null : piStatus
-  const showPiReviewDetails = view === 'active' && piRun != null
-
   useEffect(() => {
     if (activeFilePath == null) return
     const card = notesListRef.current?.querySelector<HTMLElement>(
@@ -4767,7 +4618,7 @@ function Inspector({
           <Toggle value="active">Active {activeCount}</Toggle>
           <Toggle value="archived">Archived {archivedCount}</Toggle>
         </ToggleGroup>
-        {visible.length === 0 && !showGlobalComment && !showPiReviewDetails ? (
+        {visible.length === 0 && !showGlobalComment ? (
           <p className="notes-empty">
             {view === 'active'
               ? 'Comments and importance highlights will collect here.'
@@ -4775,7 +4626,6 @@ function Inspector({
           </p>
         ) : (
           <div className="notes-list" ref={notesListRef}>
-            {showPiReviewDetails && piRun != null && <PiRunCard run={piRun} />}
             {addingGlobal && (
               <article className="note-card global-comment-card user">
                 <div className="global-comment-heading">
@@ -5024,81 +4874,6 @@ function Inspector({
       </section>
     </aside>
   )
-}
-
-function PiRunCard({ run }: { run: PiReviewRun }) {
-  const [copied, setCopied] = useState(false)
-  const resumeCommand = `diff-review pi resume ${run.id}`
-  const resumable =
-    run.piSessionPath != null && run.state !== 'cleaned' && run.state !== 'cleaning'
-  return (
-    <article className="note-card pi-run-card">
-      <div className="global-comment-heading">
-        <strong>Explain PR run</strong>
-        <span className={`pi-run-state ${run.state}`}>{piReviewStateLabel(run.state)}</span>
-      </div>
-      <dl>
-        <div>
-          <dt>Worktree</dt>
-          <dd>
-            {run.state === 'cleaned' ? 'Removed' : (
-              <code className="pi-worktree-path" title={run.worktreePath}>{run.worktreePath}</code>
-            )}
-          </dd>
-        </div>
-        <div>
-          <dt>Cleanup</dt>
-          <dd title={`Eligible ${formatTimestamp(run.cleanupEligibleAt)}`}>
-            {piCleanupLabel(run)}
-          </dd>
-        </div>
-        <div>
-          <dt>Pi session</dt>
-          <dd>
-            {run.activePid != null ? (
-              `Active in process ${run.activePid}`
-            ) : resumable ? (
-              <span className="pi-resume-command">
-                <code>{resumeCommand}</code>
-                <AnnotationIconButton
-                  label={copied ? 'Copied' : 'Copy resume command'}
-                  onClick={async () => {
-                    await navigator.clipboard.writeText(resumeCommand)
-                    setCopied(true)
-                    window.setTimeout(() => setCopied(false), 1600)
-                  }}
-                >
-                  {copied ? <CheckIcon /> : <CopyIcon />}
-                </AnnotationIconButton>
-              </span>
-            ) : run.state === 'creating' || run.state === 'running' ? (
-              'Saving…'
-            ) : run.state === 'cleaned' ? (
-              'Removed'
-            ) : (
-              'Unavailable'
-            )}
-          </dd>
-        </div>
-      </dl>
-      {run.error != null && <p className="pi-run-error">{run.error}</p>}
-    </article>
-  )
-}
-
-function piReviewStateLabel(state: PiReviewRun['state']): string {
-  if (state === 'cleanup-blocked') return 'Cleanup blocked'
-  return state.charAt(0).toUpperCase() + state.slice(1)
-}
-
-function piCleanupLabel(run: PiReviewRun): string {
-  if (run.state === 'cleaned') return 'Removed'
-  if (run.state === 'cleaning') return 'Cleaning…'
-  if (run.state === 'cleanup-blocked') return 'Blocked; worktree was kept'
-  if (run.keep) return 'Kept until manually cleaned'
-  if (run.activePid != null) return 'Paused while Pi is active'
-  if (run.state === 'creating' || run.state === 'running') return 'Kept while Pi is running'
-  return `Automatic cleanup ${relativeTime(run.cleanupEligibleAt)}`
 }
 
 function CommentEditor({
@@ -5738,20 +5513,6 @@ function formatImportance(importance: number): string {
   return importance.toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1')
 }
 
-function storedPanelWidth(
-  side: 'left' | 'right' | 'pr',
-  fallback: number,
-  min: number,
-  max: number,
-): number {
-  const value = Number(window.localStorage.getItem(`diff-review-${side}-panel-width`))
-  return Number.isFinite(value) && value > 0 ? Math.min(max, Math.max(min, value)) : fallback
-}
-
-function storePanelWidth(side: 'left' | 'right' | 'pr', width: number): void {
-  window.localStorage.setItem(`diff-review-${side}-panel-width`, String(width))
-}
-
 function patchContentKey(patch: string): string {
   let hash = 2166136261
   for (let index = 0; index < patch.length; index += 1) {
@@ -6018,13 +5779,6 @@ function reviewTimelineText(state: string): string {
     default:
       return 'reviewed these changes'
   }
-}
-
-function piExplanationButtonLabel(status: PiReviewStatus): string {
-  if (status.state === 'idle') return 'Explain with Pi'
-  if (status.state === 'creating' || status.state === 'running') return 'Pi explaining…'
-  if (status.state === 'failed' || status.state === 'interrupted') return 'Retry explanation'
-  return 'Explain again'
 }
 
 function capitalize(value: string): string {

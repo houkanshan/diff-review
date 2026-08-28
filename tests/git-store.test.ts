@@ -3,6 +3,7 @@ import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -31,6 +32,7 @@ import {
 import { ApiHandler } from '../src/server/api.js'
 import { PiReviewRunner } from '../src/server/pi.js'
 import { ReviewStore } from '../src/server/store.js'
+import { PI_INSTALL_HINT } from '../src/shared/piChat.js'
 
 const fixture = createGitFixture()
 
@@ -689,7 +691,7 @@ describe('local review storage', () => {
     }
   })
 
-  test('keeps a resumable Pi session and safely cleans it after retention', async () => {
+  test('runs Pi chat over RPC and cleans the worktree after retention', async () => {
     const review = await resolveTarget(fixture.repository, {
       kind: 'range',
       expression: 'origin/main...HEAD',
@@ -706,39 +708,23 @@ describe('local review storage', () => {
     mkdirSync(bin, { recursive: true })
     const pi = path.join(bin, 'pi')
     const output = path.join(fixture.directory, 'pi-output.txt')
-    writeFileSync(
-      pi,
-      `#!/bin/sh
-exec > "$PI_TEST_OUTPUT"
-pwd
-git rev-parse HEAD
-printf '%s\n' "$@"
-session_dir=''
-session_id=''
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --session-dir) shift; session_dir="$1" ;;
-    --session-id) shift; session_id="$1" ;;
-  esac
-  shift
-done
-mkdir -p "$session_dir"
-printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
-  > "$session_dir/2026-01-01T00-00-00-000Z_$session_id.jsonl"
-`
-    )
+    copyFileSync(path.join(import.meta.dirname, 'fixtures/fake-pi-rpc.cjs'), pi)
     chmodSync(pi, 0o755)
     const originalPath = process.env.PATH
     const originalOutput = process.env.PI_TEST_OUTPUT
     process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`
     process.env.PI_TEST_OUTPUT = output
-    const updates: string[] = []
-    const runner = new PiReviewRunner(store, (sessionId) => updates.push(sessionId))
+    const runner = new PiReviewRunner(store, () => undefined)
 
     try {
-      expect(runner.start(session.id, 'Emphasize how the data model changed.').state).toBe('creating')
-      expect(runner.start(session.id).state).toBe('creating')
-      await waitFor(() => runner.getStatus(session.id).state === 'completed')
+      const sent = await runner.send(session.id, 'Emphasize how the data model changed.')
+      expect(sent.overlay?.userText ?? sent.turns[0]?.userText).toBe(
+        'Emphasize how the data model changed.',
+      )
+      await waitFor(() => runner.getChat(session.id).turns.length === 1)
+      const chat = runner.getChat(session.id)
+      expect(chat.turns[0]?.userText).toBe('Emphasize how the data model changed.')
+      expect(chat.turns[0]?.assistantText).toContain('Emphasize how the data model changed.')
       const lines = readFileSync(output, 'utf8').split('\n')
       const worktree = lines[0] ?? ''
       expect(lines[1]).toBe(session.revisionHeadOid)
@@ -746,27 +732,107 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
       expect(lines.join('\n')).toContain('Help someone review PR #42.')
       expect(lines.join('\n')).toContain('[summary]')
       expect(lines.join('\n')).toContain('action(domain):')
+      expect(lines).toContain('--mode')
+      expect(lines).toContain('rpc')
       expect(lines).toContain('--session-dir')
       expect(lines).toContain('--session-id')
       expect(lines).not.toContain('--no-session')
-      expect(lines.join('\n')).toContain('Emphasize how the data model changed.')
       const status = runner.getStatus(session.id)
-      expect(status.state).toBe('completed')
-      if (status.state !== 'completed') throw new Error('Expected completed Pi review')
+      expect(status.state).toBe('running')
+      if (status.state === 'idle') throw new Error('Expected a Pi run')
       expect(path.basename(status.worktreePath)).toBe(path.basename(worktree))
-      expect(status.piSessionPath).not.toBeNull()
       expect(existsSync(status.worktreePath)).toBe(true)
-      expect(existsSync(status.piSessionPath ?? '')).toBe(true)
-
-      store.updatePiReviewRun(status.id, { cleanupEligibleAt: '1970-01-01T00:00:00.000Z' })
-      await runner.reconcileAndCleanup()
-      expect(runner.getStatus(session.id).state).toBe('cleaned')
+      runner.close()
+      const closed = runner.getStatus(session.id)
+      expect(closed.state === 'completed' || closed.state === 'interrupted').toBe(true)
+      if (closed.state === 'idle') throw new Error('Expected a Pi run')
+      store.updatePiReviewRun(closed.id, {
+        state: 'completed',
+        activePid: null,
+        cleanupEligibleAt: '1970-01-01T00:00:00.000Z',
+      })
+      const cleaner = new PiReviewRunner(store, () => undefined)
+      await cleaner.reconcileAndCleanup()
+      expect(cleaner.getStatus(session.id).state).toBe('cleaned')
       expect(existsSync(status.worktreePath)).toBe(false)
       expect(existsSync(status.piSessionDir)).toBe(false)
+      cleaner.close()
     } finally {
+      runner.close()
       process.env.PATH = originalPath
       if (originalOutput == null) delete process.env.PI_TEST_OUTPUT
       else process.env.PI_TEST_OUTPUT = originalOutput
+    }
+  })
+
+  test('reuses one Pi chat across pull request revisions', async () => {
+    const review = await resolveTarget(fixture.repository, {
+      kind: 'range',
+      expression: 'origin/main...HEAD',
+    })
+    const store = new ReviewStore(path.join(fixture.directory, 'pi-pr-chat.db'))
+    const first = store.createSession(
+      fixture.repository,
+      'repo',
+      { kind: 'pr', number: 42 },
+      review,
+      false,
+    )
+    const later = store.createSession(
+      fixture.repository,
+      'repo',
+      { kind: 'pr', number: 42 },
+      review,
+      false,
+    )
+    const bin = path.join(fixture.directory, 'pr-chat-bin')
+    mkdirSync(bin, { recursive: true })
+    copyFileSync(path.join(import.meta.dirname, 'fixtures/fake-pi-rpc.cjs'), path.join(bin, 'pi'))
+    chmodSync(path.join(bin, 'pi'), 0o755)
+    const originalPath = process.env.PATH
+    process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`
+    const runner = new PiReviewRunner(store, () => undefined)
+    try {
+      await runner.send(first.id, 'What moved?')
+      await waitFor(() => runner.getChat(first.id).turns.length === 1)
+      expect(later.id).not.toBe(first.id)
+      expect(store.latestPiReviewRunForChat(later.id)?.id)
+        .toBe(store.latestPiReviewRunForChat(first.id)?.id)
+      expect(runner.getChat(later.id).turns[0]?.userText).toBe('What moved?')
+    } finally {
+      runner.close()
+      process.env.PATH = originalPath
+    }
+  })
+
+  test('guides the user to install Pi when it is missing', async () => {
+    const review = await resolveTarget(fixture.repository, {
+      kind: 'range',
+      expression: 'origin/main...HEAD',
+    })
+    const store = new ReviewStore(path.join(fixture.directory, 'pi-missing.db'))
+    const session = store.createSession(
+      fixture.repository,
+      'repo',
+      { kind: 'pr', number: 42 },
+      review,
+      false,
+    )
+    const originalPath = process.env.PATH
+    process.env.PATH = path.join(fixture.directory, 'empty-bin')
+    const runner = new PiReviewRunner(store, () => undefined)
+    try {
+      const page = runner.getChat(session.id)
+      expect(page.piInstalled).toBe(false)
+      expect(page.error).toBe(PI_INSTALL_HINT)
+      await expect(runner.send(session.id, 'Explain this PR')).rejects.toMatchObject({
+        code: 'COMMAND_NOT_FOUND',
+        message: PI_INSTALL_HINT,
+      })
+      expect(store.latestPiReviewRun(session.id)).toBeNull()
+    } finally {
+      runner.close()
+      process.env.PATH = originalPath
     }
   })
 
@@ -1329,43 +1395,6 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
     ).toEqual([blocked.id, cleaning.id, completed.id].sort())
   })
 
-  test('leases a saved Pi session while it is being resumed', async () => {
-    const review = await resolveTarget(fixture.repository, {
-      kind: 'range',
-      expression: 'origin/main...HEAD',
-    })
-    const store = new ReviewStore(path.join(fixture.directory, 'pi-run-lease.db'))
-    const session = store.createSession(
-      fixture.repository,
-      'repo',
-      { kind: 'pr', number: 42 },
-      review,
-      false,
-    )
-    const worktree = path.join(fixture.directory, 'lease-worktree')
-    const piSessionDir = path.join(fixture.directory, 'lease-session')
-    const piSessionPath = path.join(piSessionDir, 'saved.jsonl')
-    mkdirSync(worktree, { recursive: true })
-    mkdirSync(piSessionDir, { recursive: true })
-    writeFileSync(piSessionPath, '{}\n')
-    const run = store.createPiReviewRun(
-      session.id,
-      worktree,
-      piSessionDir,
-      'saved-session',
-      '2026-01-01T00:00:00.000Z',
-    )
-    store.updatePiReviewRun(run.id, { state: 'completed', piSessionPath })
-    const runner = new PiReviewRunner(store, () => undefined)
-
-    const leased = runner.acquireLease(run.id, process.pid)
-    expect(leased.activePid).toBe(process.pid)
-    expect(leased.piSessionPath).toBe(piSessionPath)
-    const released = runner.releaseLease(run.id, process.pid)
-    expect(released.activePid).toBeNull()
-    expect(released.cleanupEligibleAt >= leased.cleanupEligibleAt).toBe(true)
-  })
-
   test('rediscovers a saved Pi session after an interrupted daemon run', async () => {
     const review = await resolveTarget(fixture.repository, {
       kind: 'range',
@@ -1401,39 +1430,6 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session_id" "$PWD" \
       activePid: null,
       piSessionPath,
     })
-  })
-
-  test('a cleanup claim excludes a concurrent resume lease', async () => {
-    const review = await resolveTarget(fixture.repository, {
-      kind: 'range',
-      expression: 'origin/main...HEAD',
-    })
-    const store = new ReviewStore(path.join(fixture.directory, 'pi-run-cleanup-lease.db'))
-    const session = store.createSession(
-      fixture.repository,
-      'repo',
-      { kind: 'pr', number: 42 },
-      review,
-      false,
-    )
-    const worktree = path.join(fixture.directory, 'cleanup-lease-worktree')
-    const piSessionDir = path.join(fixture.directory, 'cleanup-lease-session')
-    const piSessionPath = path.join(piSessionDir, 'saved.jsonl')
-    mkdirSync(worktree, { recursive: true })
-    mkdirSync(piSessionDir, { recursive: true })
-    writeFileSync(piSessionPath, '{}\n')
-    const run = store.createPiReviewRun(
-      session.id,
-      worktree,
-      piSessionDir,
-      'cleanup-session',
-      '1970-01-01T00:00:00.000Z',
-    )
-    store.updatePiReviewRun(run.id, { state: 'completed', piSessionPath })
-    expect(store.claimPiReviewRunForCleanup(run.id)?.state).toBe('cleaning')
-
-    const runner = new PiReviewRunner(store, () => undefined)
-    expect(() => runner.acquireLease(run.id, process.pid)).toThrow(/cleaned up/)
   })
 
   test('blocks untracked files but cleans a worktree containing only ignored files', async () => {

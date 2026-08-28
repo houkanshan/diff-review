@@ -278,6 +278,240 @@ svg {
   flex: 1;
 }
 
+.pi-chat-drawer-viewport {
+  justify-content: flex-end;
+  pointer-events: none;
+}
+
+.pi-chat-drawer-popup {
+  position: relative;
+  overflow: visible;
+  width: 420px;
+  max-width: calc(100vw - 36px);
+  pointer-events: auto;
+  border-right: 0;
+  border-left: 1px solid var(--border);
+  box-shadow: -12px 0 40px var(--shadow);
+}
+
+.panel-resizer.pi-chat-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -2px;
+  z-index: 6;
+  width: 8px;
+  background: transparent;
+}
+
+.panel-resizer.pi-chat-resizer::after {
+  background: transparent;
+}
+
+.pi-chat-drawer-popup[data-starting-style],
+.pi-chat-drawer-popup[data-ending-style] {
+  transform: translateX(100%);
+}
+
+.pi-chat-title {
+  min-width: 0;
+  flex: 1;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.pi-chat-body {
+  position: relative;
+}
+
+.pi-chat-scroller {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+}
+
+.pi-chat-empty {
+  margin: 24px 16px;
+  color: var(--faint);
+  font-size: 13px;
+}
+
+.pi-chat-install {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 20px 16px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.pi-chat-install p {
+  margin: 0;
+}
+
+.pi-chat-install pre {
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--surface-inset);
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+.pi-chat-install a {
+  color: var(--accent);
+}
+
+.pi-chat-virtual {
+  position: relative;
+  width: 100%;
+}
+
+.pi-chat-virtual-item {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+}
+
+.pi-chat-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+}
+
+.pi-chat-user,
+.pi-chat-assistant {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.pi-chat-user {
+  align-self: flex-end;
+  max-width: 92%;
+  padding: 8px 10px;
+  border-radius: 12px 12px 4px 12px;
+  background: var(--accent-soft);
+  white-space: pre-wrap;
+}
+
+.pi-chat-assistant.markdown-body {
+  font-size: 13px;
+}
+
+.pi-chat-assistant.markdown-body > :last-child {
+  margin-bottom: 0;
+}
+
+.pi-chat-work {
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.pi-chat-work > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.pi-chat-work > summary::-webkit-details-marker {
+  display: none;
+}
+
+.pi-chat-work > summary svg {
+  width: 12px;
+  height: 12px;
+  transition: transform 120ms ease;
+}
+
+.pi-chat-work[open] > summary svg {
+  transform: rotate(90deg);
+}
+
+.pi-chat-work-line {
+  flex: 1;
+  height: 1px;
+  background: var(--border-soft);
+}
+
+.pi-chat-work-detail {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--surface-inset);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+
+.pi-chat-jump {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-raised);
+  box-shadow: 0 4px 16px var(--shadow-soft);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.pi-chat-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.pi-chat-composer textarea {
+  width: 100%;
+  resize: none;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.pi-chat-composer textarea:focus {
+  outline: none;
+  border-color: var(--accent-border);
+}
+
+.pi-chat-composer button[type='submit'] {
+  align-self: flex-end;
+  height: 30px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.pi-chat-composer button[type='submit']:disabled {
+  opacity: 0.5;
+}
+
 .repository-trigger,
 .local-review-trigger,
 .revision-trigger,

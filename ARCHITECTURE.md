@@ -23,7 +23,7 @@ Default bind: `127.0.0.1:47658` (`DIFF_REVIEW_PORT` / `DIFF_REVIEW_HOST`; host m
 
 | Layer | Owns | Depends on |
 | --- | --- | --- |
-| CLI (`src/server/cli.ts`) | Ensure daemon, open browser, agent `session create` / `annotate` / `pi resume` | HTTP API only |
+| CLI (`src/server/cli.ts`) | Ensure daemon, open browser, agent `session create` / `annotate` | HTTP API only |
 | Daemon (`src/server/daemon.ts`) | Loopback HTTP, SIGINT/SIGTERM | `ApiHandler`, `ReviewStore` |
 | API (`src/server/api.ts`) | Routes, validation, SSE, session reuse | store, git, github, pi, difftastic |
 | Git (`src/server/git.ts`) | Target resolution, patch, snapshot file reads, annotation line checks | `command.ts` |
@@ -57,7 +57,7 @@ Annotations: user or agent; optional GitHub `review-comment` intent on PRs. Agen
 
 **PR workspace.** `POST /api/pull-requests/:n/open` returns GitHub metadata, sessions, revision history, and Pi status. Client never calls GitHub; the server uses `gh`.
 
-**Explain with Pi.** `POST /api/sessions/:id/pi-review` creates a worktree under `worktrees/` and a Pi session under `pi-sessions/`. Resume: `diff-review pi resume pir_…`. Retention: 14 days; cleanup at daemon start and every six hours; skip active runs and dirty worktrees.
+**Chat.** `POST /api/sessions/:id/pi-chat` creates a detached PR worktree and a daemon-owned `pi --mode rpc` child. Chat is per pull request (repo + number), not per revision SHA: a new push reuses the same Pi transcript and refreshes the worktree to the selected head. `GET` pages projected turns from the Pi JSONL; SSE `pi-chat` events carry the live overlay. The browser never reads the session file. Retention: 14 days; cleanup at daemon start and every six hours; skip the live RPC child and dirty worktrees.
 
 ## Extension points
 

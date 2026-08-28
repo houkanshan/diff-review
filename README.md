@@ -62,17 +62,9 @@ Importance controls only the changed-line background:
 
 Diff comments default to local annotations stored in `~/.diff-review/reviews.db`; set `DIFF_REVIEW_DATA_DIR` to use another directory. On a pull request, select **Review comment** while adding or editing a comment to queue that user comment for GitHub. **Submit review** publishes the queued user comments with the review; agent annotations always stay local.
 
-## Explain PR sessions
+## Chat
 
-**Explain with Pi** saves both the detached PR worktree and the Pi session. The Annotations panel shows their paths and a resume command:
-
-```bash
-diff-review pi resume pir_abc123
-```
-
-Saved runs remain available for 14 days after their last use. The daemon checks for expired runs at startup and every six hours. Automatic cleanup skips active runs and worktrees with modified or untracked files; annotations remain in Diff Review after the worktree and Pi session are removed.
-
-Run assets are stored under `~/.diff-review/worktrees` and `~/.diff-review/pi-sessions`, or the corresponding `DIFF_REVIEW_DATA_DIR`.
+**Chat** on a pull request opens a drawer over the review. The first message creates a detached PR worktree and a Pi RPC session under `~/.diff-review/worktrees` and `~/.diff-review/pi-sessions` (or `DIFF_REVIEW_DATA_DIR`). Follow-ups reuse that session. Saved runs remain available for 14 days after their last use. The daemon checks for expired runs at startup and every six hours. Automatic cleanup skips the live Pi process and worktrees with modified or untracked files; annotations remain in Diff Review after the worktree and Pi session are removed.
 
 ## Development
 

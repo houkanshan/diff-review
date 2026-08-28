@@ -94,6 +94,15 @@ export type SessionUpdatedEvent = {
   sessionId: string
 }
 
+export type PiChatEvent = {
+  type: 'pi-chat'
+  sessionId: string
+  overlay: PiChatOverlay | null
+  transcriptRevision: string
+}
+
+export type ServerEvent = SessionUpdatedEvent | PiChatEvent
+
 export interface CommitSummary {
   oid: string
   shortOid: string
@@ -370,8 +379,44 @@ export interface PiReviewRun {
 
 export type PiReviewStatus = { state: 'idle' } | PiReviewRun
 
-export interface StartPiReviewInput {
-  additionalInstructions: string
+export interface PiChatWork {
+  durationMs: number | null
+  detail: string
+}
+
+export interface PiChatTurn {
+  id: string
+  userText: string
+  assistantText: string
+  work: PiChatWork | null
+}
+
+export interface PiChatOverlay {
+  overlayId: string
+  requestId: string
+  afterTurnId: string | null
+  baseRevision: string
+  userText: string
+  assistantText: string
+  working: boolean
+  hasWork: boolean
+  workDetail: string
+  startedAt: string
+  seq: number
+}
+
+export interface PiChatPage {
+  turns: PiChatTurn[]
+  nextBefore: string | null
+  transcriptRevision: string
+  overlay: PiChatOverlay | null
+  busy: boolean
+  error: string | null
+  piInstalled: boolean
+}
+
+export interface SendPiChatInput {
+  message: string
 }
 
 export interface CreateSessionInput {
