@@ -151,7 +151,7 @@ export function OpenInEditorButton({
             className={`open-in-editor-button${visible ? ' is-visible' : ''}`}
             aria-label={label}
             aria-hidden={!visible}
-            disabled={!visible || opening}
+            disabled={opening}
             style={
               position == null
                 ? undefined

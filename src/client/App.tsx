@@ -3942,7 +3942,6 @@ function ReviewSourcePicker({
   const [customRange, setCustomRange] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const currentRevision = localRevisionLabel(currentSession)
   const revisionSessions = localRevisionSessions(sessions)
 
   useEffect(() => {
@@ -3982,7 +3981,7 @@ function ReviewSourcePicker({
   const triggerLabel = mode === 'pr' ? 'Pull requests' : 'Local diffs'
   const triggerValue = mode === 'pr'
     ? pullRequestNumber != null ? `#${pullRequestNumber}` : null
-    : currentRevision
+    : currentSession?.targetLabel ?? null
   const triggerTitle = triggerValue != null ? `${triggerLabel} ${triggerValue}` : triggerLabel
 
   return (

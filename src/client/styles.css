@@ -1958,7 +1958,8 @@ body.resizing-panels * {
   background: var(--diff-bg);
 }
 
-.open-in-editor-button {
+.open-in-editor-button,
+.open-in-editor-button:disabled {
   position: absolute;
   top: 0;
   left: 0;
@@ -1975,12 +1976,15 @@ body.resizing-panels * {
   box-shadow: 0 4px 12px var(--shadow);
   cursor: pointer;
   opacity: 0;
+  visibility: hidden;
   pointer-events: none;
-  transition: opacity 80ms ease;
+  transition: opacity 80ms ease, visibility 80ms ease;
 }
 
-.open-in-editor-button.is-visible {
+.open-in-editor-button.is-visible,
+.open-in-editor-button.is-visible:disabled {
   opacity: 1;
+  visibility: visible;
   pointer-events: auto;
 }
 
