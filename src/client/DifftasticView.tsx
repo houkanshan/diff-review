@@ -10,7 +10,7 @@ import {
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import type { ThemedToken } from 'shiki'
 
-import { ClientError, getDifftasticFile, getFileContents } from './api'
+import { ClientError, getDifftasticAvailability, getDifftasticFile, getFileContents } from './api'
 import {
   annotationCoversLine,
   annotationsAtDifftasticRow,
@@ -122,20 +122,7 @@ function snapDifftasticScroll(scroller: HTMLElement, node: HTMLElement, offset: 
     node.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop - offset
 }
 
-export function DifftasticView({
-  session,
-  files,
-  layout,
-  resolvedTheme,
-  hoveredAnnotationId,
-  onHoverAnnotation,
-  collapsedFiles,
-  viewedFiles,
-  onToggleCollapsed,
-  onSetViewed,
-  onVisibleFileChange,
-  renderAnnotation,
-}: {
+type DifftasticViewProps = {
   session: ReviewSession
   files: FileDiffMetadata[]
   layout: 'unified' | 'split'
@@ -151,7 +138,63 @@ export function DifftasticView({
     annotation: SessionAnnotation,
     replies: SessionAnnotation[],
   ): ReactNode
-}) {
+}
+
+export function DifftasticView(props: DifftasticViewProps) {
+  const availability = useQuery({
+    queryKey: ['difftastic-availability'],
+    queryFn: getDifftasticAvailability,
+    staleTime: 30_000,
+  })
+  if (availability.data?.available !== true) {
+    return (
+      <DifftasticGuide
+        checking={availability.isPending}
+        hint={availability.data?.installHint ?? 'Install difftastic and make sure `difft` is on PATH.'}
+      />
+    )
+  }
+  return <DifftasticFiles {...props} />
+}
+
+function DifftasticGuide({ checking, hint }: { checking: boolean; hint: string }) {
+  if (checking) {
+    return (
+      <div className="empty-diff">
+        <h2>Checking difftastic…</h2>
+      </div>
+    )
+  }
+  return (
+    <div className="empty-diff difftastic-guide">
+      <h2>Install difftastic</h2>
+      <p>{hint}</p>
+      <pre>brew install difftastic</pre>
+      <p>or</p>
+      <pre>cargo install difftastic</pre>
+      <p>
+        <a href="https://github.com/Wilfred/difftastic" target="_blank" rel="noreferrer">
+          difftastic on GitHub
+        </a>
+      </p>
+    </div>
+  )
+}
+
+function DifftasticFiles({
+  session,
+  files,
+  layout,
+  resolvedTheme,
+  hoveredAnnotationId,
+  onHoverAnnotation,
+  collapsedFiles,
+  viewedFiles,
+  onToggleCollapsed,
+  onSetViewed,
+  onVisibleFileChange,
+  renderAnnotation,
+}: DifftasticViewProps) {
   const hover = useMemo(() => ({
     annotation: session.annotations.find((annotation) => annotation.id === hoveredAnnotationId) ?? null,
     onHover: onHoverAnnotation,

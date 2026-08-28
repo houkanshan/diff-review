@@ -1,5 +1,5 @@
 import { Tooltip } from '@base-ui/react/tooltip'
-import { SquareArrowOutUpRight as OpenInEditorIcon } from 'lucide-react'
+import { Pencil as OpenInEditorIcon } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { editorLabel, type EditorId } from '../shared/editor'

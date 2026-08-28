@@ -136,7 +136,6 @@ import {
   createSession,
   getFileContents,
   getFilePair,
-  getDifftasticAvailability,
   getPiReviewStatus,
   getPullRequest,
   getPullRequestRevisions,
@@ -161,6 +160,10 @@ import {
 } from './api'
 import { applyHoveredRange, applyImportance } from './importance'
 import { formatTimestamp, relativeTime, relativeTimeAgo } from './time'
+import {
+  annotationEditCaretOffset,
+  hasNonCollapsedSelectionIn,
+} from './annotationCaret'
 import { storedEditor, storeEditor } from './editor'
 import { DifftasticView, scrollDifftasticTarget } from './DifftasticView'
 import { OpenInEditorButton } from './OpenInEditorButton'
@@ -621,6 +624,10 @@ function PullRequestsPage({
       onSelect={(nextNumber) => {
         if (nextNumber === route.pullRequestNumber) return
         onOpenPullRequests(route.repositoryPath, nextNumber)
+      }}
+      onRefresh={() => {
+        setLoadMoreError(null)
+        void pullRequestsQuery.refetch()
       }}
       onLoadMore={() => {
         if (loadingMore || endCursor == null) return
@@ -1462,13 +1469,6 @@ function ReviewWorkspace({
     return () => document.removeEventListener('keydown', onCopy)
   }, [copyHumanComments, hasHumanComments])
 
-  const difftasticQuery = useQuery({
-    queryKey: ['difftastic-availability'],
-    queryFn: getDifftasticAvailability,
-    staleTime: 30_000,
-  })
-  const difftastic = difftasticQuery.data
-  const difftasticReady = difftastic?.available === true
   const switchPullRequestView = useCallback((next: PullRequestViewMode) => {
     if (next === pullRequestView) return
     const currentScroller = pullRequestView === 'overview'
@@ -1679,9 +1679,7 @@ function ReviewWorkspace({
               </Tooltip.Root>
             </ToggleGroup>
             <RendererSwitch
-              value={renderer === 'difftastic' && difftasticReady ? 'difftastic' : 'pierre'}
-              structuralDisabled={!difftasticReady}
-              hint={difftastic?.installHint ?? 'Install difftastic and make sure `difft` is on PATH.'}
+              value={renderer}
               onChange={(next) => {
                 setRenderer(next)
                 storeDiffRenderer(next)
@@ -1803,7 +1801,7 @@ function ReviewWorkspace({
             {error != null && <div className="error-banner">{error}</div>}
             {items.length === 0 ? (
               <EmptyDiff onRefresh={refresh} />
-            ) : renderer === 'difftastic' && difftasticReady ? (
+            ) : renderer === 'difftastic' ? (
               <DifftasticView
                 session={session}
                 files={parsedFiles}
@@ -2081,17 +2079,11 @@ function ThemeOptions({
 
 function RendererSwitch({
   value,
-  structuralDisabled,
-  hint,
   onChange,
 }: {
   value: 'pierre' | 'difftastic'
-  structuralDisabled: boolean
-  hint: string
   onChange(next: 'pierre' | 'difftastic'): void
 }) {
-  const structuralDescription = 'Structural diff powered by difftastic. Easier to read, but fewer features.'
-
   return (
     <ToggleGroup
       className="layout-switch"
@@ -2119,7 +2111,7 @@ function RendererSwitch({
       <Tooltip.Root>
         <Tooltip.Trigger
           render={
-            <Toggle value="difftastic" aria-label="Structural diff" disabled={structuralDisabled}>
+            <Toggle value="difftastic" aria-label="Structural diff">
               <StructuralDiffIcon />
             </Toggle>
           }
@@ -2127,7 +2119,7 @@ function RendererSwitch({
         <Tooltip.Portal>
           <Tooltip.Positioner className="tooltip-positioner" sideOffset={6}>
             <Tooltip.Popup className="tooltip-popup">
-              {structuralDisabled ? `${structuralDescription} ${hint}` : structuralDescription}
+              Structural diff powered by difftastic. Easier to read, but fewer features.
             </Tooltip.Popup>
           </Tooltip.Positioner>
         </Tooltip.Portal>
@@ -2226,6 +2218,7 @@ function PullRequestRail({
   error,
   onViewChange,
   onSelect,
+  onRefresh,
   onLoadMore,
 }: {
   view: PullRequestListView
@@ -2237,6 +2230,7 @@ function PullRequestRail({
   error: string | null
   onViewChange(view: PullRequestListView): void
   onSelect(number: number): void
+  onRefresh(): void
   onLoadMore(): void
 }) {
   const views: { id: PullRequestListView; label: string }[] = [
@@ -2245,11 +2239,51 @@ function PullRequestRail({
     { id: 'merged', label: 'Merged' },
   ]
   const [width, setWidth] = useState(() => storedPanelWidth('pr', 292, 220, 520))
+  const [authorLogin, setAuthorLogin] = useState('')
+  const authors = useMemo(() => {
+    const logins = new Set<string>()
+    const next: string[] = []
+    for (const item of items) {
+      if (logins.has(item.author.login)) continue
+      logins.add(item.author.login)
+      next.push(item.author.login)
+    }
+    next.sort((left, right) => left.localeCompare(right))
+    if (authorLogin !== '' && !logins.has(authorLogin)) next.unshift(authorLogin)
+    return next
+  }, [authorLogin, items])
+  const visibleItems = authorLogin === ''
+    ? items
+    : items.filter((item) => item.author.login === authorLogin)
   return (
     <>
     <aside className="pr-rail" style={{ width }}>
       <div className="pr-rail-heading">
-        <div><span>Pull requests</span><strong>{loading ? '…' : items.length}</strong></div>
+        <div>
+          <div className="pr-rail-title">
+            <span>Pull requests</span>
+            <button
+              className="pr-refresh"
+              type="button"
+              aria-label="Refresh pull requests"
+              disabled={loading || loadingMore}
+              onClick={onRefresh}
+            >
+              <RefreshIcon className={loading ? 'spinning' : ''} size={10} strokeWidth={2.5} />
+            </button>
+          </div>
+          <select
+            className="pr-author-filter"
+            aria-label="Filter by author"
+            value={authorLogin}
+            onChange={(event) => setAuthorLogin(event.target.value)}
+          >
+            <option value="">Filter by author</option>
+            {authors.map((login) => (
+              <option key={login} value={login}>{login}</option>
+            ))}
+          </select>
+        </div>
         <div className="pr-view-tabs" role="tablist" aria-label="Pull request view">
           {views.map((item) => {
             const selected = view === item.id
@@ -2278,7 +2312,9 @@ function PullRequestRail({
           <div className="pr-list-message"><span className="loading-ring" /> Loading pull requests…</div>
         ) : items.length === 0 ? (
           <div className="pr-list-message">No pull requests in this view.</div>
-        ) : items.map((pullRequest) => (
+        ) : visibleItems.length === 0 ? (
+          <div className="pr-list-message">No pull requests by this author.</div>
+        ) : visibleItems.map((pullRequest) => (
           <button
             key={pullRequest.number}
             className={`pr-list-item${selectedNumber === pullRequest.number ? ' selected' : ''}`}
@@ -4540,7 +4576,16 @@ function Inspector({
   const [busyId, setBusyId] = useState<string | null>(null)
   const [bulkBusy, setBulkBusy] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [caretOffset, setCaretOffset] = useState<number | null>(null)
   const [addingGlobal, setAddingGlobal] = useState(false)
+  const startEditing = (id: string, nextCaretOffset: number | null = null) => {
+    setCaretOffset(nextCaretOffset)
+    setEditingId(id)
+  }
+  const stopEditing = () => {
+    setCaretOffset(null)
+    setEditingId(null)
+  }
   const notesListRef = useRef<HTMLDivElement>(null)
   const active = session.annotations.filter((annotation) => annotation.archivedAt == null)
   const archived = session.annotations.filter((annotation) => annotation.archivedAt != null)
@@ -4652,7 +4697,7 @@ function Inspector({
                       {note.source === 'user' && note.archivedAt == null && !editing && (
                         <AnnotationIconButton
                           label="Edit global comment"
-                          onClick={() => setEditingId(note.id)}
+                          onClick={() => startEditing(note.id)}
                         >
                           <EditIcon />
                         </AnnotationIconButton>
@@ -4678,14 +4723,20 @@ function Inspector({
                   {editing ? (
                     <CommentEditor
                       comment={note.comment}
-                      onCancel={() => setEditingId(null)}
+                      caretOffset={caretOffset ?? undefined}
+                      onCancel={stopEditing}
                       onSave={async (comment) => {
                         await onUpdateGlobalComment(note.id, comment)
-                        setEditingId(null)
+                        stopEditing()
                       }}
                     />
                   ) : (
-                    <p>{note.comment}</p>
+                    <AnnotationBody
+                      comment={note.comment}
+                      onEdit={note.source === 'user' && note.archivedAt == null
+                        ? (offset) => startEditing(note.id, offset)
+                        : undefined}
+                    />
                   )}
                   <footer>
                     <div className="note-source">
@@ -4733,14 +4784,20 @@ function Inspector({
                         annotation.submittedAt == null &&
                         annotation.endSide == null
                       }
-                      onCancel={() => setEditingId(null)}
+                      caretOffset={caretOffset ?? undefined}
+                      onCancel={stopEditing}
                       onSave={async (comment, intent) => {
                         await onUpdateComment(annotation.id, comment, intent)
-                        setEditingId(null)
+                        stopEditing()
                       }}
                     />
                   ) : annotation.comment != null ? (
-                    <p>{annotation.comment}</p>
+                    <AnnotationBody
+                      comment={annotation.comment}
+                      onEdit={annotation.source === 'user' && annotation.submittedAt == null
+                        ? (offset) => startEditing(annotation.id, offset)
+                        : undefined}
+                    />
                   ) : null}
                   <footer>
                     <div className="note-source">
@@ -4761,7 +4818,7 @@ function Inspector({
                       {canReply && editingId !== `reply:${annotation.id}` && (
                         <AnnotationIconButton
                           label="Reply"
-                          onClick={() => setEditingId(`reply:${annotation.id}`)}
+                          onClick={() => startEditing(`reply:${annotation.id}`)}
                         >
                           <ReplyIcon />
                         </AnnotationIconButton>
@@ -4769,9 +4826,7 @@ function Inspector({
                       {annotation.source === 'user' && annotation.submittedAt == null && annotation.comment != null && !editing && (
                         <AnnotationIconButton
                           label="Edit comment"
-                          onClick={() => {
-                            setEditingId(annotation.id)
-                          }}
+                          onClick={() => startEditing(annotation.id)}
                         >
                           <EditIcon />
                         </AnnotationIconButton>
@@ -4799,7 +4854,7 @@ function Inspector({
                   {editingId === `reply:${annotation.id}` && (
                     <CommentEditor
                       comment=""
-                      onCancel={() => setEditingId(null)}
+                      onCancel={stopEditing}
                       onSave={async (comment) => {
                         await addAnnotation(session.id, {
                           filePath: annotation.filePath,
@@ -4812,7 +4867,7 @@ function Inspector({
                           replyToId: annotation.id,
                         })
                         await onReload()
-                        setEditingId(null)
+                        stopEditing()
                       }}
                     />
                   )}
@@ -4823,14 +4878,20 @@ function Inspector({
                         {replyEditing ? (
                           <CommentEditor
                             comment={reply.comment ?? ''}
-                            onCancel={() => setEditingId(null)}
+                            caretOffset={caretOffset ?? undefined}
+                            onCancel={stopEditing}
                             onSave={async (comment) => {
                               await onUpdateComment(reply.id, comment)
-                              setEditingId(null)
+                              stopEditing()
                             }}
                           />
                         ) : (
-                          <p>{reply.comment}</p>
+                          <AnnotationBody
+                            comment={reply.comment ?? ''}
+                            onEdit={reply.source === 'user' && reply.submittedAt == null
+                              ? (offset) => startEditing(reply.id, offset)
+                              : undefined}
+                          />
                         )}
                         <footer>
                           <div className="note-source">
@@ -4843,7 +4904,7 @@ function Inspector({
                             {reply.source === 'user' && reply.submittedAt == null && !replyEditing && (
                               <AnnotationIconButton
                                 label="Edit comment"
-                                onClick={() => setEditingId(reply.id)}
+                                onClick={() => startEditing(reply.id)}
                               >
                                 <EditIcon />
                               </AnnotationIconButton>
@@ -4882,6 +4943,7 @@ function CommentEditor({
   intent,
   reviewCommentAvailable = false,
   autoFocus = true,
+  caretOffset,
   value: controlledValue,
   intentValue,
   onValueChange,
@@ -4893,6 +4955,7 @@ function CommentEditor({
   intent?: AnnotationIntent
   reviewCommentAvailable?: boolean
   autoFocus?: boolean
+  caretOffset?: number
   value?: string
   intentValue?: AnnotationIntent
   onValueChange?(value: string): void
@@ -4907,6 +4970,15 @@ function CommentEditor({
   const setValue = onValueChange ?? setLocalValue
   const setDraftIntent = onIntentChange ?? setLocalIntent
   const [busy, setBusy] = useState(false)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  useLayoutEffect(() => {
+    if (!autoFocus || caretOffset == null) return
+    const textarea = textareaRef.current
+    if (textarea == null) return
+    const offset = Math.min(Math.max(caretOffset, 0), textarea.value.length)
+    textarea.focus()
+    textarea.setSelectionRange(offset, offset)
+  }, [autoFocus, caretOffset])
   const save = async () => {
     if (busy || !value.trim()) return
     setBusy(true)
@@ -4922,7 +4994,8 @@ function CommentEditor({
   return (
     <div className="note-editor">
       <textarea
-        autoFocus={autoFocus}
+        ref={textareaRef}
+        autoFocus={autoFocus && caretOffset == null}
         value={value}
         onChange={(event) => setValue(event.target.value)}
         onKeyDown={(event) => {
@@ -4952,6 +5025,31 @@ function CommentEditor({
         </button>
       </div>
     </div>
+  )
+}
+
+function AnnotationBody({
+  comment,
+  onEdit,
+}: {
+  comment: string
+  onEdit?(caretOffset: number): void
+}) {
+  return (
+    <p
+      className={onEdit == null ? undefined : 'is-editable'}
+      onClick={onEdit == null ? undefined : (event) => {
+        if (hasNonCollapsedSelectionIn(event.currentTarget)) return
+        onEdit(annotationEditCaretOffset(
+          event.currentTarget,
+          event.clientX,
+          event.clientY,
+          comment,
+        ))
+      }}
+    >
+      {comment}
+    </p>
   )
 }
 
@@ -5119,10 +5217,20 @@ function InlineAnnotation({
   const busyId = ui.busyId
   const editingId = ui.editingId
   const setBusyId = (busyId: string | null) => setUi((current) => ({ ...current, busyId }))
-  const openEditor = (editingId: string, draft: string, draftIntent: AnnotationIntent = 'annotation') => {
+  const [caretOffset, setCaretOffset] = useState<number | null>(null)
+  const openEditor = (
+    editingId: string,
+    draft: string,
+    draftIntent: AnnotationIntent = 'annotation',
+    nextCaretOffset: number | null = null,
+  ) => {
+    setCaretOffset(nextCaretOffset)
     setUi((current) => ({ ...current, editingId, draft, draftIntent }))
   }
-  const closeEditor = () => setUi((current) => ({ ...current, editingId: null, draft: '' }))
+  const closeEditor = () => {
+    setCaretOffset(null)
+    setUi((current) => ({ ...current, editingId: null, draft: '' }))
+  }
   const reviewCommentAvailable = useAtomValue(reviewCommentAvailableAtom) &&
     annotation.endSide == null &&
     annotation.source === 'user' &&
@@ -5190,6 +5298,7 @@ function InlineAnnotation({
           intent={annotation.intent}
           reviewCommentAvailable={reviewCommentAvailable}
           autoFocus={live}
+          caretOffset={caretOffset ?? undefined}
           value={ui.draft}
           intentValue={ui.draftIntent}
           onValueChange={(draft) => setUi((current) => ({ ...current, draft }))}
@@ -5201,7 +5310,12 @@ function InlineAnnotation({
           }}
         />
       ) : annotation.comment != null ? (
-        <p>{annotation.comment}</p>
+        <AnnotationBody
+          comment={annotation.comment}
+          onEdit={annotation.source === 'user'
+            ? (offset) => openEditor(annotation.id, annotation.comment ?? '', annotation.intent, offset)
+            : undefined}
+        />
       ) : null}
       {editingId === 'reply' && onReply != null && (
         <CommentEditor
@@ -5256,6 +5370,7 @@ function InlineAnnotation({
               <CommentEditor
                 comment={reply.comment ?? ''}
                 autoFocus={live}
+                caretOffset={caretOffset ?? undefined}
                 value={ui.draft}
                 onValueChange={(draft) => setUi((current) => ({ ...current, draft }))}
                 onCancel={closeEditor}
@@ -5265,7 +5380,12 @@ function InlineAnnotation({
                 }}
               />
             ) : (
-              <p>{reply.comment}</p>
+              <AnnotationBody
+                comment={reply.comment ?? ''}
+                onEdit={reply.source === 'user'
+                  ? (offset) => openEditor(reply.id, reply.comment ?? '', 'annotation', offset)
+                  : undefined}
+              />
             )}
           </div>
         )

@@ -2,6 +2,10 @@
 
 A local browser review desk for Git changes. The daemon resolves Git targets, stores review sessions and comments in SQLite, and renders diffs with [`@pierre/diffs`](https://diffs.com/docs).
 
+## Security
+
+The daemon has no authentication. It binds only to loopback (`127.0.0.1` / `localhost`) and rejects any other `DIFF_REVIEW_HOST`. Do not expose it on the public internet, reverse-proxy it, publish its port, or otherwise make it reachable beyond this machine. Anyone who can reach the HTTP API can read local Git data, call `gh` with your credentials, and start Pi sessions.
+
 ## Setup
 
 Requires Node.js 22.12 or newer and Git. GitHub PR review also requires an authenticated [GitHub CLI](https://cli.github.com/).

@@ -56,39 +56,39 @@ describe('editor launch specs', () => {
     })
   })
 
-  test('passes nvim path and line as AppleScript argv', () => {
+  test('uses $TERMINAL first for nvim on macOS and Linux', () => {
     const file = '/tmp/says "hi".ts'
-    expect(editorLaunchSpecs('nvim', file, 9, { platform: 'darwin' })).toEqual([
-      {
-        command: 'osascript',
-        args: [
-          '-e',
-          [
-            'on run argv',
-            '  tell application "Terminal"',
-            '    do script ("nvim +" & item 1 of argv & " " & quoted form of item 2 of argv)',
-            '  end tell',
-            'end run',
-          ].join('\n'),
-          '9',
-          file,
-        ],
-      },
-    ])
-    expect(editorLaunchSpecs('nvim', "/tmp/o'reilly.ts", 3, { platform: 'darwin' })[0]?.args.slice(2))
-      .toEqual(['3', "/tmp/o'reilly.ts"])
-    expect(editorLaunchSpecs('nvim', '/tmp/new\nline.ts', 1, { platform: 'darwin' })[0]?.args.at(-1))
+    expect(editorLaunchSpecs('nvim', file, 9, { platform: 'darwin' })[0]).toEqual({
+      command: 'open',
+      args: ['-na', 'Ghostty.app', '--args', '-e', 'nvim', '+9', file],
+    })
+    expect(editorLaunchSpecs('nvim', file, 9, { platform: 'darwin', terminal: 'ghostty' })[0]).toEqual({
+      command: 'open',
+      args: ['-na', 'Ghostty.app', '--args', '-e', 'nvim', '+9', file],
+    })
+    expect(editorLaunchSpecs('nvim', file, 9, { platform: 'darwin', terminal: 'kitty' })[0]).toEqual({
+      command: 'kitty',
+      args: ['-e', 'nvim', '+9', file],
+    })
+    expect(editorLaunchSpecs('nvim', file, 9, { platform: 'linux', terminal: 'kitty' })[0]).toEqual({
+      command: 'kitty',
+      args: ['-e', 'nvim', '+9', file],
+    })
+    expect(editorLaunchSpecs('nvim', "/tmp/o'reilly.ts", 3, { platform: 'darwin', terminal: 'ghostty' })[0]?.args.at(-1))
+      .toBe("/tmp/o'reilly.ts")
+    expect(editorLaunchSpecs('nvim', '/tmp/new\nline.ts', 1, { platform: 'darwin', terminal: 'ghostty' })[0]?.args.at(-1))
       .toBe('/tmp/new\nline.ts')
-    expect(editorLaunchSpecs('nvim', '/tmp/foo\\bar.ts', 1, { platform: 'darwin' })[0]?.args.at(-1))
+    expect(editorLaunchSpecs('nvim', '/tmp/foo\\bar.ts', 1, { platform: 'darwin', terminal: 'ghostty' })[0]?.args.at(-1))
       .toBe('/tmp/foo\\bar.ts')
   })
 
-  test('tries $TERMINAL then common Linux terminals for nvim', () => {
+  test('tries $TERMINAL then common Unix terminals for nvim', () => {
     const file = '/tmp/app.ts'
     const specs = editorLaunchSpecs('nvim', file, 9, { platform: 'linux', terminal: 'kitty' })
     expect(specs[0]).toEqual({ command: 'kitty', args: ['-e', 'nvim', '+9', file] })
     expect(specs.map((spec) => spec.command)).toEqual([
       'kitty',
+      'ghostty',
       'x-terminal-emulator',
       'alacritty',
       'konsole',
@@ -215,17 +215,18 @@ function tempDir(): string {
   return directory
 }
 
-function fakeChild(mode: 'spawn' | 'ENOENT') {
+function fakeChild(mode: 'spawn' | 'ENOENT' | 'exit1') {
   const child = new EventEmitter()
   Object.assign(child, { unref() {} })
   queueMicrotask(() => {
-    if (mode === 'spawn') {
-      child.emit('spawn')
+    if (mode === 'ENOENT') {
+      const error = new Error('not found') as NodeJS.ErrnoException
+      error.code = 'ENOENT'
+      child.emit('error', error)
       return
     }
-    const error = new Error('not found') as NodeJS.ErrnoException
-    error.code = 'ENOENT'
-    child.emit('error', error)
+    child.emit('spawn')
+    child.emit('exit', mode === 'exit1' ? 1 : 0)
   })
   return child
 }

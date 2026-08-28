@@ -72,6 +72,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   color: inherit;
   font: inherit;
@@ -1663,7 +1664,7 @@ svg {
 
 .pr-rail-heading {
   flex: 0 0 auto;
-  padding: 14px 12px 11px;
+  padding: 12px 12px 8px;
   border-bottom: 1px solid var(--border);
   background: var(--rail-bg);
 }
@@ -1673,22 +1674,64 @@ svg {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 11px;
+  margin-bottom: 6px;
 }
 
-.pr-rail-heading > div:first-child > span {
+.pr-rail-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
   color: var(--muted);
   font-size: 9px;
   font-weight: 750;
   letter-spacing: 0.02em;
 }
 
-.pr-rail-heading > div:first-child > strong {
-  padding: 2px 6px;
+.pr-refresh {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--faint);
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+}
+
+.pr-refresh:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.pr-refresh svg {
+  width: 10px;
+  height: 10px;
+}
+
+.pr-author-filter {
+  min-width: 0;
+  max-width: 128px;
+  height: 14px;
+  margin: 0;
+  padding: 0 12px 0 5px;
   color: var(--faint);
   border: 1px solid var(--border-soft);
   border-radius: 999px;
+  background-color: transparent;
+  background-image: light-dark(
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2392958b' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23696d61' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")
+  );
+  background-repeat: no-repeat;
+  background-position: right 3px center;
+  background-size: 8px;
   font-size: 8px;
+  font-weight: 650;
+  line-height: 12px;
+  appearance: none;
 }
 
 .pr-view-tabs {
@@ -3790,6 +3833,11 @@ body.resizing-panels * {
   white-space: pre-wrap;
 }
 
+.note-card p.is-editable,
+.inline-annotation p.is-editable {
+  cursor: text;
+}
+
 .note-editor {
   margin-top: 7px;
 }
@@ -4075,6 +4123,35 @@ body.resizing-panels * {
 .empty-diff p {
   margin: 0 0 18px;
   font-size: 10px;
+}
+
+.empty-diff.difftastic-guide {
+  gap: 10px;
+  max-width: 420px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.empty-diff.difftastic-guide p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.empty-diff.difftastic-guide pre {
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--surface-inset);
+  color: var(--text);
+  font-size: 11px;
+  text-align: left;
+  white-space: pre-wrap;
+}
+
+.empty-diff.difftastic-guide a {
+  color: var(--accent);
 }
 
 .empty-diff button {

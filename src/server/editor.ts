@@ -35,15 +35,8 @@ export function absoluteRepositoryFilePath(root: string, filePath: string): stri
   return absolutePath
 }
 
-const NVIM_TERMINAL_SCRIPT = [
-  'on run argv',
-  '  tell application "Terminal"',
-  '    do script ("nvim +" & item 1 of argv & " " & quoted form of item 2 of argv)',
-  '  end tell',
-  'end run',
-].join('\n')
-
-const LINUX_TERMINALS = [
+const UNIX_TERMINALS = [
+  'ghostty',
   'x-terminal-emulator',
   'kitty',
   'alacritty',
@@ -121,22 +114,34 @@ function nvimLaunchSpecs(
   platform: NodeJS.Platform,
   terminal: string | undefined,
 ): EditorLaunchSpec[] {
-  if (platform === 'darwin') {
-    return [{
-      command: 'osascript',
-      args: ['-e', NVIM_TERMINAL_SCRIPT, String(line), absolutePath],
-    }]
-  }
   if (platform === 'win32') {
     return [{ command: 'cmd', args: ['/c', 'start', '', 'nvim', `+${line}`, absolutePath] }]
   }
-  const args = ['-e', 'nvim', `+${line}`, absolutePath]
+  const nvimArgs = ['-e', 'nvim', `+${line}`, absolutePath]
   const commands: string[] = []
-  for (const command of [terminal, ...LINUX_TERMINALS]) {
+  for (const command of [terminal, ...UNIX_TERMINALS]) {
     const next = command?.trim()
     if (next != null && next !== '' && !commands.includes(next)) commands.push(next)
   }
-  return commands.map((command) => ({ command, args }))
+  return commands.map((command) => nvimTerminalSpec(command, nvimArgs, platform))
+}
+
+function nvimTerminalSpec(
+  command: string,
+  nvimArgs: string[],
+  platform: NodeJS.Platform,
+): EditorLaunchSpec {
+  if (platform === 'darwin' && isGhosttyTerminal(command)) {
+    return {
+      command: 'open',
+      args: ['-na', 'Ghostty.app', '--args', ...nvimArgs],
+    }
+  }
+  return { command, args: nvimArgs }
+}
+
+function isGhosttyTerminal(command: string): boolean {
+  return path.basename(command).replace(/\.app$/i, '').toLowerCase() === 'ghostty'
 }
 
 async function spawnFirstAvailable(
@@ -151,7 +156,8 @@ async function spawnFirstAvailable(
       await spawnDetached(spec, cwd, spawnImpl)
       return spec
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === 'ENOENT' || code === 'EDITOR_LAUNCH_FAILED') {
         missing = true
         continue
       }
@@ -180,6 +186,19 @@ function spawnDetached(
       env: process.env,
     })
     child.once('error', reject)
+    if (spec.command === 'open') {
+      child.once('exit', (code) => {
+        if (code === 0) {
+          child.unref()
+          resolve()
+          return
+        }
+        const error = new Error(`${spec.command} exited ${code}`) as NodeJS.ErrnoException
+        error.code = 'EDITOR_LAUNCH_FAILED'
+        reject(error)
+      })
+      return
+    }
     child.once('spawn', () => {
       child.unref()
       resolve()
