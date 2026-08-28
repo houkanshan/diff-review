@@ -25,6 +25,21 @@ function sessionPath() {
   return path.join(sessionDir, `2026-01-01T00-00-00-000Z_${sessionId}.jsonl`)
 }
 
+function lastMessageId(file) {
+  if (!fs.existsSync(file)) return null
+  const lines = fs.readFileSync(file, 'utf8').split('\n')
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (!lines[index]) continue
+    try {
+      const parsed = JSON.parse(lines[index])
+      if (parsed.type === 'message' && typeof parsed.id === 'string') return parsed.id
+    } catch {
+      continue
+    }
+  }
+  return null
+}
+
 function append(entry) {
   const file = sessionPath()
   if (!fs.existsSync(file)) {
@@ -45,12 +60,18 @@ process.stdin.on('data', (chunk) => {
     if (!line) continue
     const command = JSON.parse(line)
     if (command.type !== 'prompt') continue
+    if (process.env.PI_TEST_HOLD === '1') {
+      process.stdout.write(`${JSON.stringify({ type: 'response', id: command.id, command: 'prompt', success: true })}\n`)
+      process.stdout.write(`${JSON.stringify({ type: 'agent_start' })}\n`)
+      continue
+    }
     const userId = Math.random().toString(16).slice(2, 10)
     const assistantId = Math.random().toString(16).slice(2, 10)
+    const parentId = lastMessageId(sessionPath())
     append({
       type: 'message',
       id: userId,
-      parentId: null,
+      parentId,
       timestamp: new Date().toISOString(),
       message: { role: 'user', content: command.message, timestamp: Date.now() },
     })

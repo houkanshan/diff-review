@@ -133,9 +133,9 @@ export function applyPiOverlayEvent(
     }
     return false
   }
-  if (type === 'message_end') {
+  if (type === 'message_end' || type === 'turn_end') {
     const message = event.message as Record<string, unknown> | undefined
-    if (message?.role !== 'assistant') return false
+    if (message?.role !== 'assistant') return type === 'turn_end'
     const text = assistantTextFromContent(message.content) || overlay.streaming
     if (text) overlay.completedParts.push(text)
     overlay.streaming = ''

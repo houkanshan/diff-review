@@ -766,11 +766,81 @@ describe('local review storage', () => {
   })
 
   test('reuses one Pi chat across pull request revisions', async () => {
+    const laterReview = await resolveTarget(fixture.repository, {
+      kind: 'range',
+      expression: 'origin/main...HEAD',
+    })
+    const firstReview = await resolveCommitSpan(
+      fixture.repository,
+      laterReview.commits[0]!.oid,
+      laterReview.commits[0]!.oid,
+    )
+    const store = new ReviewStore(path.join(fixture.directory, 'pi-pr-chat.db'))
+    const first = store.createSession(
+      fixture.repository,
+      'repo',
+      { kind: 'pr', number: 42 },
+      firstReview,
+      false,
+    )
+    const later = store.createSession(
+      fixture.repository,
+      'repo',
+      { kind: 'pr', number: 42 },
+      laterReview,
+      false,
+    )
+    const bin = path.join(fixture.directory, 'pr-chat-bin')
+    mkdirSync(bin, { recursive: true })
+    const output = path.join(fixture.directory, 'pi-pr-chat-output.txt')
+    copyFileSync(path.join(import.meta.dirname, 'fixtures/fake-pi-rpc.cjs'), path.join(bin, 'pi'))
+    chmodSync(path.join(bin, 'pi'), 0o755)
+    const originalPath = process.env.PATH
+    const originalOutput = process.env.PI_TEST_OUTPUT
+    process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`
+    process.env.PI_TEST_OUTPUT = output
+    const runner = new PiReviewRunner(store, () => undefined)
+    try {
+      expect(first.revisionHeadOid).not.toBe(later.revisionHeadOid)
+      await runner.send(first.id, 'What moved?')
+      await waitFor(() => {
+        const chat = runner.getChat(first.id)
+        return chat.turns.length === 1 && !chat.busy
+      })
+      await runner.send(later.id, 'What landed in the new head?')
+      await waitFor(() => {
+        const chat = runner.getChat(later.id)
+        return chat.turns.length === 2 && !chat.busy
+      })
+      expect(later.id).not.toBe(first.id)
+      expect(store.latestPiReviewRunForChat(later.id)?.id)
+        .toBe(store.latestPiReviewRunForChat(first.id)?.id)
+      expect(runner.getChat(later.id).turns.map((turn) => turn.userText)).toEqual([
+        'What moved?',
+        'What landed in the new head?',
+      ])
+      const status = runner.getStatus(later.id)
+      if (status.state === 'idle') throw new Error('Expected a Pi run')
+      expect(git(status.worktreePath, ['rev-parse', 'HEAD']).trim()).toBe(later.revisionHeadOid)
+      const spawned = readFileSync(output, 'utf8')
+      expect(spawned).toContain(later.revisionHeadOid)
+      expect(spawned).toContain(`git diff ${later.revisionBaseOid} ${later.revisionHeadOid} --`)
+      expect(spawned).toContain(`diff-review annotate ${later.id}`)
+      expect(spawned).toContain('--session')
+    } finally {
+      runner.close()
+      process.env.PATH = originalPath
+      if (originalOutput == null) delete process.env.PI_TEST_OUTPUT
+      else process.env.PI_TEST_OUTPUT = originalOutput
+    }
+  })
+
+  test('rejects a send on another pull request while Pi is working', async () => {
     const review = await resolveTarget(fixture.repository, {
       kind: 'range',
       expression: 'origin/main...HEAD',
     })
-    const store = new ReviewStore(path.join(fixture.directory, 'pi-pr-chat.db'))
+    const store = new ReviewStore(path.join(fixture.directory, 'pi-busy.db'))
     const first = store.createSession(
       fixture.repository,
       'repo',
@@ -778,30 +848,34 @@ describe('local review storage', () => {
       review,
       false,
     )
-    const later = store.createSession(
+    const other = store.createSession(
       fixture.repository,
       'repo',
-      { kind: 'pr', number: 42 },
+      { kind: 'pr', number: 43 },
       review,
       false,
     )
-    const bin = path.join(fixture.directory, 'pr-chat-bin')
+    const bin = path.join(fixture.directory, 'pi-busy-bin')
     mkdirSync(bin, { recursive: true })
     copyFileSync(path.join(import.meta.dirname, 'fixtures/fake-pi-rpc.cjs'), path.join(bin, 'pi'))
     chmodSync(path.join(bin, 'pi'), 0o755)
     const originalPath = process.env.PATH
+    const originalHold = process.env.PI_TEST_HOLD
     process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`
+    process.env.PI_TEST_HOLD = '1'
     const runner = new PiReviewRunner(store, () => undefined)
     try {
-      await runner.send(first.id, 'What moved?')
-      await waitFor(() => runner.getChat(first.id).turns.length === 1)
-      expect(later.id).not.toBe(first.id)
-      expect(store.latestPiReviewRunForChat(later.id)?.id)
-        .toBe(store.latestPiReviewRunForChat(first.id)?.id)
-      expect(runner.getChat(later.id).turns[0]?.userText).toBe('What moved?')
+      const sent = await runner.send(first.id, 'Still working')
+      expect(sent.overlay?.working).toBe(true)
+      await expect(runner.send(other.id, 'Other PR')).rejects.toMatchObject({
+        code: 'PI_CHAT_BUSY',
+      })
+      expect(runner.getChat(first.id).overlay?.working).toBe(true)
     } finally {
       runner.close()
       process.env.PATH = originalPath
+      if (originalHold == null) delete process.env.PI_TEST_HOLD
+      else process.env.PI_TEST_HOLD = originalHold
     }
   })
 

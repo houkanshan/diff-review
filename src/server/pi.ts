@@ -34,6 +34,8 @@ const RPC_COMMAND_TIMEOUT_MS = 30_000
 interface RpcHandle {
   sessionId: string
   runId: string
+  baseOid: string
+  headOid: string
   child: ChildProcess
   pending: Map<string, { resolve(value: RpcResponse): void; reject(error: unknown): void; timer: NodeJS.Timeout }>
   buffer: string
@@ -119,7 +121,7 @@ export class PiReviewRunner {
       ...page,
       transcriptRevision: revision,
       overlay,
-      busy: this.isBusy(sessionId),
+      busy: this.isBusy(),
       error: run?.error ?? (isPiInstalled() ? null : PI_INSTALL_HINT),
       piInstalled: isPiInstalled(),
     }
@@ -131,8 +133,8 @@ export class PiReviewRunner {
     if (!isPiInstalled()) {
       throw new AppError('COMMAND_NOT_FOUND', PI_INSTALL_HINT, 503)
     }
-    if (this.isBusy(sessionId)) {
-      throw new AppError('PI_CHAT_BUSY', 'Pi is already working on this review', 409)
+    if (this.isBusy()) {
+      throw new AppError('PI_CHAT_BUSY', 'Pi is already working', 409)
     }
 
     const session = this.store.getSession(sessionId)
@@ -156,7 +158,7 @@ export class PiReviewRunner {
       const afterTurnId = this.getChat(sessionId).turns.at(-1)?.id ?? null
       const handle = await this.ensureRpc(
         run,
-        session.repositoryRoot,
+        sessionId,
         session.target.number,
         session.revisionBaseOid,
         session.revisionHeadOid,
@@ -189,8 +191,9 @@ export class PiReviewRunner {
         throw new AppError('PI_CHAT_REJECTED', response.error ?? 'Pi rejected the prompt')
       }
     } catch (error) {
-      if (this.rpc?.sessionId === sessionId && this.rpc.overlay?.working) {
+      if (this.rpc != null && this.sameChat(sessionId) && this.rpc.overlay?.working) {
         this.rpc.overlay.working = false
+        this.rpc.overlay.seq += 1
       }
       throw error
     } finally {
@@ -219,11 +222,8 @@ export class PiReviewRunner {
     }
   }
 
-  private isBusy(sessionId: string): boolean {
-    if (this.startingSessionId != null && this.sameChat(this.startingSessionId, sessionId)) {
-      return true
-    }
-    return this.rpc != null && this.sameChat(sessionId) && this.rpc.overlay?.working === true
+  private isBusy(): boolean {
+    return this.startingSessionId != null || this.rpc?.overlay?.working === true
   }
 
   private sameChat(sessionId: string, otherSessionId = this.rpc?.sessionId): boolean {
@@ -292,12 +292,20 @@ export class PiReviewRunner {
 
   private async ensureRpc(
     run: PiReviewRun,
-    repositoryRoot: string,
+    sessionId: string,
     pullRequestNumber: number,
     baseOid: string,
     headOid: string,
   ): Promise<RpcHandle> {
-    if (this.rpc != null && this.rpc.runId === run.id && this.rpc.child.exitCode == null && !this.rpc.closed) {
+    if (
+      this.rpc != null
+      && this.rpc.runId === run.id
+      && this.rpc.sessionId === sessionId
+      && this.rpc.baseOid === baseOid
+      && this.rpc.headOid === headOid
+      && this.rpc.child.exitCode == null
+      && !this.rpc.closed
+    ) {
       return this.rpc
     }
     this.stopRpc()
@@ -310,7 +318,7 @@ export class PiReviewRunner {
       '--tools',
       'read,bash,grep,find,ls',
       '--append-system-prompt',
-      buildReviewSystemPrompt(run.sessionId, pullRequestNumber, baseOid, headOid),
+      buildReviewSystemPrompt(sessionId, pullRequestNumber, baseOid, headOid),
     ]
     if (sessionPath != null && pathExists(sessionPath)) {
       args.push('--session', sessionPath)
@@ -328,8 +336,10 @@ export class PiReviewRunner {
     }
 
     const handle: RpcHandle = {
-      sessionId: run.sessionId,
+      sessionId,
       runId: run.id,
+      baseOid,
+      headOid,
       child,
       pending: new Map(),
       buffer: '',
@@ -355,6 +365,7 @@ export class PiReviewRunner {
     child.stderr?.on('data', (chunk: Buffer) => {
       if (handle.stderr.length >= 1024 * 1024) return
       handle.stderr += chunk.toString('utf8')
+      process.stderr.write(chunk)
     })
     child.on('error', (error) => {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -378,6 +389,13 @@ export class PiReviewRunner {
       handle.dirWatcher.unref()
     } catch {
       handle.dirWatcher = null
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    if (child.exitCode != null) {
+      throw new AppError(
+        'COMMAND_FAILED',
+        handle.stderr.trim() || 'Pi exited before it was ready',
+      )
     }
     return handle
   }
@@ -417,6 +435,22 @@ export class PiReviewRunner {
           success: event.success === true,
           error: typeof event.error === 'string' ? event.error : undefined,
         })
+      }
+      return
+    }
+    if (event.type === 'extension_ui_request') {
+      const method = event.method
+      if (
+        method === 'select'
+        || method === 'confirm'
+        || method === 'input'
+        || method === 'editor'
+      ) {
+        handle.child.stdin?.write(`${JSON.stringify({
+          type: 'extension_ui_response',
+          id: event.id,
+          cancelled: true,
+        })}\n`)
       }
       return
     }

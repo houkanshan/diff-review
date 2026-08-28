@@ -1874,6 +1874,7 @@ function ReviewWorkspace({
 function isTestFilePath(filePath: string): boolean {
   const normalized = filePath.replaceAll('\\', '/')
   if (normalized.includes('/__tests__/') || normalized.startsWith('__tests__/')) return true
+  if (normalized.includes('/.e2e-pilot/') || normalized.startsWith('.e2e-pilot/')) return true
   return /(?:\.test\.tsx?|\.spec\.ts|\.spec\.js)$/.test(normalized)
 }
 

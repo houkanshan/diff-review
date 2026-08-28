@@ -754,6 +754,7 @@ export class ApiHandler {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
     })
     response.write(': connected\n\n')
     const listener = (sessionId: string) => {

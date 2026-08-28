@@ -163,10 +163,16 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
   }, [loadTail, sessionId])
 
   useEffect(() => {
-    if (overlay?.working !== true) return
-    const timer = window.setInterval(() => setNow(Date.now()), 1000)
-    return () => window.clearInterval(timer)
-  }, [overlay?.working])
+    if (!sending && overlay?.working !== true) return
+    const poll = window.setInterval(() => {
+      void loadTail().catch(() => undefined)
+    }, 400)
+    const clock = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => {
+      window.clearInterval(poll)
+      window.clearInterval(clock)
+    }
+  }, [loadTail, overlay?.working, sending])
 
   const visibleTurns = useMemo(
     () => turnsForOverlay(turns, overlay),
@@ -242,7 +248,8 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
     }
   }
 
-  const working = sending || overlay?.working === true
+  const caughtUp = overlay != null && overlayCaughtUp(turns, overlay)
+  const working = sending || (overlay?.working === true && !caughtUp)
 
   return (
     <>
@@ -419,11 +426,17 @@ function workLabel(working: boolean, durationMs: number | null, fallbackMs?: num
 }
 
 function overlayCaughtUp(turns: PiChatTurn[], overlay: PiChatOverlay): boolean {
+  const later = turnsAfter(turns, overlay.afterTurnId)
+  if (later.some((turn) => turn.assistantText.trim() !== '')) return true
   if (overlay.working) return false
-  if (overlay.afterTurnId == null) return turns.length > 0
-  const index = turns.findIndex((turn) => turn.id === overlay.afterTurnId)
-  if (index < 0) return turns.length > 0
-  return index < turns.length - 1
+  return later.length > 0
+}
+
+function turnsAfter(turns: PiChatTurn[], afterTurnId: string | null): PiChatTurn[] {
+  if (afterTurnId == null) return turns
+  const index = turns.findIndex((turn) => turn.id === afterTurnId)
+  if (index < 0) return turns
+  return turns.slice(index + 1)
 }
 
 function turnsForOverlay(turns: PiChatTurn[], overlay: PiChatOverlay | null): PiChatTurn[] {
