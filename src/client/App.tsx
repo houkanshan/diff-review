@@ -12,8 +12,6 @@ import {
   parsePatchFiles,
 } from '@pierre/diffs'
 import { parseReviewCommentDiff } from '../shared/reviewCommentDiff'
-import { PierreWorkerPool } from './PierreWorkerPool'
-import { FileEditor } from './FileEditor'
 import { compareReviewFilePaths, compareReviewPathEntries } from './reviewFileOrder'
 import { Checkbox } from '@base-ui/react/checkbox'
 import { Menu } from '@base-ui/react/menu'
@@ -98,7 +96,6 @@ import { remarkIssueReferences } from '../shared/markdown'
 import {
   reviewTargetsEqual,
   sessionUsesFullCommitRange,
-  targetSupportsIndexChanges,
   targetSupportsStaging,
   type DiffRenderer,
 } from '../shared/types'
@@ -154,8 +151,8 @@ import {
   setAnnotationArchived,
   setGlobalCommentArchived,
   setFileViewed,
-  setFilesStaged,
   setIgnoreWhitespace,
+  stageFile,
   squashMergePullRequest,
   submitPullRequestReview,
   updateAnnotationComment,
@@ -171,12 +168,6 @@ import { storedEditor, storeEditor } from './editor'
 import { DifftasticView, scrollDifftasticTarget } from './DifftasticView'
 import { OpenInEditorButton } from './OpenInEditorButton'
 import { ShortcutTooltip } from './ShortcutTooltip'
-import {
-  allFilesStageChange,
-  stageActionForFile,
-  type FileStageAction,
-} from './staging'
-import { hasDocumentSelection } from './documentSelection'
 import { subscribeSessionEvents } from './sessionEvents'
 import {
   EMPTY_COMPOSER_DRAFT,
@@ -199,7 +190,6 @@ import { AnnotationStickyOverlay } from './AnnotationStickyOverlay'
 type DiffLayout = 'unified' | 'split'
 type DiffOverflow = 'wrap' | 'scroll'
 type PullRequestViewMode = 'overview' | 'diff'
-type ReviewContentView = 'files' | 'diff'
 type ThemePreference = 'system' | 'light' | 'dark'
 type ResolvedTheme = 'light' | 'dark'
 
@@ -245,6 +235,17 @@ function isTextareaSubmitEnter(event: KeyboardEvent<HTMLTextAreaElement>) {
     !event.shiftKey &&
     !event.nativeEvent.isComposing &&
     event.keyCode !== 229
+}
+
+function hasDocumentSelection(): boolean {
+  const selection = window.getSelection()
+  if (selection != null && !selection.isCollapsed) return true
+
+  const activeElement = document.activeElement
+  if (activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement) {
+    return activeElement.selectionStart !== activeElement.selectionEnd
+  }
+  return false
 }
 
 function queryErrorMessage(error: unknown): string | null {
@@ -945,12 +946,10 @@ function ReviewWorkspace({
   const [overflow, setOverflow] = useState<DiffOverflow>('wrap')
   const [diffStage, setDiffStage] = useState<HTMLElement | null>(null)
   const [pullRequestView, setPullRequestView] = useState<PullRequestViewMode>(initialPullRequestView)
-  const contentView = reviewContentViewFromLocation()
   const previousSessionIdRef = useRef(session.id)
   const overviewScrollRef = useRef<HTMLElement>(null)
   const diffWorkspaceRef = useRef<HTMLDivElement>(null)
   const [diffScroller, setDiffScroller] = useState<HTMLElement | null>(null)
-  const stickyInvalidateRef = useRef(() => {})
   const lastPointerRef = useRef<{ x: number; y: number } | null>(null)
   const pullRequestScrollPositions = useRef<Record<PullRequestViewMode, number>>({
     overview: 0,
@@ -959,7 +958,6 @@ function ReviewWorkspace({
   const [selection, setSelection] = useState<CodeViewLineSelection | null>(null)
   const [hoveredAnnotationId, setHoveredAnnotationId] = useState<string | null>(null)
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null)
-  const [fileEditorDirty, setFileEditorDirty] = useState(false)
   const [composerSelection, setComposerSelection] = useAtom(composerSelectionAtom)
   const setComposerDraft = useSetAtom(composerDraftAtom)
   const setReviewCommentAvailable = useSetAtom(reviewCommentAvailableAtom)
@@ -1017,8 +1015,8 @@ function ReviewWorkspace({
     setSelection(null)
     setComposerSelection(null)
     setComposerDraft(EMPTY_COMPOSER_DRAFT)
-    if (contentView === 'diff') setActiveFilePath(null)
-  }, [contentView, session.patch, setComposerDraft, setComposerSelection])
+    setActiveFilePath(null)
+  }, [session.patch, setComposerDraft, setComposerSelection])
 
   useEffect(() => {
     setReviewCommentAvailable(pullRequest != null && sessionUsesFullCommitRange(session))
@@ -1181,7 +1179,6 @@ function ReviewWorkspace({
         if (phase !== 'unmount') {
           applyHoveredRange(node, context, hoveredAnnotationRef.current)
         }
-        stickyInvalidateRef.current()
       },
       unsafeCSS: [
         '[data-diffs-header="default"] { cursor: pointer; }',
@@ -1265,32 +1262,15 @@ function ReviewWorkspace({
       window.requestAnimationFrame(afterCollapseLayout)
     })
   }, [onSessionChange, session.id, setFileCollapsed, store])
+  const addFile = useCallback(async (filePath: string) => {
+    onSessionChange(await stageFile(session.id, filePath))
+  }, [onSessionChange, session.id])
 
+  const stagingEnabled = targetSupportsStaging(session.target)
   const unstagedPathSet = useMemo(
-    () => new Set(session.unstagedPaths ?? []),
+    () => session.unstagedPaths == null ? null : new Set(session.unstagedPaths),
     [session.unstagedPaths],
   )
-  const stagedPathSet = useMemo(
-    () => new Set(session.stagedPaths ?? []),
-    [session.stagedPaths],
-  )
-  const fileStageAction = useCallback((filePath: string): FileStageAction | null => (
-    stageActionForFile(session.target.kind, filePath, unstagedPathSet, stagedPathSet)
-  ), [session.target.kind, stagedPathSet, unstagedPathSet])
-  const setStaged = useCallback(async (filePaths: string[], staged: boolean) => {
-    onSessionChange(await setFilesStaged(session.id, filePaths, staged))
-  }, [onSessionChange, session.id])
-  const stagingBusyRef = useRef(false)
-  const runStagingChange = useCallback(async (filePaths: string[], staged: boolean) => {
-    if (stagingBusyRef.current || filePaths.length === 0) return
-    stagingBusyRef.current = true
-    try {
-      await setStaged(filePaths, staged)
-    } finally {
-      stagingBusyRef.current = false
-    }
-  }, [setStaged])
-
   const renderHeaderFilenameSuffix = useCallback((item: CodeViewItem<ReviewLineAnnotation>) => (
     <FileCopyButton filePath={item.id} />
   ), [])
@@ -1298,12 +1278,12 @@ function ReviewWorkspace({
   const renderHeaderMetadata = useCallback((item: CodeViewItem<ReviewLineAnnotation>) => (
     <FileHeaderControls
       filePath={item.id}
-      stageAction={fileStageAction(item.id)}
+      stagingEnabled={stagingEnabled && (unstagedPathSet == null || unstagedPathSet.has(item.id))}
       onToggleCollapsed={setFileCollapsed}
-      onSetStaged={(staged) => runStagingChange([item.id], staged)}
+      onAdd={addFile}
       onSetViewed={setViewed}
     />
-  ), [fileStageAction, runStagingChange, setFileCollapsed, setViewed])
+  ), [addFile, setFileCollapsed, setViewed, stagingEnabled, unstagedPathSet])
 
   const handleComposerSubmitted = useCallback(async () => {
     closeComposer()
@@ -1317,8 +1297,6 @@ function ReviewWorkspace({
   ) => (
     <InlineAnnotation
       interactive={interactive}
-      sessionId={session.id}
-      files={parsedFiles}
       annotation={annotation}
       onHover={setHoveredAnnotationId}
       replies={replies}
@@ -1337,7 +1315,7 @@ function ReviewWorkspace({
           }).then(() => onReloadRef.current())
         : undefined}
     />
-  ), [editAnnotation, parsedFiles, session.id, setArchived])
+  ), [editAnnotation, session.id, setArchived])
 
   const renderAnnotation = useCallback((annotation: DiffLineAnnotation<ReviewLineAnnotation>) => {
     const metadata = annotation.metadata
@@ -1380,72 +1358,26 @@ function ReviewWorkspace({
     }
   }, [])
 
-  const currentFilePath = useCallback(() => {
+  useHotkey('V', () => {
     const pointer = lastPointerRef.current
     const viewer = viewerRef.current?.getInstance()
-    return (
+    const filePath =
       (pointer != null ? fileIdAtClientPoint(pointer.x, pointer.y) : null)
       ?? activeFilePath
       ?? (viewer != null ? fileIdAtCodeViewScroll(viewer, items, viewer.getScrollTop()) : null)
       ?? items.at(0)?.id
-      ?? null
-    )
-  }, [activeFilePath, items])
-  const diffHotkeysEnabled =
-    (pullRequest == null || pullRequestView === 'diff') && items.length > 0
 
-  useHotkey('V', () => {
-    const filePath = currentFilePath()
     if (filePath == null) return
     void setViewed(filePath, !viewedFiles.has(filePath)).catch((caught) => {
       console.error(`Could not toggle viewed state for ${filePath}`, caught)
     })
   }, {
-    enabled: diffHotkeysEnabled,
+    enabled: (pullRequest == null || pullRequestView === 'diff') && items.length > 0,
     ignoreInputs: true,
     requireReset: true,
     meta: {
       name: 'Toggle viewed file',
       description: 'Toggle the current file as viewed',
-    },
-  })
-
-  useHotkey('A', () => {
-    const filePath = currentFilePath()
-    if (filePath == null) return
-    const action = fileStageAction(filePath)
-    if (action == null) return
-    void runStagingChange([filePath], action === 'add').catch((caught) => {
-      console.error(`Could not ${action} ${filePath}`, caught)
-    })
-  }, {
-    enabled: diffHotkeysEnabled && targetSupportsIndexChanges(session.target),
-    ignoreInputs: true,
-    requireReset: true,
-    meta: {
-      name: 'Toggle staged file',
-      description: 'Add or unstage the current file',
-    },
-  })
-
-  useHotkey('Shift+A', () => {
-    const change = allFilesStageChange(
-      session.target.kind,
-      items.map((item) => item.id),
-      unstagedPathSet,
-      stagedPathSet,
-    )
-    if (change == null) return
-    void runStagingChange(change.filePaths, change.staged).catch((caught) => {
-      console.error(`Could not ${change.staged ? 'add' : 'unstage'} all files`, caught)
-    })
-  }, {
-    enabled: diffHotkeysEnabled && targetSupportsIndexChanges(session.target),
-    ignoreInputs: true,
-    requireReset: true,
-    meta: {
-      name: 'Toggle all staged files',
-      description: 'Add all files or unstage all files',
     },
   })
 
@@ -1521,14 +1453,20 @@ function ReviewWorkspace({
   }, [humanAnnotations, humanGlobalComments, parsedFiles, session.annotations, session.id])
 
   useEffect(() => {
-    const onCopy = (event: ClipboardEvent) => {
-      if (event.defaultPrevented) return
+    const onCopy = (event: globalThis.KeyboardEvent) => {
+      const isCommandC =
+        event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.shiftKey &&
+        event.key.toLowerCase() === 'c'
+      if (!isCommandC) return
       if (!hasHumanComments || hasDocumentSelection()) return
       event.preventDefault()
       void copyHumanComments()
     }
-    document.addEventListener('copy', onCopy)
-    return () => document.removeEventListener('copy', onCopy)
+    document.addEventListener('keydown', onCopy)
+    return () => document.removeEventListener('keydown', onCopy)
   }, [copyHumanComments, hasHumanComments])
 
   const switchPullRequestView = useCallback((next: PullRequestViewMode) => {
@@ -1581,21 +1519,10 @@ function ReviewWorkspace({
     })
   }, [pullRequest, renderer, setFileCollapsed, switchPullRequestView])
 
-  useEffect(() => {
-    if (contentView !== 'files') return
-    if (activeFilePath != null && filePaths.includes(activeFilePath)) return
-    setActiveFilePath(parsedFiles.find((file) => file.type !== 'deleted')?.name ?? null)
-  }, [activeFilePath, contentView, filePaths, parsedFiles])
-
   const selectFile = useCallback((id: string) => {
-    if (id === activeFilePath) return
-    if (contentView === 'files' && fileEditorDirty && !window.confirm('Discard unsaved changes?')) {
-      return
-    }
     setActiveFilePath(id)
-    setPanelsOpen(false)
-    if (contentView === 'files') return
     setFileCollapsed(id, false)
+    setPanelsOpen(false)
     if (pullRequest != null) switchPullRequestView('diff')
     if (renderer === 'difftastic') {
       scheduleDifftasticScroll(diffWorkspaceRef.current, id)
@@ -1604,15 +1531,7 @@ function ReviewWorkspace({
     window.requestAnimationFrame(() => {
       viewerRef.current?.scrollTo({ type: 'item', id, align: 'start', offset: 8 })
     })
-  }, [
-    activeFilePath,
-    contentView,
-    fileEditorDirty,
-    pullRequest,
-    renderer,
-    setFileCollapsed,
-    switchPullRequestView,
-  ])
+  }, [pullRequest, renderer, setFileCollapsed, switchPullRequestView])
 
   const navigateToAnnotation = useCallback((annotation: SessionAnnotation) => {
     const fileId = fileIdForAnnotation(annotation, parsedFiles)
@@ -1709,7 +1628,7 @@ function ReviewWorkspace({
         )}
         <CommitPicker session={session} onSessionChange={onSessionChange} />
         <div className="topbar-spacer" />
-        {contentView === 'diff' && (pullRequest == null || pullRequestView === 'diff') && (
+        {(pullRequest == null || pullRequestView === 'diff') && (
           <>
             <FoldFilesMenu
               anyFileExpanded={anyFileExpanded}
@@ -1872,7 +1791,7 @@ function ReviewWorkspace({
           <section
             ref={setDiffStage}
             className="diff-stage"
-            onClick={contentView === 'files' ? undefined : (event) => {
+            onClick={(event) => {
               const fileId = fileHeaderIdFromEvent(event.nativeEvent)
               if (fileId != null) {
                 setFileCollapsed(fileId, !collapsedFiles.has(fileId))
@@ -1880,16 +1799,7 @@ function ReviewWorkspace({
             }}
           >
             {error != null && <div className="error-banner">{error}</div>}
-            {contentView === 'files' ? (
-              <FileEditor
-                sessionId={session.id}
-                filePath={activeFilePath}
-                editable={targetSupportsStaging(session.target)}
-                resolvedTheme={resolvedTheme}
-                onSaved={onSessionChange}
-                onDirtyChange={setFileEditorDirty}
-              />
-            ) : items.length === 0 ? (
+            {items.length === 0 ? (
               <EmptyDiff onRefresh={refresh} />
             ) : renderer === 'difftastic' ? (
               <DifftasticView
@@ -1910,32 +1820,29 @@ function ReviewWorkspace({
               />
             ) : (
               <div className="diff-view-host">
-                <PierreWorkerPool>
-                  <CodeView<ReviewLineAnnotation>
-                    ref={viewerRef}
-                    key={`${session.id}:${layout}:${resolvedTheme}:${patchContentKey(session.patch)}`}
-                    className="diff-view"
-                    items={items}
-                    options={diffOptions}
-                    selectedLines={selection}
-                    onSelectedLinesChange={handleSelection}
-                    onScroll={(scrollTop, viewer) => {
-                      const next = fileIdAtCodeViewScroll(viewer, items, scrollTop)
-                      if (next != null) {
-                        setActiveFilePath((current) => current === next ? current : next)
-                      }
-                    }}
-                    renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
-                    renderHeaderMetadata={renderHeaderMetadata}
-                    renderAnnotation={renderAnnotation}
-                  />
-                </PierreWorkerPool>
+                <CodeView<ReviewLineAnnotation>
+                  ref={viewerRef}
+                  key={`${session.id}:${layout}:${resolvedTheme}:${patchContentKey(session.patch)}`}
+                  className="diff-view"
+                  items={items}
+                  options={diffOptions}
+                  selectedLines={selection}
+                  onSelectedLinesChange={handleSelection}
+                  onScroll={(scrollTop, viewer) => {
+                    const next = fileIdAtCodeViewScroll(viewer, items, scrollTop)
+                    if (next != null) {
+                      setActiveFilePath((current) => current === next ? current : next)
+                    }
+                  }}
+                  renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
+                  renderHeaderMetadata={renderHeaderMetadata}
+                  renderAnnotation={renderAnnotation}
+                />
                 <AnnotationStickyOverlay
                   scroller={diffScroller}
                   annotations={session.annotations}
                   files={parsedFiles}
                   collapsedFiles={collapsedFiles}
-                  invalidateRef={stickyInvalidateRef}
                   renderCard={(annotation, replies) => renderInlineAnnotation(annotation, replies, true)}
                 />
               </div>
@@ -4459,15 +4366,15 @@ function FileCopyButton({ filePath }: { filePath: string }) {
 }
 function FileHeaderControls({
   filePath,
-  stageAction,
+  stagingEnabled,
   onToggleCollapsed,
-  onSetStaged,
+  onAdd,
   onSetViewed,
 }: {
   filePath: string
-  stageAction: FileStageAction | null
+  stagingEnabled: boolean
   onToggleCollapsed(filePath: string, collapsed: boolean): void
-  onSetStaged(staged: boolean): Promise<void>
+  onAdd(filePath: string): Promise<void>
   onSetViewed(filePath: string, viewed: boolean): Promise<void>
 }) {
   const collapsed = useAtomValue(fileCollapsedAtom(filePath))
@@ -4489,12 +4396,8 @@ function FileHeaderControls({
       >
         <ChevronIcon />
       </button>
-      {stageAction != null && (
-        <FileStageButton
-          filePath={filePath}
-          action={stageAction}
-          onSetStaged={onSetStaged}
-        />
+      {stagingEnabled && (
+        <FileStageButton filePath={filePath} onAdd={() => onAdd(filePath)} />
       )}
       <FileViewedToggle
         viewed={viewed}
@@ -4507,34 +4410,28 @@ function FileHeaderControls({
 
 function FileStageButton({
   filePath,
-  action,
-  onSetStaged,
+  onAdd,
 }: {
   filePath: string
-  action: FileStageAction
-  onSetStaged(staged: boolean): Promise<void>
+  onAdd(): Promise<void>
 }) {
   const [busy, setBusy] = useState(false)
-  const adding = action === 'add'
-  const label = adding ? 'Add' : 'Unstage'
   return (
-    <ShortcutTooltip label={`${label} ${filePath}`} shortcut="A">
-      <button
-        className="file-stage-button"
-        disabled={busy}
-        title={adding ? `git add -- ${filePath}` : `git reset HEAD -- ${filePath}`}
-        onClick={async () => {
-          setBusy(true)
-          try {
-            await onSetStaged(adding)
-          } finally {
-            setBusy(false)
-          }
-        }}
-      >
-        {busy ? `${adding ? 'Adding' : 'Unstaging'}…` : label}
-      </button>
-    </ShortcutTooltip>
+    <button
+      className="file-stage-button"
+      disabled={busy}
+      title={`git add -- ${filePath}`}
+      onClick={async () => {
+        setBusy(true)
+        try {
+          await onAdd()
+        } finally {
+          setBusy(false)
+        }
+      }}
+    >
+      {busy ? 'Adding…' : 'Add'}
+    </button>
   )
 }
 
@@ -5186,35 +5083,6 @@ function AnnotationIconButton({
   )
 }
 
-function CopyFormattedAnnotationButton({
-  sessionId,
-  files,
-  annotation,
-  allAnnotations,
-}: {
-  sessionId: string
-  files: FileDiffMetadata[]
-  annotation: SessionAnnotation
-  allAnnotations: SessionAnnotation[]
-}) {
-  const [copied, setCopied] = useState(false)
-  if (!annotation.comment?.trim()) return null
-  return (
-    <AnnotationIconButton
-      label={copied ? 'Copied' : 'Copy comment'}
-      onClick={async () => {
-        await navigator.clipboard.writeText(
-          await formatCommentsForAgent(sessionId, null, [annotation], allAnnotations, files),
-        )
-        setCopied(true)
-        window.setTimeout(() => setCopied(false), 1200)
-      }}
-    >
-      {copied ? <CheckIcon /> : <CopyIcon />}
-    </AnnotationIconButton>
-  )
-}
-
 function ReviewCommentToggle({
   checked,
   disabled,
@@ -5328,8 +5196,6 @@ function InlineComposer({
 function InlineAnnotation({
   annotation,
   replies,
-  sessionId,
-  files,
   interactive = true,
   onHover,
   onArchive,
@@ -5338,8 +5204,6 @@ function InlineAnnotation({
 }: {
   annotation: SessionAnnotation
   replies: SessionAnnotation[]
-  sessionId: string
-  files: FileDiffMetadata[]
   interactive?: boolean
   onHover?(annotationId: string | null): void
   onArchive(annotationId: string): Promise<void>
@@ -5372,7 +5236,6 @@ function InlineAnnotation({
     annotation.source === 'user' &&
     annotation.submittedAt == null
   const editing = editingId === annotation.id
-  const thread = [annotation, ...replies]
   return (
     <div
       className={`inline-annotation ${annotation.source}${spacer ? ' is-spacer' : ''}`}
@@ -5397,12 +5260,6 @@ function InlineAnnotation({
           <code>{lineLabel(annotation)}</code>
         </div>
         <div>
-          <CopyFormattedAnnotationButton
-            sessionId={sessionId}
-            files={files}
-            annotation={annotation}
-            allAnnotations={thread}
-          />
           {onReply != null && editingId !== 'reply' && (
             <AnnotationIconButton
               label="Reply"
@@ -5485,12 +5342,6 @@ function InlineAnnotation({
                 </time>
               </div>
               <div>
-                <CopyFormattedAnnotationButton
-                  sessionId={sessionId}
-                  files={files}
-                  annotation={reply}
-                  allAnnotations={thread}
-                />
                 {reply.source === 'user' && reply.comment != null && !replyEditing && (
                   <AnnotationIconButton
                     label="Edit comment"
@@ -5576,10 +5427,6 @@ function EmptyDiff({ onRefresh }: { onRefresh(): void }) {
   )
 }
 
-
-function reviewContentViewFromLocation(): ReviewContentView {
-  return new URLSearchParams(window.location.search).get('view') === 'files' ? 'files' : 'diff'
-}
 
 function routeFromLocation(): AppRoute {
   const sessionMatch = /^\/s\/([^/]+)$/.exec(window.location.pathname)

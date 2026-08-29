@@ -228,7 +228,7 @@ export class ReviewStore {
         end,
         Number(ignoreWhitespace),
         revision?.baseOid ?? null,
-        revision?.headOid ?? resolved.liveHeadOid ?? null,
+        revision?.headOid ?? null,
         now,
         now,
       )
@@ -284,28 +284,6 @@ export class ReviewStore {
     return this.findRevisionSession(repositoryRoot, baseOid, headOid, (target) => (
       target.kind === 'range'
     ))
-  }
-
-  findLiveRevision(
-    repositoryRoot: string,
-    kind: Extract<
-      ReviewTarget,
-      { kind: 'worktree' | 'branch-worktree' | 'unstaged' | 'staged' }
-    >['kind'],
-    headOid: string,
-  ): ReviewSession | null {
-    const row = this.database
-      .prepare(`
-        SELECT * FROM sessions
-        WHERE repository_root = ?
-          AND revision_head_oid = ?
-          AND revision_base_oid IS NULL
-          AND json_extract(target_json, '$.kind') = ?
-        ORDER BY updated_at DESC
-        LIMIT 1
-      `)
-      .get(repositoryRoot, headOid, kind) as unknown as SessionRow | undefined
-    return row == null ? null : this.sessionFromRow(row)
   }
 
   private findRevisionSession(
@@ -975,7 +953,6 @@ export class ReviewStore {
       revisionBaseOid: row.revision_base_oid,
       revisionHeadOid: row.revision_head_oid,
       unstagedPaths: Array.isArray(resolved.unstagedPaths) ? resolved.unstagedPaths : null,
-      stagedPaths: Array.isArray(resolved.stagedPaths) ? resolved.stagedPaths : null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }

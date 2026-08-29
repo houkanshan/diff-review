@@ -69,28 +69,6 @@ export function targetSupportsStaging(target: ReviewTarget): boolean {
   }
 }
 
-export function targetSupportsIndexChanges(target: ReviewTarget): boolean {
-  return isLiveReviewTarget(target)
-}
-
-export function isLiveReviewTarget(
-  target: ReviewTarget,
-): target is Extract<
-  ReviewTarget,
-  { kind: 'worktree' | 'branch-worktree' | 'unstaged' | 'staged' }
-> {
-  switch (target.kind) {
-    case 'worktree':
-    case 'branch-worktree':
-    case 'unstaged':
-    case 'staged':
-      return true
-    case 'range':
-    case 'pr':
-      return false
-  }
-}
-
 export function sessionUsesFullCommitRange(session: {
   commits: Array<{ oid: string }>
   selectedCommitStart: string | null
@@ -189,7 +167,6 @@ export interface ReviewSession {
   revisionBaseOid: string | null
   revisionHeadOid: string | null
   unstagedPaths: string[] | null
-  stagedPaths: string[] | null
   createdAt: string
   updatedAt: string
 }

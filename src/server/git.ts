@@ -1,14 +1,13 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { runCommand } from './command.js'
-import { lstat, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
+import { lstat, readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
 
 import {
   type CommitSummary,
-  isLiveReviewTarget,
   type RepositoryInfo,
   type ReviewTarget,
-  targetSupportsIndexChanges,
+  targetSupportsStaging,
 } from '../shared/types.js'
 import { AppError } from './errors.js'
 import {
@@ -29,9 +28,7 @@ export interface ResolvedReview {
   newSnapshot: SnapshotRef
   commits: CommitSummary[]
   unstagedPaths?: string[]
-  stagedPaths?: string[]
   fingerprint?: string
-  liveHeadOid?: string
 }
 
 
@@ -75,60 +72,32 @@ export async function resolveTarget(
   ignoreWhitespace = false,
 ): Promise<ResolvedReview> {
   const root = await resolveRepository(repositoryPath)
-  if (!isLiveReviewTarget(target)) {
-    return finalizeResolvedReview(root, target, await resolveTargetOnce(root, target, ignoreWhitespace))
-  }
 
-  let headOid = await resolveCommit(root, 'HEAD')
-  let resolved = await resolveTargetOnce(root, target, ignoreWhitespace)
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const headAfter = await resolveCommit(root, 'HEAD')
-    if (headAfter === headOid) {
-      resolved.liveHeadOid = headOid
-      return finalizeResolvedReview(root, target, resolved)
-    }
-    headOid = headAfter
-    resolved = await resolveTargetOnce(root, target, ignoreWhitespace)
-  }
-  resolved.liveHeadOid = headOid
-  return finalizeResolvedReview(root, target, resolved)
-}
-
-async function resolveTargetOnce(
-  root: string,
-  target: ReviewTarget,
-  ignoreWhitespace: boolean,
-): Promise<ResolvedReview> {
+  let resolved: ResolvedReview
   switch (target.kind) {
     case 'worktree':
-      return resolveWorktree(root, ignoreWhitespace)
+      resolved = await resolveWorktree(root, ignoreWhitespace)
+      break
     case 'branch-worktree':
-      return resolveBranchWorktree(root, ignoreWhitespace)
+      resolved = await resolveBranchWorktree(root, ignoreWhitespace)
+      break
     case 'unstaged':
-      return resolveUnstaged(root, ignoreWhitespace)
+      resolved = await resolveUnstaged(root, ignoreWhitespace)
+      break
     case 'staged':
-      return resolveStaged(root, ignoreWhitespace)
+      resolved = await resolveStaged(root, ignoreWhitespace)
+      break
     case 'range':
-      return resolveRange(root, target.expression, ignoreWhitespace)
+      resolved = await resolveRange(root, target.expression, ignoreWhitespace)
+      break
     case 'pr': {
       const details = await getPullRequestRevisionDetails(root, target.number)
-      return resolvePullRequestRevision(root, details, ignoreWhitespace)
+      resolved = await resolvePullRequestRevision(root, details, ignoreWhitespace)
+      break
     }
   }
-}
-
-async function finalizeResolvedReview(
-  root: string,
-  target: ReviewTarget,
-  resolved: ResolvedReview,
-): Promise<ResolvedReview> {
-  if (targetSupportsIndexChanges(target)) {
-    const [unstagedPaths, stagedPaths] = await Promise.all([
-      listUnstagedPaths(root),
-      listStagedPaths(root),
-    ])
-    resolved.unstagedPaths = unstagedPaths
-    resolved.stagedPaths = stagedPaths
+  if (targetSupportsStaging(target)) {
+    resolved.unstagedPaths = await listUnstagedPaths(root)
   }
   resolved.fingerprint = await computeReviewFingerprint(root, target)
   return resolved
@@ -320,102 +289,18 @@ export function reviewFileSides(
 }
 
 
-export async function setReviewFilesStaged(
-  repositoryPath: string,
-  patch: string,
-  filePaths: string[],
-  staged: boolean,
-): Promise<void> {
-  const root = await resolveRepository(repositoryPath)
-  const patchFiles = filePathsFromPatch(patch)
-  const paths = [...new Set(filePaths.flatMap((filePath) => {
-    const normalizedPath = validateReviewFilePath(patch, filePath)
-    const file = patchFiles.get(normalizedPath)!
-    return [file.old, file.new]
-  }))]
-    .filter((candidate): candidate is string => candidate != null)
-    .map((candidate) => normalizeRepositoryFilePath(root, candidate))
-  if (paths.length === 0) return
-
-  if (staged) {
-    await runGit(root, ['add', '--', ...paths])
-    return
-  }
-
-  const hasHead = (await runGit(root, ['rev-parse', '--verify', 'HEAD'], true)).exitCode === 0
-  await runGit(root, hasHead
-    ? ['reset', '-q', 'HEAD', '--', ...paths]
-    : ['rm', '--cached', '-q', '--ignore-unmatch', '--', ...paths])
-}
-
-const worktreeFileWriteQueues = new Map<string, Promise<void>>()
-
-export async function writeReviewWorktreeFile(
+export async function stageReviewFile(
   repositoryPath: string,
   patch: string,
   filePath: string,
-  contents: string,
-  expectedContents: string,
 ): Promise<void> {
   const root = await resolveRepository(repositoryPath)
   const normalizedPath = validateReviewFilePath(patch, filePath)
-  const newPath = filePathsFromPatch(patch).get(normalizedPath)!.new
-  if (newPath == null) {
-    throw new AppError('INVALID_FILE_PATH', `Deleted files cannot be edited: ${filePath}`)
-  }
-
-  const worktreePath = path.join(root, normalizeRepositoryFilePath(root, newPath))
-  const pathMetadata = await lstat(worktreePath).catch(() => null)
-  if (pathMetadata == null || pathMetadata.isSymbolicLink()) {
-    throw new AppError('INVALID_FILE_PATH', `Only regular worktree files can be edited: ${filePath}`)
-  }
-  const canonicalPath = await realpath(worktreePath).catch(() => null)
-  if (
-    canonicalPath == null ||
-    (canonicalPath !== root && !canonicalPath.startsWith(`${root}${path.sep}`))
-  ) {
-    throw new AppError('INVALID_FILE_PATH', `File resolves outside the repository: ${filePath}`)
-  }
-
-  const previousWrite = worktreeFileWriteQueues.get(canonicalPath) ?? Promise.resolve()
-  const currentWrite = previousWrite.catch(() => undefined).then(async () => {
-    const metadata = await lstat(canonicalPath).catch(() => null)
-    if (metadata == null || !metadata.isFile()) {
-      throw new AppError('INVALID_FILE_PATH', `Only regular worktree files can be edited: ${filePath}`)
-    }
-
-    const currentBytes = await readFile(canonicalPath)
-    const currentContents = currentBytes.toString('utf8')
-    if (!Buffer.from(currentContents, 'utf8').equals(currentBytes)) {
-      throw new AppError('INVALID_FILE_CONTENT', `Only UTF-8 text files can be edited: ${filePath}`)
-    }
-    if (currentContents !== expectedContents) {
-      throw new AppError(
-        'FILE_CHANGED',
-        `File changed outside Diff Review: ${filePath}`,
-        409,
-      )
-    }
-
-    const temporaryPath = path.join(
-      path.dirname(canonicalPath),
-      `.${path.basename(canonicalPath)}.diff-review-${randomUUID()}`,
-    )
-    try {
-      await writeFile(temporaryPath, contents, { encoding: 'utf8', mode: metadata.mode })
-      await rename(temporaryPath, canonicalPath)
-    } finally {
-      await rm(temporaryPath, { force: true })
-    }
-  })
-  worktreeFileWriteQueues.set(canonicalPath, currentWrite)
-  try {
-    await currentWrite
-  } finally {
-    if (worktreeFileWriteQueues.get(canonicalPath) === currentWrite) {
-      worktreeFileWriteQueues.delete(canonicalPath)
-    }
-  }
+  const file = filePathsFromPatch(patch).get(normalizedPath)!
+  const paths = [...new Set([file.old, file.new])]
+    .filter((candidate): candidate is string => candidate != null)
+    .map((candidate) => normalizeRepositoryFilePath(root, candidate))
+  await runGit(root, ['add', '--', ...paths])
 }
 
 async function resolveWorktree(root: string, ignoreWhitespace: boolean): Promise<ResolvedReview> {
@@ -637,7 +522,7 @@ async function hasCommit(root: string, oid: string): Promise<boolean> {
   ).exitCode === 0
 }
 
-export async function resolveCommit(root: string, revision: string): Promise<string> {
+async function resolveCommit(root: string, revision: string): Promise<string> {
   const result = await runGit(
     root,
     ['rev-parse', '--verify', '--end-of-options', `${revision}^{commit}`],
@@ -812,15 +697,6 @@ async function listUnstagedPaths(root: string): Promise<string[]> {
   return [...new Set([...splitNullPaths(tracked.stdout), ...splitNullPaths(untracked.stdout)])]
 }
 
-async function listStagedPaths(root: string): Promise<string[]> {
-  const staged = await runGit(
-    root,
-    ['-c', 'core.quotePath=false', 'diff', '--cached', '--name-only', '-z'],
-    true,
-  )
-  return splitNullPaths(staged.stdout)
-}
-
 function splitNullPaths(value: string): string[] {
   return value.split('\0').filter((entry) => entry.length > 0)
 }
@@ -834,55 +710,28 @@ function filePathsFromPatch(
   patch: string,
 ): Map<string, { old: string | null; new: string | null }> {
   const files = new Map<string, { old: string | null; new: string | null }>()
-  let current: { old: string | null; new: string | null } | null = null
-  const addCurrent = () => {
-    if (current == null) return
-    if (current.old != null) files.set(current.old, current)
-    if (current.new != null) files.set(current.new, current)
-  }
+  let oldPath: string | null = null
 
   for (const line of patch.split('\n')) {
     if (line.startsWith('diff --git ')) {
-      addCurrent()
-      const match = line.match(
-        /^diff --git (?:"a\/(.+?)"|a\/(.+?)) (?:"b\/(.+?)"|b\/(.+?))$/,
-      )
-      current = match == null
-        ? { old: null, new: null }
-        : { old: match[1] ?? match[2] ?? null, new: match[3] ?? match[4] ?? null }
-      continue
-    }
-    if (line.startsWith('new file mode ')) {
-      if (current != null) current.old = null
-      continue
-    }
-    if (line.startsWith('deleted file mode ')) {
-      if (current != null) current.new = null
-      continue
-    }
-    if (line.startsWith('rename from ')) {
-      if (current != null) current.old = line.slice('rename from '.length)
-      continue
-    }
-    if (line.startsWith('rename to ')) {
-      if (current != null) current.new = line.slice('rename to '.length)
+      oldPath = null
       continue
     }
     if (line.startsWith('--- ')) {
       const rawPath = line.slice(4).split('\t')[0] ?? ''
       const parsedPath = stripPatchPrefix(rawPath)
-      current ??= { old: null, new: null }
-      current.old = parsedPath === '/dev/null' ? null : parsedPath
+      oldPath = parsedPath === '/dev/null' ? null : parsedPath
       continue
     }
     if (line.startsWith('+++ ')) {
       const rawPath = line.slice(4).split('\t')[0] ?? ''
       const parsedPath = stripPatchPrefix(rawPath)
-      current ??= { old: null, new: null }
-      current.new = parsedPath === '/dev/null' ? null : parsedPath
+      const newPath = parsedPath === '/dev/null' ? null : parsedPath
+      const file = { old: oldPath, new: newPath }
+      if (oldPath != null) files.set(oldPath, file)
+      if (newPath != null) files.set(newPath, file)
     }
   }
-  addCurrent()
   return files
 }
 

@@ -21,14 +21,12 @@ export function AnnotationStickyOverlay({
   files,
   collapsedFiles,
   renderCard,
-  invalidateRef,
 }: {
   scroller: HTMLElement | null
   annotations: SessionAnnotation[]
   files: readonly { name: string; prevName?: string | null }[]
   collapsedFiles: Set<string>
   renderCard(annotation: SessionAnnotation, replies: SessionAnnotation[]): ReactNode
-  invalidateRef: { current: () => void }
 }) {
   const [ids, setIds] = useState<string[]>([])
   const boxes = useRef(new Map<string, { left: number; width: number; bottom: number }>())
@@ -103,17 +101,15 @@ export function AnnotationStickyOverlay({
         sync()
       })
     }
-    invalidateRef.current = schedule
     sync()
     scroller.addEventListener('scroll', schedule, { passive: true })
     window.addEventListener('resize', schedule)
     return () => {
       if (frame !== 0) window.cancelAnimationFrame(frame)
-      invalidateRef.current = () => {}
       scroller.removeEventListener('scroll', schedule)
       window.removeEventListener('resize', schedule)
     }
-  }, [annotations, collapsedFiles, files, invalidateRef, scroller, setOverlayIds])
+  }, [annotations, collapsedFiles, files, scroller, setOverlayIds])
 
   useLayoutEffect(() => {
     for (const id of ids) {

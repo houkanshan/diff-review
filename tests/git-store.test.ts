@@ -9,7 +9,6 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -27,7 +26,7 @@ import {
   resolveTarget,
   computeReviewFingerprint,
   storedReviewFingerprint,
-  setReviewFilesStaged,
+  stageReviewFile,
   validateAnnotationTarget,
 } from '../src/server/git.js'
 import { ApiHandler } from '../src/server/api.js'
@@ -245,7 +244,7 @@ JSON
     }
   })
 
-  test('adds and unstages reviewed files', async () => {
+  test('adds one reviewed file to the index', async () => {
     const stagingFixture = createGitFixture()
     try {
       const review = await resolveTarget(stagingFixture.repository, { kind: 'unstaged' })
@@ -253,191 +252,18 @@ JSON
       expect(review.unstagedPaths).toContain('tracked.txt')
       expect(worktreeBefore.unstagedPaths).toContain('tracked.txt')
 
-      await setReviewFilesStaged(
-        stagingFixture.repository,
-        worktreeBefore.patch,
-        ['tracked.txt', 'untracked.txt'],
-        true,
-      )
+      await stageReviewFile(stagingFixture.repository, review.patch, 'tracked.txt')
 
       const staged = await resolveTarget(stagingFixture.repository, { kind: 'staged' })
       const unstaged = await resolveTarget(stagingFixture.repository, { kind: 'unstaged' })
       const worktree = await resolveTarget(stagingFixture.repository, { kind: 'worktree' })
       expect(staged.patch).toContain('two edited')
-      expect(staged.stagedPaths).toEqual(expect.arrayContaining(['tracked.txt', 'untracked.txt']))
       expect(unstaged.patch).not.toContain('two edited')
       expect(unstaged.unstagedPaths).not.toContain('tracked.txt')
       expect(worktree.patch).toContain('two edited')
       expect(worktree.unstagedPaths).not.toContain('tracked.txt')
-
-      await setReviewFilesStaged(
-        stagingFixture.repository,
-        staged.patch,
-        ['tracked.txt', 'untracked.txt'],
-        false,
-      )
-
-      const afterUnstage = await resolveTarget(stagingFixture.repository, { kind: 'unstaged' })
-      expect(afterUnstage.unstagedPaths).toEqual(
-        expect.arrayContaining(['tracked.txt', 'untracked.txt']),
-      )
-      expect(afterUnstage.patch).toContain('two edited')
     } finally {
       rmSync(stagingFixture.directory, { recursive: true, force: true })
-    }
-  })
-
-  test('stages binary, pure rename, and mode-only changes', async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-stage-metadata-'))
-    const repository = path.join(directory, 'repo')
-    mkdirSync(repository)
-    git(repository, ['init', '-b', 'main'])
-    git(repository, ['config', 'user.name', 'Diff Reviewer'])
-    git(repository, ['config', 'user.email', 'reviewer@example.com'])
-    writeFileSync(path.join(repository, 'binary.bin'), Buffer.from([0, 1, 2, 3]))
-    writeFileSync(path.join(repository, 'mode.sh'), '#!/bin/sh\n')
-    writeFileSync(path.join(repository, 'old-name.txt'), 'rename me\n')
-    git(repository, ['add', '.'])
-    git(repository, ['commit', '-m', 'base'])
-
-    try {
-      writeFileSync(path.join(repository, 'binary.bin'), Buffer.from([0, 4, 5, 6]))
-      chmodSync(path.join(repository, 'mode.sh'), 0o755)
-      git(repository, ['mv', 'old-name.txt', 'new-name.txt'])
-      const worktree = await resolveTarget(repository, { kind: 'worktree' })
-      expect(worktree.patch).toContain('GIT binary patch')
-      expect(worktree.patch).toContain('similarity index 100%')
-      expect(worktree.patch).toContain('old mode 100644')
-
-      await setReviewFilesStaged(repository, worktree.patch, ['binary.bin', 'mode.sh'], true)
-      const staged = await resolveTarget(repository, { kind: 'staged' })
-      const changedPaths = ['binary.bin', 'mode.sh', 'new-name.txt']
-      expect(staged.stagedPaths).toEqual(expect.arrayContaining(changedPaths))
-
-      await setReviewFilesStaged(repository, staged.patch, changedPaths, false)
-      const unstaged = await resolveTarget(repository, { kind: 'worktree' })
-      expect(unstaged.unstagedPaths).toEqual(expect.arrayContaining(changedPaths))
-    } finally {
-      rmSync(directory, { recursive: true, force: true })
-    }
-  })
-})
-
-describe('worktree file editing API', () => {
-  test('writes reviewed files and rejects stale or immutable snapshots', async () => {
-    const isolated = createGitFixture()
-    const nestedDirectory = path.join(isolated.repository, 'nested')
-    mkdirSync(nestedDirectory)
-    writeFileSync(path.join(nestedDirectory, 'reviewed.txt'), 'nested base\n')
-    git(isolated.repository, ['add', 'nested/reviewed.txt'])
-    git(isolated.repository, ['commit', '-m', 'add nested file', '--', 'nested/reviewed.txt'])
-    writeFileSync(path.join(nestedDirectory, 'reviewed.txt'), 'nested changed\n')
-
-    const store = new ReviewStore(path.join(isolated.directory, 'file-edit.db'))
-    const worktreeReview = await resolveTarget(isolated.repository, { kind: 'unstaged' })
-    const worktreeSession = store.createSession(
-      isolated.repository,
-      'repo',
-      { kind: 'unstaged' },
-      worktreeReview,
-      false,
-    )
-    const rangeReview = await resolveTarget(isolated.repository, {
-      kind: 'range',
-      expression: 'HEAD~1...HEAD',
-    })
-    const rangeSession = store.createSession(
-      isolated.repository,
-      'repo',
-      { kind: 'range', expression: 'HEAD~1...HEAD' },
-      rangeReview,
-      false,
-    )
-    const handler = new ApiHandler(store, null)
-    const server = createServer(handler.handle)
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
-    const { port } = server.address() as AddressInfo
-    const endpoint = (sessionId: string) =>
-      `http://127.0.0.1:${port}/api/sessions/${sessionId}/files/content`
-    const original = readFileSync(path.join(isolated.repository, 'tracked.txt'), 'utf8')
-
-    try {
-      const saved = await fetch(endpoint(worktreeSession.id), {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          filePath: 'tracked.txt',
-          contents: original.replace('two edited', 'two edited in browser'),
-          expectedContents: original,
-        }),
-      })
-      expect(saved.status).toBe(200)
-      expect(readFileSync(path.join(isolated.repository, 'tracked.txt'), 'utf8'))
-        .toContain('two edited in browser')
-      await expect(saved.json()).resolves.toMatchObject({ id: worktreeSession.id })
-
-      const savedContents = readFileSync(path.join(isolated.repository, 'tracked.txt'), 'utf8')
-      const concurrentWrites = await Promise.all(['first', 'second'].map((label) =>
-        fetch(endpoint(worktreeSession.id), {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            filePath: 'tracked.txt',
-            contents: `${label}\n`,
-            expectedContents: savedContents,
-          }),
-        }),
-      ))
-      expect(concurrentWrites.map((response) => response.status).sort()).toEqual([200, 409])
-
-      const stale = await fetch(endpoint(worktreeSession.id), {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          filePath: 'tracked.txt',
-          contents: 'overwrite\n',
-          expectedContents: original,
-        }),
-      })
-      expect(stale.status).toBe(409)
-      await expect(stale.json()).resolves.toMatchObject({ error: { code: 'FILE_CHANGED' } })
-
-      const outsideDirectory = path.join(isolated.directory, 'outside')
-      mkdirSync(outsideDirectory)
-      writeFileSync(path.join(outsideDirectory, 'reviewed.txt'), 'outside\n')
-      rmSync(nestedDirectory, { recursive: true })
-      symlinkSync(outsideDirectory, nestedDirectory, 'dir')
-      const escaped = await fetch(endpoint(worktreeSession.id), {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          filePath: 'nested/reviewed.txt',
-          contents: 'escaped\n',
-          expectedContents: 'outside\n',
-        }),
-      })
-      expect(escaped.status).toBe(400)
-      expect(readFileSync(path.join(outsideDirectory, 'reviewed.txt'), 'utf8')).toBe('outside\n')
-
-      const immutable = await fetch(endpoint(rangeSession.id), {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          filePath: 'tracked.txt',
-          contents: 'overwrite\n',
-          expectedContents: original,
-        }),
-      })
-      expect(immutable.status).toBe(400)
-      await expect(immutable.json()).resolves.toMatchObject({
-        error: { code: 'INVALID_REVIEW_TARGET' },
-      })
-    } finally {
-      handler.close()
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => error == null ? resolve() : reject(error))
-      })
-      rmSync(isolated.directory, { recursive: true, force: true })
     }
   })
 })
@@ -1293,142 +1119,6 @@ describe('local review storage', () => {
       expect(firstResponse.status).toBe(201)
       expect(secondResponse.status).toBe(201)
       expect(second.id).not.toBe(first.id)
-    } finally {
-      handler.close()
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => error == null ? resolve() : reject(error))
-      })
-      rmSync(isolated.directory, { recursive: true, force: true })
-    }
-  })
-
-  test('reuses a live session for the same repository, target kind, and HEAD', async () => {
-    const isolated = createGitFixture()
-    const store = new ReviewStore(path.join(isolated.directory, 'reuse-live.db'))
-    const handler = new ApiHandler(store, null)
-    const server = createServer(handler.handle)
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
-    const { port } = server.address() as AddressInfo
-    const url = `http://127.0.0.1:${port}/api/sessions`
-    const unstagedBody = JSON.stringify({
-      repositoryPath: isolated.repository,
-      target: { kind: 'unstaged' },
-    })
-
-    try {
-      const firstResponse = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: unstagedBody,
-      })
-      const first = await firstResponse.json() as { id: string; patch: string }
-      expect(firstResponse.status).toBe(201)
-      store.addAnnotation(first.id, {
-        filePath: 'tracked.txt',
-        side: 'new',
-        startLine: 2,
-        endLine: 2,
-        comment: 'Keep this live note',
-        source: 'agent',
-      })
-
-      writeFileSync(
-        path.join(isolated.repository, 'tracked.txt'),
-        'one\ntwo edited again\nthree\nfeature one\nfeature two\n',
-      )
-      const secondResponse = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: unstagedBody,
-      })
-      const second = await secondResponse.json() as {
-        id: string
-        patch: string
-        annotations: Array<{ comment: string | null }>
-      }
-      expect(secondResponse.status).toBe(201)
-      expect(second.id).toBe(first.id)
-      expect(second.patch).toContain('two edited again')
-      expect(second.annotations).toMatchObject([{ comment: 'Keep this live note' }])
-
-      const worktreeResponse = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          repositoryPath: isolated.repository,
-          target: { kind: 'worktree' },
-        }),
-      })
-      const worktree = await worktreeResponse.json() as { id: string }
-      expect(worktreeResponse.status).toBe(201)
-      expect(worktree.id).not.toBe(first.id)
-    } finally {
-      handler.close()
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => error == null ? resolve() : reject(error))
-      })
-      rmSync(isolated.directory, { recursive: true, force: true })
-    }
-  })
-
-  test('refresh updates a live session in place until HEAD advances', async () => {
-    const isolated = createGitFixture()
-    const store = new ReviewStore(path.join(isolated.directory, 'refresh-live.db'))
-    const handler = new ApiHandler(store, null)
-    const server = createServer(handler.handle)
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
-    const { port } = server.address() as AddressInfo
-    const baseUrl = `http://127.0.0.1:${port}`
-
-    try {
-      const created = await fetch(`${baseUrl}/api/sessions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          repositoryPath: isolated.repository,
-          target: { kind: 'unstaged' },
-        }),
-      })
-      const first = await created.json() as { id: string; patch: string }
-      expect(created.status).toBe(201)
-      store.addAnnotation(first.id, {
-        filePath: 'tracked.txt',
-        side: 'new',
-        startLine: 2,
-        endLine: 2,
-        comment: 'Stay on this HEAD',
-        source: 'agent',
-      })
-
-      writeFileSync(
-        path.join(isolated.repository, 'tracked.txt'),
-        'one\ntwo refreshed\nthree\nfeature one\nfeature two\n',
-      )
-      const refreshed = await fetch(`${baseUrl}/api/sessions/${first.id}/refresh`, {
-        method: 'POST',
-      })
-      const sameHead = await refreshed.json() as {
-        id: string
-        patch: string
-        annotations: Array<{ comment: string | null }>
-      }
-      expect(refreshed.status).toBe(200)
-      expect(sameHead.id).toBe(first.id)
-      expect(sameHead.patch).toContain('two refreshed')
-      expect(sameHead.annotations).toMatchObject([{ comment: 'Stay on this HEAD' }])
-
-      git(isolated.repository, ['add', 'tracked.txt'])
-      git(isolated.repository, ['commit', '-m', 'advance live head'])
-      const advanced = await fetch(`${baseUrl}/api/sessions/${first.id}/refresh`, {
-        method: 'POST',
-      })
-      const nextHead = await advanced.json() as {
-        id: string
-        annotations: unknown[]
-      }
-      expect(advanced.status).toBe(200)
-      expect(nextHead.id).not.toBe(first.id)
-      expect(nextHead.annotations).toEqual([])
     } finally {
       handler.close()
       await new Promise<void>((resolve, reject) => {

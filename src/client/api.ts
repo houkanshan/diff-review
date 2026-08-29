@@ -301,26 +301,10 @@ export function setFileViewed(
   })
 }
 
-export function setFilesStaged(
-  id: string,
-  filePaths: string[],
-  staged: boolean,
-): Promise<ReviewSession> {
-  return request(`/api/sessions/${encodeURIComponent(id)}/files/staged`, {
+export function stageFile(id: string, filePath: string): Promise<ReviewSession> {
+  return request(`/api/sessions/${encodeURIComponent(id)}/files/stage`, {
     method: 'POST',
-    body: JSON.stringify({ filePaths, staged }),
-  })
-}
-
-export function saveFileContents(
-  id: string,
-  filePath: string,
-  contents: string,
-  expectedContents: string,
-): Promise<ReviewSession> {
-  return request(`/api/sessions/${encodeURIComponent(id)}/files/content`, {
-    method: 'PUT',
-    body: JSON.stringify({ filePath, contents, expectedContents }),
+    body: JSON.stringify({ filePath }),
   })
 }
 
