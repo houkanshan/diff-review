@@ -1800,7 +1800,11 @@ function ReviewWorkspace({
           >
             {error != null && <div className="error-banner">{error}</div>}
             {items.length === 0 ? (
-              <EmptyDiff onRefresh={refresh} />
+              <EmptyDiff
+                session={session}
+                onOpenSession={onOpenSession}
+                onRefresh={refresh}
+              />
             ) : renderer === 'difftastic' ? (
               <DifftasticView
                 session={session}
@@ -3814,6 +3818,71 @@ function RepositoryPicker({
   )
 }
 
+interface LocalTargetOption {
+  target: ReviewTarget
+  label: string
+  detail: string
+}
+
+function localTargetOptions(repository: RepositoryInfo | null): LocalTargetOption[] {
+  const options: LocalTargetOption[] = [
+    { target: { kind: 'worktree' }, label: 'Working tree', detail: 'git diff HEAD' },
+  ]
+  if (repository?.defaultBranchRef != null) {
+    options.push({
+      target: { kind: 'branch-worktree' },
+      label: 'Current branch + working tree',
+      detail: `git diff --merge-base ${repository.defaultBranchRef}`,
+    })
+  }
+  options.push(
+    { target: { kind: 'unstaged' }, label: 'Unstaged changes', detail: 'git diff' },
+    { target: { kind: 'staged' }, label: 'Staged changes', detail: 'git diff --cached' },
+  )
+  if (repository?.branchRange != null) {
+    options.push({
+      target: { kind: 'range', expression: repository.branchRange },
+      label: 'Current branch changes',
+      detail: repository.branchRange,
+    })
+  }
+  return options
+}
+
+function useLocalTargetSwitcher(
+  repositoryRoot: string,
+  enabled: boolean,
+  onOpenSession: (id: string) => void,
+) {
+  const repositoryQuery = useQuery({
+    queryKey: ['repository', repositoryRoot],
+    queryFn: () => getRepositoryInfo(repositoryRoot),
+    enabled,
+  })
+  const [busyTarget, setBusyTarget] = useState<ReviewTarget | null>(null)
+  const [switchError, setSwitchError] = useState<string | null>(null)
+
+  const choose = async (target: ReviewTarget) => {
+    setBusyTarget(target)
+    setSwitchError(null)
+    try {
+      const next = await createSession({ repositoryPath: repositoryRoot, target })
+      onOpenSession(next.id)
+    } catch (caught) {
+      setSwitchError(queryErrorMessage(caught))
+    } finally {
+      setBusyTarget(null)
+    }
+  }
+
+  return {
+    repository: repositoryQuery.data ?? null,
+    busyTarget,
+    error: switchError ?? queryErrorMessage(repositoryQuery.error),
+    choose,
+  }
+}
+
 function ReviewSourcePicker({
   repositoryRoot,
   repositoryName,
@@ -3830,24 +3899,25 @@ function ReviewSourcePicker({
   onOpenPullRequests(repositoryPath: string, pullRequestNumber?: number | null): void
 }) {
   const [open, setOpen] = useState(false)
-  const [repository, setRepository] = useState<RepositoryInfo | null>(null)
   const [sessions, setSessions] = useState<ReviewSession[]>([])
   const [customRange, setCustomRange] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [sessionsError, setSessionsError] = useState<string | null>(null)
+  const { repository, busyTarget, error: switchError, choose } = useLocalTargetSwitcher(
+    repositoryRoot,
+    open,
+    (sessionId) => {
+      setOpen(false)
+      onOpenSession(sessionId)
+    },
+  )
   const revisionSessions = localRevisionSessions(sessions)
 
   useEffect(() => {
     if (!open) return
-    void Promise.all([
-      getRepositoryInfo(repositoryRoot),
-      getSessions(repositoryRoot),
-    ])
-      .then(([info, nextSessions]) => {
-        setRepository(info)
-        setSessions(nextSessions)
-      })
-      .catch((caught) => setError(caught instanceof Error ? caught.message : String(caught)))
+    setSessionsError(null)
+    void getSessions(repositoryRoot)
+      .then(setSessions)
+      .catch((caught) => setSessionsError(queryErrorMessage(caught)))
   }, [open, repositoryRoot])
 
   const openExisting = (sessionId: string) => {
@@ -3855,19 +3925,7 @@ function ReviewSourcePicker({
     onOpenSession(sessionId)
   }
 
-  const choose = async (target: ReviewTarget) => {
-    setBusy(true)
-    setError(null)
-    try {
-      const next = await createSession({ repositoryPath: repositoryRoot, target })
-      setOpen(false)
-      onOpenSession(next.id)
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught))
-    } finally {
-      setBusy(false)
-    }
-  }
+  const error = sessionsError ?? switchError
 
   const pullRequestNumber =
     currentSession?.target.kind === 'pr' ? currentSession.target.number : null
@@ -3899,46 +3957,17 @@ function ReviewSourcePicker({
               }}
             />
             <div className="menu-section-label">Local diffs</div>
-            <TargetOption
-              selected={currentSession?.target.kind === 'worktree'}
-              label="Working tree"
-              detail="git diff HEAD"
-              onClick={() => void choose({ kind: 'worktree' })}
-            />
-            {repository?.defaultBranchRef != null && (
+            {localTargetOptions(repository).map((option) => (
               <TargetOption
-                selected={currentSession?.target.kind === 'branch-worktree'}
-                label="Current branch + working tree"
-                detail={`git diff --merge-base ${repository.defaultBranchRef}`}
-                onClick={() => void choose({ kind: 'branch-worktree' })}
-              />
-            )}
-            <TargetOption
-              selected={currentSession?.target.kind === 'unstaged'}
-              label="Unstaged changes"
-              detail="git diff"
-              onClick={() => void choose({ kind: 'unstaged' })}
-            />
-            <TargetOption
-              selected={currentSession?.target.kind === 'staged'}
-              label="Staged changes"
-              detail="git diff --cached"
-              onClick={() => void choose({ kind: 'staged' })}
-            />
-            {repository?.branchRange != null && (
-              <TargetOption
+                key={`${option.target.kind}:${option.detail}`}
                 selected={
-                  currentSession != null &&
-                  reviewTargetsEqual(currentSession.target, {
-                    kind: 'range',
-                    expression: repository.branchRange,
-                  })
+                  currentSession != null && reviewTargetsEqual(currentSession.target, option.target)
                 }
-                label="Current branch changes"
-                detail={repository.branchRange}
-                onClick={() => void choose({ kind: 'range', expression: repository.branchRange! })}
+                label={option.label}
+                detail={option.detail}
+                onClick={() => void choose(option.target)}
               />
-            )}
+            ))}
 
             {revisionSessions.length > 0 && (
               <>
@@ -3967,7 +3996,7 @@ function ReviewSourcePicker({
               }}
             >
               <input value={customRange} onChange={(event) => setCustomRange(event.target.value)} placeholder="origin/master...HEAD" />
-              <button disabled={!customRange || busy}>Open</button>
+              <button disabled={!customRange || busyTarget != null}>Open</button>
             </form>
             {error != null && <div className="menu-error">{error}</div>}
           </Popover.Popup>
@@ -4114,7 +4143,7 @@ function CommitPicker({
                     </span>
                   </label>
                 )
-              })}
+              }).reverse()}
             </div>
             <div className="commit-menu-footer">
               Reviewing {selectedCount} of {session.commits.length} commits
@@ -5416,13 +5445,56 @@ function ErrorScreen({ message, onBack }: { message: string; onBack(): void }) {
   )
 }
 
-function EmptyDiff({ onRefresh }: { onRefresh(): void }) {
+function EmptyDiff({
+  session,
+  onOpenSession,
+  onRefresh,
+}: {
+  session: ReviewSession
+  onOpenSession(id: string): void
+  onRefresh(): void
+}) {
+  const { repository, busyTarget, error, choose } = useLocalTargetSwitcher(
+    session.repositoryRoot,
+    session.target.kind !== 'pr',
+    onOpenSession,
+  )
+
+  const alternatives = session.target.kind === 'pr'
+    ? []
+    : localTargetOptions(repository).filter(
+        (option) => !reviewTargetsEqual(session.target, option.target),
+      )
+
   return (
     <div className="empty-diff">
       <span className="empty-glyph">∅</span>
       <h2>No changes in this range</h2>
       <p>The selected snapshots resolve to the same content.</p>
-      <button onClick={onRefresh}>Refresh</button>
+      {alternatives.length > 0 && (
+        <div className="empty-range-targets" aria-label="Other ranges">
+          <strong>Try another range</strong>
+          <div className="empty-range-grid">
+            {alternatives.map((option) => {
+              const selected = busyTarget != null && reviewTargetsEqual(busyTarget, option.target)
+              return (
+                <button
+                  key={`${option.target.kind}:${option.detail}`}
+                  className="empty-range-option"
+                  disabled={busyTarget != null}
+                  onClick={() => void choose(option.target)}
+                >
+                  <span>{option.label}</span>
+                  <code>{option.detail}</code>
+                  {selected && <RefreshIcon className="spinning" />}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
+      {error != null && <div className="menu-error">{error}</div>}
+      <button className="empty-refresh" onClick={onRefresh}>Refresh current range</button>
     </div>
   )
 }
