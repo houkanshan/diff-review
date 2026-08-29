@@ -53,6 +53,8 @@ Annotations: user or agent; optional GitHub `review-comment` intent on PRs. Agen
 
 **Render diffs.** Client parses `session.patch` with `@pierre/diffs`. File bytes come from `GET /api/sessions/:id/file`. Optional `GET .../difftastic` runs the `difft` CLI.
 
+**Edit files.** `?view=files` reuses the changed-file rail and renders the selected new-side file through `@pierre/diffs` Edit mode. `PUT /api/sessions/:id/files/content` accepts `{ filePath, contents, expectedContents }` only when the new snapshot is the worktree. The Git boundary validates the path against the patch, rejects symlinks/non-UTF-8 files and stale contents, serializes concurrent writes, then atomically replaces the file and refreshes the session patch.
+
 **Annotate.** Browser composer or `diff-review annotate` → `POST /api/sessions/:id/annotations` → `validateAnnotationTarget` → SQLite → SSE `session-updated`. Client SSE uses a Web Lock leader plus BroadcastChannel so one tab holds the stream.
 
 **PR workspace.** `POST /api/pull-requests/:n/open` returns GitHub metadata, sessions, revision history, and Pi status. Client never calls GitHub; the server uses `gh`.

@@ -35,6 +35,8 @@ diff-review --pr 42
 
 The command starts the loopback-only daemon when needed and opens the review in a browser. In a multi-commit review, use the header's **Commits** dropdown: click a commit to view it alone or Shift-click another commit to select a continuous range.
 
+When embedded by Pi Session Monitor, the **Files** tab opens changed files in `@pierre/diffs` Edit mode. Save writes back only to worktree-backed reviews (`worktree`, `branch-worktree`, or `unstaged`); commit, pull-request, staged, deleted, symlink, binary, and externally changed files remain protected.
+
 ## Agent annotations
 
 An already-running agent can open a session without opening the browser:
@@ -44,6 +46,8 @@ diff-review session create --repo . origin/master...HEAD
 ```
 
 The same repository and resolved commit range (`base...head`) reuse the existing local session, so later `session create` calls keep the same ID and annotations. A new session is opened when those commit SHAs change. Pull requests still open a new session when the base or head revision changes.
+
+Working-tree reviews (`unstaged`, `staged`, `worktree`, `branch-worktree`) reuse the session for the same repository, target kind, and HEAD commit. Refresh and later creates update that session's diff in place. A different HEAD commit opens a new session. Annotations stay on the session and are not remapped when the working tree changes. Live sessions created before this identity (no stored HEAD) are not reused.
 
 Alternatively, copy the session ID from the browser. The agent can keep inspecting changes with ordinary `git diff`, then add a global summary or line notes:
 

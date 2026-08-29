@@ -23,7 +23,11 @@ import type {
   PiChatEvent,
   SendPiChatInput,
 } from '../shared/types.js'
-import { sessionUsesFullCommitRange, targetSupportsStaging } from '../shared/types.js'
+import {
+  isLiveReviewTarget,
+  sessionUsesFullCommitRange,
+  targetSupportsIndexChanges,
+} from '../shared/types.js'
 import { pullRequestAllowsReviewEvent } from '../shared/pull-request.js'
 import {
   reusablePullRequestSession,
@@ -45,7 +49,8 @@ import {
   resolveTarget,
   computeReviewFingerprint,
   storedReviewFingerprint,
-  stageReviewFile,
+  setReviewFilesStaged,
+  writeReviewWorktreeFile,
   validateAnnotationTarget,
   validateReviewFilePath,
   reviewFileSides,
@@ -143,7 +148,8 @@ export class ApiHandler {
       /^\/api\/sessions\/([^/]+)\/annotations\/([^/]+)\/archive$/.exec(url.pathname)
     const annotationsArchiveMatch =
       /^\/api\/sessions\/([^/]+)\/annotations\/archive$/.exec(url.pathname)
-    const fileStageMatch = /^\/api\/sessions\/([^/]+)\/files\/stage$/.exec(url.pathname)
+    const filesStagedMatch = /^\/api\/sessions\/([^/]+)\/files\/staged$/.exec(url.pathname)
+    const fileContentMatch = /^\/api\/sessions\/([^/]+)\/files\/content$/.exec(url.pathname)
     const fileViewedMatch = /^\/api\/sessions\/([^/]+)\/files\/viewed$/.exec(url.pathname)
     const openEditorMatch = /^\/api\/sessions\/([^/]+)\/open-editor$/.exec(url.pathname)
     const fileMatch = /^\/api\/sessions\/([^/]+)\/file$/.exec(url.pathname)
@@ -225,7 +231,7 @@ export class ApiHandler {
         )
       }
       const target: ReviewTarget = { kind: 'pr', number }
-      const currentSession = existingCurrent ?? this.createOrReuseSession(
+      const currentSession = existingCurrent ?? await this.createOrReuseSession(
         root,
         target,
         await resolvePullRequestRevision(root, details, ignoreWhitespace),
@@ -344,7 +350,7 @@ export class ApiHandler {
       const root = await resolveRepository(input.repositoryPath)
       const ignoreWhitespace = true
       const resolved = await resolveTarget(root, input.target, ignoreWhitespace)
-      const session = this.createOrReuseSession(
+      const session = await this.createOrReuseSession(
         root,
         input.target,
         resolved,
@@ -411,7 +417,7 @@ export class ApiHandler {
         session.ignoreWhitespace,
       )
       // Range/PR refresh follows the current target; a new SHA pair opens or reuses that revision.
-      const updated = this.createOrReuseSession(
+      const updated = await this.createOrReuseSession(
         session.repositoryRoot,
         session.target,
         resolved,
@@ -620,17 +626,52 @@ export class ApiHandler {
       return
     }
 
-    if (method === 'POST' && fileStageMatch != null) {
-      const sessionId = fileStageMatch[1] ?? ''
+    if (method === 'POST' && filesStagedMatch != null) {
+      const sessionId = filesStagedMatch[1] ?? ''
       const session = this.store.getSession(sessionId)
-      if (!targetSupportsStaging(session.target)) {
+      if (!targetSupportsIndexChanges(session.target)) {
         throw new AppError(
           'INVALID_REVIEW_TARGET',
-          'Files can only be added from reviews with working tree changes',
+          'Files can only be staged from live reviews',
         )
       }
-      const { filePath } = parseFileInput(await readJson(request))
-      await stageReviewFile(session.repositoryRoot, session.patch, filePath)
+      const { filePaths, staged } = parseFilesStagedInput(await readJson(request))
+      await setReviewFilesStaged(session.repositoryRoot, session.patch, filePaths, staged)
+      const resolved = await resolveTarget(
+        session.repositoryRoot,
+        session.target,
+        session.ignoreWhitespace,
+      )
+      const updated = this.store.updateResolvedReview(
+        sessionId,
+        resolved,
+        resolved.commits.at(0)?.oid ?? null,
+        resolved.commits.at(-1)?.oid ?? null,
+        resolved.commits,
+      )
+      this.emitSessionUpdate(sessionId)
+      sendJson(response, 200, updated)
+      return
+    }
+
+    if (method === 'PUT' && fileContentMatch != null) {
+      const sessionId = fileContentMatch[1] ?? ''
+      const session = this.store.getSession(sessionId)
+      const currentReview = this.store.getResolvedReview(sessionId)
+      if (currentReview.newSnapshot.kind !== 'worktree') {
+        throw new AppError(
+          'INVALID_REVIEW_TARGET',
+          'Files can only be edited in reviews backed by the working tree',
+        )
+      }
+      const input = parseFileContentInput(await readJson(request))
+      await writeReviewWorktreeFile(
+        session.repositoryRoot,
+        currentReview.patch,
+        input.filePath,
+        input.contents,
+        input.expectedContents,
+      )
       const resolved = await resolveTarget(
         session.repositoryRoot,
         session.target,
@@ -842,12 +883,39 @@ export class ApiHandler {
     return currentSession
   }
 
-  private createOrReuseSession(
+  private async createOrReuseSession(
     root: string,
     target: ReviewTarget,
     resolved: Awaited<ReturnType<typeof resolveTarget>>,
     ignoreWhitespace: boolean,
-  ): ReviewSession {
+  ): Promise<ReviewSession> {
+    if (isLiveReviewTarget(target)) {
+      const headOid = resolved.liveHeadOid
+      if (headOid == null) {
+        throw new AppError(
+          'INVALID_REVIEW_TARGET',
+          'Live review is missing HEAD identity',
+        )
+      }
+      const existing = this.store.findLiveRevision(root, target.kind, headOid)
+      if (existing != null) {
+        return this.store.updateResolvedReview(
+          existing.id,
+          resolved,
+          resolved.commits.at(0)?.oid ?? null,
+          resolved.commits.at(-1)?.oid ?? null,
+          resolved.commits,
+          ignoreWhitespace,
+        )
+      }
+      return this.store.createSession(
+        root,
+        path.basename(root),
+        target,
+        resolved,
+        ignoreWhitespace,
+      )
+    }
     if (
       resolved.oldSnapshot.kind === 'commit' &&
       resolved.newSnapshot.kind === 'commit'
@@ -1194,9 +1262,35 @@ function parseViewedFileInput(value: unknown): { filePath: string; viewed: boole
   return { filePath: expectString(object.filePath, 'filePath'), viewed: object.viewed }
 }
 
-function parseFileInput(value: unknown): { filePath: string } {
+function parseFilesStagedInput(value: unknown): { filePaths: string[]; staged: boolean } {
   const object = expectObject(value)
-  return { filePath: expectString(object.filePath, 'filePath') }
+  if (
+    !Array.isArray(object.filePaths) ||
+    object.filePaths.length === 0 ||
+    !object.filePaths.every((filePath) => typeof filePath === 'string')
+  ) {
+    throw new AppError('INVALID_INPUT', 'filePaths must be a non-empty string array')
+  }
+  if (typeof object.staged !== 'boolean') {
+    throw new AppError('INVALID_INPUT', 'staged must be a boolean')
+  }
+  return { filePaths: object.filePaths, staged: object.staged }
+}
+
+function parseFileContentInput(value: unknown): {
+  filePath: string
+  contents: string
+  expectedContents: string
+} {
+  const object = expectObject(value)
+  if (typeof object.contents !== 'string' || typeof object.expectedContents !== 'string') {
+    throw new AppError('INVALID_INPUT', 'contents and expectedContents must be strings')
+  }
+  return {
+    filePath: expectString(object.filePath, 'filePath'),
+    contents: object.contents,
+    expectedContents: object.expectedContents,
+  }
 }
 
 function parseOpenEditorInput(value: unknown): {

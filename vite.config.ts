@@ -9,6 +9,9 @@ export default defineConfig({
       '/api': 'http://127.0.0.1:47658',
     },
   },
+  worker: {
+    format: 'es',
+  },
   build: {
     outDir: 'dist/client',
     emptyOutDir: true,
