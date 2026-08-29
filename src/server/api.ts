@@ -14,6 +14,7 @@ import type {
   SquashMergePullRequestInput,
   SubmitPullRequestReviewInput,
   UpdatePullRequestLabelInput,
+  PullRequestDetails,
   PullRequestListView,
   PullRequestWorkspace,
   ReviewSession,
@@ -74,6 +75,17 @@ const GITHUB_ATTACHMENT_BODY_LIMIT = 100 * 1024 * 1024
 interface CachedMedia {
   body: Uint8Array
   contentType: string
+}
+
+async function getPullRequestDetailsWithConflicts(
+  root: string,
+  number: number,
+): Promise<PullRequestDetails> {
+  const details = await getPullRequestDetails(root, number)
+  const conflictFiles = details.mergeable === 'CONFLICTING'
+    ? await listMergeConflictFiles(root, details.baseRefOid, details.headRefOid)
+    : []
+  return { ...details, conflictFiles }
 }
 
 export class ApiHandler {
@@ -203,7 +215,7 @@ export class ApiHandler {
     if (method === 'GET' && pullRequestMatch != null) {
       const number = Number(pullRequestMatch[1])
       const root = await resolveRepository(requiredQuery(url, 'repositoryPath'))
-      sendJson(response, 200, await getPullRequestDetails(root, number))
+      sendJson(response, 200, await getPullRequestDetailsWithConflicts(root, number))
       return
     }
 
@@ -212,18 +224,11 @@ export class ApiHandler {
       const input = parseOpenPullRequestInput(await readJson(request))
       const root = await resolveRepository(input.repositoryPath)
       const ignoreWhitespace = true
-      const details = await getPullRequestDetails(root, number)
+      const details = await getPullRequestDetailsWithConflicts(root, number)
       const existingCurrent = reusablePullRequestSession(
         this.store.findPullRequestHeadRevision(root, number, details.headRefOid),
         details.headRefOid,
       )
-      if (details.mergeable === 'CONFLICTING') {
-        details.conflictFiles = await listMergeConflictFiles(
-          root,
-          details.baseRefOid,
-          details.headRefOid,
-        )
-      }
       const target: ReviewTarget = { kind: 'pr', number }
       const currentSession = existingCurrent ?? this.createOrReuseSession(
         root,

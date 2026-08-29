@@ -19,6 +19,7 @@ import {
 } from './annotationComposer'
 import { highlightFileLines, syntaxLanguageFor } from './syntaxHighlight'
 import { ShortcutTooltip } from './ShortcutTooltip'
+import { showCopiedToast } from './Toasts'
 import { annotationThreads } from '../shared/annotationThreads'
 import type {
   DifftasticFileDiff,
@@ -853,6 +854,7 @@ function CopyFileButton({ filePath }: { filePath: string }) {
       onClick={async (event) => {
         event.stopPropagation()
         await navigator.clipboard.writeText(filePath)
+        showCopiedToast()
         setCopied(true)
         window.setTimeout(() => setCopied(false), 1200)
       }}

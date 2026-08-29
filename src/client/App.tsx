@@ -168,6 +168,7 @@ import { storedEditor, storeEditor } from './editor'
 import { DifftasticView, scrollDifftasticTarget } from './DifftasticView'
 import { OpenInEditorButton } from './OpenInEditorButton'
 import { ShortcutTooltip } from './ShortcutTooltip'
+import { showCopiedToast } from './Toasts'
 import { subscribeSessionEvents } from './sessionEvents'
 import {
   EMPTY_COMPOSER_DRAFT,
@@ -1448,6 +1449,8 @@ function ReviewWorkspace({
         parsedFiles,
       ),
     )
+    const count = humanAnnotations.length + humanGlobalComments.length
+    showCopiedToast(`Copied ${count} annotation${count === 1 ? '' : 's'}`)
     setCommentsCopied(true)
     window.setTimeout(() => setCommentsCopied(false), 1600)
   }, [humanAnnotations, humanGlobalComments, parsedFiles, session.annotations, session.id])
@@ -3367,6 +3370,7 @@ function CopyableMetaText({ value, children }: { value: string; children: ReactN
       title={copied ? 'Copied' : `Copy ${value}`}
       onClick={async () => {
         await navigator.clipboard.writeText(value)
+        showCopiedToast()
         setCopied(true)
         window.setTimeout(() => setCopied(false), 1200)
       }}
@@ -3824,29 +3828,35 @@ interface LocalTargetOption {
   detail: string
 }
 
-function localTargetOptions(repository: RepositoryInfo | null): LocalTargetOption[] {
-  const options: LocalTargetOption[] = [
-    { target: { kind: 'worktree' }, label: 'Working tree', detail: 'git diff HEAD' },
-  ]
+interface LocalTargetGroups {
+  branch: LocalTargetOption[]
+  local: LocalTargetOption[]
+}
+
+function localTargetGroups(repository: RepositoryInfo | null): LocalTargetGroups {
+  const branch: LocalTargetOption[] = []
   if (repository?.defaultBranchRef != null) {
-    options.push({
+    branch.push({
       target: { kind: 'branch-worktree' },
-      label: 'Current branch + working tree',
+      label: 'Branch + local changes',
       detail: `git diff --merge-base ${repository.defaultBranchRef}`,
     })
   }
-  options.push(
-    { target: { kind: 'unstaged' }, label: 'Unstaged changes', detail: 'git diff' },
-    { target: { kind: 'staged' }, label: 'Staged changes', detail: 'git diff --cached' },
-  )
   if (repository?.branchRange != null) {
-    options.push({
+    branch.push({
       target: { kind: 'range', expression: repository.branchRange },
-      label: 'Current branch changes',
+      label: 'Branch commits',
       detail: repository.branchRange,
     })
   }
-  return options
+  return {
+    branch,
+    local: [
+      { target: { kind: 'worktree' }, label: 'All local changes', detail: 'git diff HEAD' },
+      { target: { kind: 'staged' }, label: 'Staged changes', detail: 'git diff --cached' },
+      { target: { kind: 'unstaged' }, label: 'Unstaged changes', detail: 'git diff' },
+    ],
+  }
 }
 
 function useLocalTargetSwitcher(
@@ -3926,6 +3936,7 @@ function ReviewSourcePicker({
   }
 
   const error = sessionsError ?? switchError
+  const targetGroups = localTargetGroups(repository)
 
   const pullRequestNumber =
     currentSession?.target.kind === 'pr' ? currentSession.target.number : null
@@ -3956,18 +3967,27 @@ function ReviewSourcePicker({
                 onOpenPullRequests(repositoryRoot, pullRequestNumber)
               }}
             />
-            <div className="menu-section-label">Local diffs</div>
-            {localTargetOptions(repository).map((option) => (
-              <TargetOption
-                key={`${option.target.kind}:${option.detail}`}
-                selected={
-                  currentSession != null && reviewTargetsEqual(currentSession.target, option.target)
-                }
-                label={option.label}
-                detail={option.detail}
-                onClick={() => void choose(option.target)}
-              />
-            ))}
+            <div className="target-group-grid">
+              {(['branch', 'local'] as const).map((group) => (
+                <section className="target-group" key={group}>
+                  <div className="menu-section-label">
+                    {group === 'branch' ? 'Branch' : 'Local'}
+                  </div>
+                  {targetGroups[group].map((option) => (
+                    <TargetOption
+                      key={`${option.target.kind}:${option.detail}`}
+                      selected={
+                        currentSession != null &&
+                        reviewTargetsEqual(currentSession.target, option.target)
+                      }
+                      label={option.label}
+                      detail={option.detail}
+                      onClick={() => void choose(option.target)}
+                    />
+                  ))}
+                </section>
+              ))}
+            </div>
 
             {revisionSessions.length > 0 && (
               <>
@@ -4385,6 +4405,7 @@ function FileCopyButton({ filePath }: { filePath: string }) {
       onClick={async (event) => {
         event.stopPropagation()
         await navigator.clipboard.writeText(filePath)
+        showCopiedToast()
         setCopied(true)
         window.setTimeout(() => setCopied(false), 1200)
       }}
@@ -5460,36 +5481,51 @@ function EmptyDiff({
     onOpenSession,
   )
 
-  const alternatives = session.target.kind === 'pr'
-    ? []
-    : localTargetOptions(repository).filter(
-        (option) => !reviewTargetsEqual(session.target, option.target),
-      )
+  const targetGroups = localTargetGroups(repository)
+  const alternatives: LocalTargetGroups = session.target.kind === 'pr'
+    ? { branch: [], local: [] }
+    : {
+        branch: targetGroups.branch.filter(
+          (option) => !reviewTargetsEqual(session.target, option.target),
+        ),
+        local: targetGroups.local.filter(
+          (option) => !reviewTargetsEqual(session.target, option.target),
+        ),
+      }
+  const hasAlternatives = alternatives.branch.length > 0 || alternatives.local.length > 0
 
   return (
     <div className="empty-diff">
       <span className="empty-glyph">∅</span>
       <h2>No changes in this range</h2>
       <p>The selected snapshots resolve to the same content.</p>
-      {alternatives.length > 0 && (
+      {hasAlternatives && (
         <div className="empty-range-targets" aria-label="Other ranges">
           <strong>Try another range</strong>
           <div className="empty-range-grid">
-            {alternatives.map((option) => {
-              const selected = busyTarget != null && reviewTargetsEqual(busyTarget, option.target)
-              return (
-                <button
-                  key={`${option.target.kind}:${option.detail}`}
-                  className="empty-range-option"
-                  disabled={busyTarget != null}
-                  onClick={() => void choose(option.target)}
-                >
-                  <span>{option.label}</span>
-                  <code>{option.detail}</code>
-                  {selected && <RefreshIcon className="spinning" />}
-                </button>
-              )
-            })}
+            {(['branch', 'local'] as const).map((group) => (
+              <section className="empty-range-group" key={group}>
+                <strong>{group === 'branch' ? 'Branch' : 'Local'}</strong>
+                <div>
+                  {alternatives[group].map((option) => {
+                    const selected =
+                      busyTarget != null && reviewTargetsEqual(busyTarget, option.target)
+                    return (
+                      <button
+                        key={`${option.target.kind}:${option.detail}`}
+                        className="empty-range-option"
+                        disabled={busyTarget != null}
+                        onClick={() => void choose(option.target)}
+                      >
+                        <span>{option.label}</span>
+                        <code>{option.detail}</code>
+                        {selected && <RefreshIcon className="spinning" />}
+                      </button>
+                    )
+                  })}
+                </div>
+              </section>
+            ))}
           </div>
         </div>
       )}
