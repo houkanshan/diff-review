@@ -151,6 +151,7 @@ import {
   refreshSession,
   selectCommits,
   setAnnotationArchived,
+  setAnnotationViewed,
   setGlobalCommentArchived,
   setFileViewed,
   setIgnoreWhitespace,
@@ -1225,6 +1226,10 @@ function ReviewWorkspace({
     await onReload()
   }, [onReload, session.id])
 
+  const setViewedAnnotation = useCallback(async (annotationId: string, viewed: boolean) => {
+    onSessionChange(await setAnnotationViewed(session.id, annotationId, viewed))
+  }, [onSessionChange, session.id])
+
   const editAnnotation = useCallback(async (
     annotationId: string,
     nextComment: string,
@@ -1373,6 +1378,20 @@ function ReviewWorkspace({
 
   useHotkey('V', () => {
     const pointer = lastPointerRef.current
+    // Hit-test now, like files. Hover state goes stale on scroll, collapse, and blur.
+    const annotationId = pointer != null
+      ? annotationIdAtClientPoint(pointer.x, pointer.y)
+      : null
+    if (annotationId != null) {
+      const annotation = activeAnnotationById(annotationsRef.current, annotationId)
+      if (annotation != null) {
+        void setViewedAnnotation(annotation.id, annotation.viewedAt == null).catch((caught) => {
+          console.error(`Could not toggle viewed state for annotation ${annotation.id}`, caught)
+        })
+      }
+      return
+    }
+
     const viewer = viewerRef.current?.getInstance()
     const filePath =
       (pointer != null ? fileIdAtClientPoint(pointer.x, pointer.y) : null)
@@ -1385,12 +1404,12 @@ function ReviewWorkspace({
       console.error(`Could not toggle viewed state for ${filePath}`, caught)
     })
   }, {
-    enabled: (pullRequest == null || pullRequestView === 'diff') && items.length > 0,
+    enabled: pullRequest == null || pullRequestView === 'diff',
     ignoreInputs: true,
     requireReset: true,
     meta: {
-      name: 'Toggle viewed file',
-      description: 'Toggle the current file as viewed',
+      name: 'Toggle viewed',
+      description: 'Toggle viewed for the hovered annotation or current file',
     },
   })
 
@@ -1623,6 +1642,7 @@ function ReviewWorkspace({
       hasHumanComments={hasHumanComments}
       onCopyComments={copyHumanComments}
       onSetArchived={setArchived}
+      onSetViewed={setViewedAnnotation}
       onUpdateComment={editAnnotation}
       onReload={onReload}
       onAddGlobalComment={addUserGlobalComment}
@@ -4569,6 +4589,39 @@ function FileViewedToggle({
   )
 }
 
+function AnnotationViewedToggle({
+  viewed,
+  disabled,
+  onChange,
+}: {
+  viewed: boolean
+  disabled?: boolean
+  onChange(viewed: boolean): Promise<void>
+}) {
+  const [busy, setBusy] = useState(false)
+  return (
+    <ShortcutTooltip label={viewed ? 'Mark as unread' : 'Mark as read'} shortcut="V">
+      <button
+        type="button"
+        className={`note-viewed-status ${viewed ? 'viewed' : ''}`}
+        aria-pressed={viewed}
+        aria-label={viewed ? 'Viewed' : 'Not viewed'}
+        disabled={disabled || busy}
+        onClick={async () => {
+          setBusy(true)
+          try {
+            await onChange(!viewed)
+          } finally {
+            setBusy(false)
+          }
+        }}
+      >
+        {viewed && <CheckIcon />}
+      </button>
+    </ShortcutTooltip>
+  )
+}
+
 function SessionHistoryMenu({
   repositoryRoot,
   currentSessionId,
@@ -4644,6 +4697,7 @@ function Inspector({
   hasHumanComments,
   onCopyComments,
   onSetArchived,
+  onSetViewed,
   onUpdateComment,
   onAddGlobalComment,
   onUpdateGlobalComment,
@@ -4661,6 +4715,7 @@ function Inspector({
   hasHumanComments: boolean
   onCopyComments(): Promise<void>
   onSetArchived(annotationId: string, archived: boolean): Promise<void>
+  onSetViewed(annotationId: string, viewed: boolean): Promise<void>
   onUpdateComment(annotationId: string, comment: string, intent?: AnnotationIntent): Promise<void>
   onAddGlobalComment(comment: string): Promise<void>
   onUpdateGlobalComment(commentId: string, comment: string): Promise<void>
@@ -4849,7 +4904,7 @@ function Inspector({
               )
             })}
             {annotationThreads(visible).map(({ root: annotation, replies }) => {
-              const viewed = session.viewedFiles.includes(annotation.filePath)
+              const viewed = annotation.viewedAt != null
               const editing = editingId === annotation.id
               const canReply =
                 view === 'active' &&
@@ -4859,25 +4914,26 @@ function Inspector({
                 <article
                   key={annotation.id}
                   className={`note-card ${annotation.source}${fileIdForAnnotation(annotation, files) === activeFilePath ? ' is-active' : ''}`}
+                  data-annotation-id={annotation.id}
                   data-file-path={fileIdForAnnotation(annotation, files)}
                   onPointerEnter={() => {
                     if (view === 'active') onHoverAnnotation(annotation.id)
                   }}
                   onPointerLeave={() => onHoverAnnotation(null)}
                 >
-                  <button className="note-target" onClick={() => onNavigate(annotation)}>
-                    <span
-                      className={`note-viewed-status ${viewed ? 'viewed' : ''}`}
-                      aria-label={viewed ? 'Viewed' : 'Not viewed'}
-                      title={viewed ? 'Viewed' : 'Not viewed'}
-                    >
-                      {viewed && <CheckIcon />}
-                    </span>
-                    <code>{compactPath(annotation.filePath)}</code>
-                    <span className={`note-position ${annotation.side}`}>
-                      {annotationPosition(annotation)}
-                    </span>
-                  </button>
+                  <div className="note-target">
+                    <AnnotationViewedToggle
+                      viewed={viewed}
+                      disabled={view !== 'active'}
+                      onChange={(nextViewed) => onSetViewed(annotation.id, nextViewed)}
+                    />
+                    <button className="note-target-link" onClick={() => onNavigate(annotation)}>
+                      <code>{compactPath(annotation.filePath)}</code>
+                      <span className={`note-position ${annotation.side}`}>
+                        {annotationPosition(annotation)}
+                      </span>
+                    </button>
+                  </div>
                   {editing ? (
                     <CommentEditor
                       comment={annotation.comment ?? ''}
@@ -5748,6 +5804,17 @@ function fileIdAtClientPoint(x: number, y: number): string | null {
     const path = composedAncestors(node)
     const fileId = fileIdFromComposedPath(path) ?? fileIdFromDiffsContainer(path)
     if (fileId != null) return fileId
+  }
+  return null
+}
+
+function annotationIdAtClientPoint(x: number, y: number): string | null {
+  for (const node of document.elementsFromPoint(x, y)) {
+    const path = composedAncestors(node)
+    const annotation = path.find(
+      (target) => target instanceof HTMLElement && target.dataset.annotationId != null,
+    )
+    if (annotation instanceof HTMLElement) return annotation.dataset.annotationId ?? null
   }
   return null
 }

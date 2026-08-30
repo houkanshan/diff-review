@@ -134,6 +134,7 @@ printf '%s\\n' '{\"merged\":true,\"message\":\"Pull Request successfully merged\
       replyToId: null,
       archivedAt: null,
       submittedAt: null,
+      viewedAt: null,
       createdAt: '2026-01-01T00:00:00Z',
       updatedAt: '2026-01-01T00:00:00Z',
     })).toEqual({
@@ -162,6 +163,7 @@ printf '%s\\n' '{\"merged\":true,\"message\":\"Pull Request successfully merged\
       replyToId: null,
       archivedAt: null,
       submittedAt: null,
+      viewedAt: null,
       createdAt: '2026-01-01T00:00:00Z',
       updatedAt: '2026-01-01T00:00:00Z',
     }

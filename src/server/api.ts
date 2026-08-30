@@ -154,6 +154,8 @@ export class ApiHandler {
     )
     const annotationArchiveMatch =
       /^\/api\/sessions\/([^/]+)\/annotations\/([^/]+)\/archive$/.exec(url.pathname)
+    const annotationViewedMatch =
+      /^\/api\/sessions\/([^/]+)\/annotations\/([^/]+)\/viewed$/.exec(url.pathname)
     const annotationsArchiveMatch =
       /^\/api\/sessions\/([^/]+)\/annotations\/archive$/.exec(url.pathname)
     const fileStageMatch = /^\/api\/sessions\/([^/]+)\/files\/stage$/.exec(url.pathname)
@@ -600,6 +602,19 @@ export class ApiHandler {
       )
       this.emitSessionUpdate(sessionId)
       sendJson(response, 200, annotation)
+      return
+    }
+
+    if (method === 'POST' && annotationViewedMatch != null) {
+      const sessionId = annotationViewedMatch[1] ?? ''
+      const { viewed } = parseAnnotationViewedInput(await readJson(request))
+      const session = this.store.setAnnotationViewed(
+        sessionId,
+        annotationViewedMatch[2] ?? '',
+        viewed,
+      )
+      this.emitSessionUpdate(sessionId)
+      sendJson(response, 200, session)
       return
     }
 
@@ -1190,6 +1205,14 @@ function parseAnnotationUpdateInput(value: unknown): UpdateAnnotationInput {
     throw new AppError('INVALID_INPUT', 'intent must be annotation or review-comment')
   }
   return { comment, intent }
+}
+
+function parseAnnotationViewedInput(value: unknown): { viewed: boolean } {
+  const object = expectObject(value)
+  if (typeof object.viewed !== 'boolean') {
+    throw new AppError('INVALID_INPUT', 'viewed must be a boolean')
+  }
+  return { viewed: object.viewed }
 }
 
 function parseViewedFileInput(value: unknown): { filePath: string; viewed: boolean } {

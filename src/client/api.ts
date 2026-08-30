@@ -241,6 +241,20 @@ export function setAnnotationArchived(
   )
 }
 
+export function setAnnotationViewed(
+  id: string,
+  annotationId: string,
+  viewed: boolean,
+): Promise<ReviewSession> {
+  return request(
+    `/api/sessions/${encodeURIComponent(id)}/annotations/${annotationId}/viewed`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ viewed }),
+    },
+  )
+}
+
 export function updateAnnotationComment(
   id: string,
   annotationId: string,

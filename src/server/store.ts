@@ -59,6 +59,7 @@ interface AnnotationRow {
   reply_to_id: string | null
   archived_at: string | null
   submitted_at: string | null
+  viewed_at: string | null
   created_at: string
   updated_at: string
 }
@@ -141,6 +142,7 @@ export class ReviewStore {
         reply_to_id TEXT REFERENCES annotations(id) ON DELETE CASCADE,
         archived_at TEXT,
         submitted_at TEXT,
+        viewed_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -600,6 +602,25 @@ export class ReviewStore {
     return this.getAnnotation(id)
   }
 
+  setAnnotationViewed(
+    sessionId: string,
+    annotationId: string,
+    viewed: boolean,
+  ): ReviewSession {
+    const now = new Date().toISOString()
+    const result = this.database
+      .prepare(`
+        UPDATE annotations
+        SET viewed_at = ?, updated_at = ?
+        WHERE id = ? AND session_id = ?
+      `)
+      .run(viewed ? now : null, now, annotationId, sessionId)
+    if (result.changes === 0) {
+      throw new AppError('ANNOTATION_NOT_FOUND', `Annotation not found: ${annotationId}`, 404)
+    }
+    return this.getSession(sessionId)
+  }
+
   setAnnotationArchived(
     sessionId: string,
     annotationId: string,
@@ -877,6 +898,9 @@ export class ReviewStore {
     if (!columns.some((column) => column.name === 'submitted_at')) {
       this.database.exec('ALTER TABLE annotations ADD COLUMN submitted_at TEXT')
     }
+    if (!columns.some((column) => column.name === 'viewed_at')) {
+      this.database.exec('ALTER TABLE annotations ADD COLUMN viewed_at TEXT')
+    }
     if (!columns.some((column) => column.name === 'reply_to_id')) {
       this.database.exec(
         'ALTER TABLE annotations ADD COLUMN reply_to_id TEXT REFERENCES annotations(id) ON DELETE CASCADE',
@@ -999,6 +1023,7 @@ function annotationFromRow(row: AnnotationRow): SessionAnnotation {
     replyToId: row.reply_to_id,
     archivedAt: row.archived_at,
     submittedAt: row.submitted_at,
+    viewedAt: row.viewed_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }

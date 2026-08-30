@@ -1767,6 +1767,7 @@ describe('local review storage', () => {
     expect(annotation.importance).toBeNull()
     expect(annotation.endSide).toBeNull()
     expect(annotation.archivedAt).toBeNull()
+    expect(annotation.viewedAt).toBeNull()
     expect(annotation.intent).toBe('annotation')
     expect(store.getSession(session.id).annotations).toEqual([annotation])
 
@@ -1848,6 +1849,15 @@ describe('local review storage', () => {
       'tracked.txt',
     ])
     expect(store.setFileViewed(session.id, 'tracked.txt', false).viewedFiles).toEqual([])
+
+    const markedViewed = store.setAnnotationViewed(session.id, annotation.id, true)
+    expect(markedViewed.annotations.find((item) => item.id === annotation.id)?.viewedAt).not.toBeNull()
+    expect(store.setAnnotationViewed(session.id, annotation.id, true).annotations.find(
+      (item) => item.id === annotation.id,
+    )?.viewedAt).not.toBeNull()
+    expect(store.setAnnotationViewed(session.id, annotation.id, false).annotations.find(
+      (item) => item.id === annotation.id,
+    )?.viewedAt).toBeNull()
 
     const individuallyArchived = store.setAnnotationArchived(session.id, annotation.id, true)
     await new Promise((resolve) => setTimeout(resolve, 5))
@@ -2042,6 +2052,7 @@ describe('local review storage', () => {
         replyToId: null,
         archivedAt: null,
         submittedAt: null,
+        viewedAt: null,
       },
     ])
     expect(store.getSession('drs_legacy_pr').revisionBaseOid).toBe('b'.repeat(40))

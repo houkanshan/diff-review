@@ -169,6 +169,7 @@ export interface SessionAnnotation {
   replyToId: string | null
   archivedAt: string | null
   submittedAt: string | null
+  viewedAt: string | null
   createdAt: string
   updatedAt: string
 }

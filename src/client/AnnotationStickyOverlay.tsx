@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type ReactNode, type WheelEvent } from 'react'
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { useSetAtom } from 'jotai'
 
 import { annotationThreads } from '../shared/annotationThreads'
@@ -14,6 +14,7 @@ import {
 } from './annotationSticky'
 
 const DEFAULT_CARD_HEIGHT = 72
+const WHEEL_RESTORE_MS = 200
 
 export function AnnotationStickyOverlay({
   scroller,
@@ -112,6 +113,36 @@ export function AnnotationStickyOverlay({
   }, [annotations, collapsedFiles, files, scroller, setOverlayIds])
 
   useLayoutEffect(() => {
+    const host = scroller?.parentElement
+    if (scroller == null || host == null) return
+    const pending = new Map<HTMLElement, number>()
+    const restore = (node: HTMLElement) => {
+      node.style.pointerEvents = ''
+      pending.delete(node)
+    }
+    const onWheel = (event: Event) => {
+      const { target, deltaX, deltaY } = event as WheelEvent
+      const layer = wheelPassThroughLayer(target)
+      if (layer == null) return
+      layer.style.pointerEvents = 'none'
+      if (layer.classList.contains('annotation-sticky-card')) {
+        scroller.scrollBy({ top: deltaY, left: deltaX })
+      }
+      const prev = pending.get(layer)
+      if (prev != null) window.clearTimeout(prev)
+      pending.set(layer, window.setTimeout(() => restore(layer), WHEEL_RESTORE_MS))
+    }
+    host.addEventListener('wheel', onWheel, { capture: true, passive: true })
+    return () => {
+      host.removeEventListener('wheel', onWheel, true)
+      for (const [node, timer] of pending) {
+        window.clearTimeout(timer)
+        restore(node)
+      }
+    }
+  }, [scroller])
+
+  useLayoutEffect(() => {
     for (const id of ids) {
       const box = boxes.current.get(id)
       const node = nodes.current.get(id)
@@ -128,11 +159,6 @@ export function AnnotationStickyOverlay({
   ))
   const threadById = new Map(threads.map((thread) => [thread.root.id, thread]))
 
-  const forwardWheel = (event: WheelEvent<HTMLDivElement>) => {
-    if (scroller == null || shouldRetainWheel(event.target)) return
-    scroller.scrollBy({ top: event.deltaY, left: event.deltaX })
-  }
-
   return (
     <div className="annotation-sticky-layer" aria-hidden={ids.length === 0}>
       {ids.map((id) => {
@@ -146,7 +172,6 @@ export function AnnotationStickyOverlay({
               if (node == null) nodes.current.delete(id)
               else nodes.current.set(id, node)
             }}
-            onWheel={forwardWheel}
           >
             {renderCard(thread.root, thread.replies)}
           </div>
@@ -160,6 +185,12 @@ function applyBox(node: HTMLElement, left: number, width: number, bottom: number
   node.style.left = `${left}px`
   node.style.width = `${width}px`
   node.style.bottom = `${bottom}px`
+}
+
+function wheelPassThroughLayer(target: EventTarget | null): HTMLElement | null {
+  if (!(target instanceof Element) || shouldRetainWheel(target)) return null
+  return target.closest('.annotation-sticky-card')
+    ?? target.closest('.inline-annotation')
 }
 
 function shouldRetainWheel(target: EventTarget | null): boolean {
