@@ -23,8 +23,8 @@ Default bind: `127.0.0.1:47658` (`DIFF_REVIEW_PORT` / `DIFF_REVIEW_HOST`; host m
 
 | Layer | Owns | Depends on |
 | --- | --- | --- |
-| CLI (`src/server/cli.ts`) | Ensure daemon, open browser, agent `session create` / `annotate` | HTTP API only |
-| Daemon (`src/server/daemon.ts`) | Loopback HTTP, SIGINT/SIGTERM | `ApiHandler`, `ReviewStore` |
+| CLI (`src/server/cli.ts`) | Ensure daemon, `service` lifecycle, open browser, agent `session create` / `annotate` | HTTP API and local process control |
+| Daemon (`src/server/daemon.ts`) | Loopback HTTP, PID file, SIGINT/SIGTERM | `ApiHandler`, `ReviewStore` |
 | API (`src/server/api.ts`) | Routes, validation, SSE, session reuse | store, git, github, pi, difftastic |
 | Git (`src/server/git.ts`) | Target resolution, patch, snapshot file reads, annotation line checks | `command.ts` |
 | Store (`src/server/store.ts`) | SQLite CRUD; IDs `drs_`, `ann_`, `pir_` | shared types |

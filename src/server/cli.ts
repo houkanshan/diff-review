@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process'
-import { closeSync, copyFileSync, existsSync, mkdirSync, openSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -13,11 +13,17 @@ import type {
   SessionAnnotation,
   SessionGlobalComment,
 } from '../shared/types.js'
-import { DEFAULT_HOST, DEFAULT_PORT, serveDaemon } from './daemon.js'
+import { daemonClientUrl, serveDaemon } from './daemon.js'
 import { AppError, errorMessage } from './errors.js'
 import { findPackageRoot } from './packageRoot.js'
+import {
+  formatServiceStatus,
+  parseServiceCommand,
+  runService,
+  startService,
+} from './service.js'
 
-const BASE_URL = `http://${DEFAULT_HOST}:${process.env.DIFF_REVIEW_PORT ?? DEFAULT_PORT}`
+const BASE_URL = daemonClientUrl()
 
 void main().catch((error: unknown) => {
   console.error(`diff-review: ${errorMessage(error)}`)
@@ -28,6 +34,21 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2)
   if (args[0] === 'daemon' && args[1] === 'serve') {
     await serveDaemon()
+    return
+  }
+
+  if (args[0] === 'service') {
+    if (wantsHelp(args.slice(1))) {
+      printHelp()
+      return
+    }
+    const command = parseServiceCommand(args[1])
+    if (command == null) {
+      throw new AppError('INVALID_ARGUMENTS', 'Usage: diff-review service status|start|restart|stop')
+    }
+    const status = await runService(command, fileURLToPath(import.meta.url))
+    console.log(formatServiceStatus(status))
+    if (status.state === 'unhealthy') process.exitCode = 1
     return
   }
 
@@ -188,39 +209,7 @@ function hasUnstagedChanges(repositoryPath: string): Promise<boolean> {
 }
 
 async function ensureDaemon(): Promise<void> {
-  if (await daemonIsReady()) return
-
-  const dataDirectory = process.env.DIFF_REVIEW_DATA_DIR ?? path.join(homedir(), '.diff-review')
-  mkdirSync(dataDirectory, { recursive: true })
-  const log = openSync(path.join(dataDirectory, 'daemon.log'), 'a')
-  const cliPath = fileURLToPath(import.meta.url)
-  const child = spawn(process.execPath, [cliPath, 'daemon', 'serve'], {
-    detached: true,
-    stdio: ['ignore', log, log],
-    env: process.env,
-  })
-  child.unref()
-  closeSync(log)
-
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    await delay(100)
-    if (await daemonIsReady()) return
-  }
-  throw new AppError(
-    'DAEMON_START_FAILED',
-    `Could not start the local daemon. See ${path.join(dataDirectory, 'daemon.log')}`,
-  )
-}
-
-async function daemonIsReady(): Promise<boolean> {
-  try {
-    const response = await fetch(`${BASE_URL}/api/health`)
-    if (!response.ok) return false
-    const body = (await response.json()) as { app?: string; ok?: boolean }
-    return body.app === 'diff-review' && body.ok === true
-  } catch {
-    return false
-  }
+  await startService(fileURLToPath(import.meta.url))
 }
 
 async function requestJson<T>(pathname: string, init?: RequestInit): Promise<T> {
@@ -334,6 +323,7 @@ function printHelp(): void {
   diff-review --staged | --unstaged | --pr <number>
   diff-review session create [revision-range] [--repo <path>] [--json]
   diff-review setup-skill
+  diff-review service status | start | restart | stop
   diff-review annotate <session-id> --comment <text> [--json]
   diff-review annotate <session-id> --file <path> \\
     (--old-line <line[-end]> | --new-line <line[-end]>) \\
@@ -344,12 +334,10 @@ Examples:
   diff-review origin/master...HEAD
   diff-review session create --pr 42 --json
   diff-review setup-skill
+  diff-review service status
   diff-review annotate drs_abc123 --comment "Summary of the change"
   diff-review annotate drs_abc123 --file src/retry.ts --new-line 42-48 \\
     --comment "Generated code; safe to skim" --importance 0
 `)
 }
 
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds))
-}

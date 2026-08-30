@@ -94,6 +94,8 @@ import {
 
 import { remarkIssueReferences } from '../shared/markdown'
 import {
+  isLocalChangesOid,
+  reviewTargetForRepositorySwitch,
   reviewTargetsEqual,
   sessionUsesFullCommitRange,
   targetSupportsStaging,
@@ -969,6 +971,7 @@ function ReviewWorkspace({
     storedPanelWidth('right', 310, 240, 480),
   )
   const [busy, setBusy] = useState(false)
+  const [repositorySwitchError, setRepositorySwitchError] = useState<string | null>(null)
   const [commentsCopied, setCommentsCopied] = useState(false)
   const [panelsOpen, setPanelsOpen] = useState(false)
   const compactLayout = useCompactReviewLayout()
@@ -1429,6 +1432,34 @@ function ReviewWorkspace({
     }
   }, [onSessionChange, session.id])
 
+  const selectRepository = useCallback(async (repositoryPath: string) => {
+    if (repositoryPath === session.repositoryRoot) return
+    setRepositorySwitchError(null)
+    setBusy(true)
+    try {
+      const ranges = session.target.kind === 'range'
+        ? await Promise.all([
+          getRepositoryInfo(session.repositoryRoot),
+          getRepositoryInfo(repositoryPath),
+        ]).then(([source, destination]) => ({
+          sourceBranchRange: source.branchRange,
+          destinationBranchRange: destination.branchRange,
+        }))
+        : {}
+      const target = reviewTargetForRepositorySwitch(session.target, ranges)
+      if (target == null) {
+        onOpenPullRequests(repositoryPath)
+        return
+      }
+      const next = await createSession({ repositoryPath, target })
+      onOpenSession(next.id)
+    } catch (caught) {
+      setRepositorySwitchError(queryErrorMessage(caught) ?? 'Could not open repository.')
+    } finally {
+      setBusy(false)
+    }
+  }, [onOpenPullRequests, onOpenSession, session.repositoryRoot, session.target])
+
   const humanAnnotations = useMemo(() => session.annotations.filter(
     (annotation) =>
       annotation.archivedAt == null &&
@@ -1611,7 +1642,7 @@ function ReviewWorkspace({
         <RepositoryPicker
           repositoryRoot={session.repositoryRoot}
           repositoryName={session.repositoryName}
-          onSelect={onOpenPullRequests}
+          onSelect={(repositoryPath) => void selectRepository(repositoryPath)}
         />
         <ReviewSourcePicker
           repositoryRoot={session.repositoryRoot}
@@ -1758,7 +1789,9 @@ function ReviewWorkspace({
               aria-labelledby="pull-request-overview-tab"
               aria-hidden={pullRequestView !== 'overview'}
             >
-              {error != null && <div className="error-banner">{error}</div>}
+              {(error ?? repositorySwitchError) != null && (
+                <div className="error-banner">{error ?? repositorySwitchError}</div>
+              )}
               <PullRequestConversation
                 details={pullRequest.details}
                 oldRevision={session.id !== pullRequest.currentSessionId}
@@ -1801,7 +1834,9 @@ function ReviewWorkspace({
               }
             }}
           >
-            {error != null && <div className="error-banner">{error}</div>}
+            {(error ?? repositorySwitchError) != null && (
+              <div className="error-banner">{error ?? repositorySwitchError}</div>
+            )}
             {items.length === 0 ? (
               <EmptyDiff
                 session={session}
@@ -4087,9 +4122,13 @@ function CommitPicker({
   const selectedCount = selectedEnd - selectedStart + 1
   const firstSelected = session.commits[selectedStart]
   const lastSelected = session.commits[selectedEnd]
-  const selectionLabel = selectedCount === 1
-    ? `${firstSelected?.shortOid} ${firstSelected?.subject}`
-    : `${firstSelected?.shortOid}…${lastSelected?.shortOid} · ${selectedCount} commits`
+  const selectionLabel = selectedCount === 1 && isLocalChangesOid(firstSelected?.oid)
+    ? 'Local changes'
+    : selectedCount === 1
+      ? `${firstSelected?.shortOid} ${firstSelected?.subject}`
+      : isLocalChangesOid(lastSelected?.oid)
+        ? `${firstSelected?.shortOid}…local · ${selectedCount}`
+        : `${firstSelected?.shortOid}…${lastSelected?.shortOid} · ${selectedCount} commits`
 
   const choose = async (startIndex: number, endIndex: number) => {
     const start = session.commits[Math.min(startIndex, endIndex)]
@@ -4151,15 +4190,17 @@ function CommitPicker({
                     </Checkbox.Root>
                     <span className="commit-option-copy">
                       <span>{commit.subject}</span>
-                      <small>
-                        <code>{commit.shortOid}</code>
-                        <span>{commit.author}</span>
-                        {commit.authoredAt !== '' && (
-                          <time dateTime={commit.authoredAt} title={formatTimestamp(commit.authoredAt)}>
-                            {relativeTimeAgo(commit.authoredAt)}
-                          </time>
-                        )}
-                      </small>
+                      {!isLocalChangesOid(commit.oid) && (
+                        <small>
+                          <code>{commit.shortOid}</code>
+                          <span>{commit.author}</span>
+                          {commit.authoredAt !== '' && (
+                            <time dateTime={commit.authoredAt} title={formatTimestamp(commit.authoredAt)}>
+                              {relativeTimeAgo(commit.authoredAt)}
+                            </time>
+                          )}
+                        </small>
+                      )}
                     </span>
                   </label>
                 )

@@ -20,6 +20,7 @@ import { afterAll, describe, expect, test } from 'vitest'
 import {
   getRepositoryInfo,
   resolveCommitSpan,
+  resolveSelectedSpan,
   rerenderCommitReview,
   listMergeConflictFiles,
   resolvePullRequestRevision,
@@ -29,6 +30,7 @@ import {
   stageReviewFile,
   validateAnnotationTarget,
 } from '../src/server/git.js'
+import { LOCAL_CHANGES_OID } from '../src/shared/types.js'
 import { ApiHandler } from '../src/server/api.js'
 import { PiReviewRunner } from '../src/server/pi.js'
 import { ReviewStore } from '../src/server/store.js'
@@ -155,7 +157,54 @@ describe('Git review targets', () => {
     expect(review.gitCommand).toBe("git diff --merge-base 'origin/main'")
     expect(review.oldSnapshot.kind).toBe('commit')
     expect(review.newSnapshot.kind).toBe('worktree')
-    expect(review.commits).toEqual([])
+    expect(review.commits.map((commit) => commit.subject)).toEqual([
+      'feature one',
+      'feature two',
+      'merge side',
+      'Local changes',
+    ])
+    expect(review.commits.at(-1)?.oid).toBe(LOCAL_CHANGES_OID)
+  })
+
+  test('can select local changes or a commit span ending in the working tree',
+    async () => {
+    const review = await resolveTarget(fixture.repository, { kind: 'branch-worktree' })
+    const headCommit = review.commits.at(-2)
+    expect(headCommit).toBeDefined()
+
+    const localOnly = await resolveSelectedSpan(
+      fixture.repository,
+      LOCAL_CHANGES_OID,
+      LOCAL_CHANGES_OID,
+    )
+    expect(localOnly.label).toBe('Local changes')
+    expect(localOnly.newSnapshot.kind).toBe('worktree')
+    expect(localOnly.patch).toContain('two edited')
+    expect(localOnly.patch).toContain('staged content')
+    expect(localOnly.patch).toContain('untracked content')
+    expect(localOnly.patch).not.toContain('\n+feature one')
+    expect(localOnly.patch).not.toContain('from side')
+
+    const headAndLocal = await resolveSelectedSpan(
+      fixture.repository,
+      headCommit!.oid,
+      LOCAL_CHANGES_OID,
+    )
+    expect(headAndLocal.newSnapshot.kind).toBe('worktree')
+    expect(headAndLocal.patch).toContain('from side')
+    expect(headAndLocal.patch).toContain('two edited')
+    expect(headAndLocal.patch).toContain('untracked content')
+    expect(headAndLocal.patch).not.toContain('\n+feature one')
+
+    const committedOnly = await resolveSelectedSpan(
+      fixture.repository,
+      headCommit!.oid,
+      headCommit!.oid,
+    )
+    expect(committedOnly.newSnapshot.kind).toBe('commit')
+    expect(committedOnly.patch).toContain('from side')
+    expect(committedOnly.patch).not.toContain('two edited')
+    expect(committedOnly.patch).not.toContain('untracked content')
   })
 
   test('validates ranges in new, old, deleted, and untracked file snapshots', async () => {
@@ -1563,6 +1612,76 @@ describe('local review storage', () => {
       if (existsSync(worktree)) {
         execFileSync('git', ['worktree', 'remove', '--force', worktree], { cwd: fixture.repository })
       }
+    }
+  })
+
+  test('lets branch + local reviews select local changes from the commit timeline', async () => {
+    const store = new ReviewStore(path.join(fixture.directory, 'branch-worktree-selection.db'))
+    const handler = new ApiHandler(store, null)
+    const server = createServer(handler.handle)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address() as AddressInfo
+    const baseUrl = `http://127.0.0.1:${port}`
+
+    try {
+      const created = await fetch(`${baseUrl}/api/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repositoryPath: fixture.repository,
+          target: { kind: 'branch-worktree' },
+        }),
+      })
+      expect(created.status).toBe(201)
+      const session = await created.json() as {
+        id: string
+        commits: Array<{ oid: string }>
+        patch: string
+      }
+      expect(session.commits.at(-1)?.oid).toBe(LOCAL_CHANGES_OID)
+      expect(session.patch).toContain('feature one')
+      expect(session.patch).toContain('two edited')
+
+      const selected = await fetch(`${baseUrl}/api/sessions/${session.id}/selection`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ start: LOCAL_CHANGES_OID, end: LOCAL_CHANGES_OID }),
+      })
+      expect(selected.status).toBe(200)
+      const local = await selected.json() as {
+        commits: Array<{ oid: string }>
+        selectedCommitStart: string
+        selectedCommitEnd: string
+        patch: string
+        targetLabel: string
+      }
+      expect(local.commits.map((commit) => commit.oid)).toEqual(
+        session.commits.map((commit) => commit.oid),
+      )
+      expect(local.selectedCommitStart).toBe(LOCAL_CHANGES_OID)
+      expect(local.selectedCommitEnd).toBe(LOCAL_CHANGES_OID)
+      expect(local.targetLabel).toBe('Local changes')
+      expect(local.patch).toContain('two edited')
+      expect(local.patch).not.toContain('\n+feature one')
+
+      const restored = await fetch(`${baseUrl}/api/sessions/${session.id}/selection`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          start: session.commits[0]!.oid,
+          end: LOCAL_CHANGES_OID,
+        }),
+      })
+      expect(restored.status).toBe(200)
+      const full = await restored.json() as { patch: string; targetLabel: string }
+      expect(full.targetLabel).toBe('Current branch + working tree')
+      expect(full.patch).toContain('feature one')
+      expect(full.patch).toContain('two edited')
+    } finally {
+      handler.close()
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error == null ? resolve() : reject(error))
+      })
     }
   })
 

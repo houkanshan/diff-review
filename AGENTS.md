@@ -12,11 +12,5 @@ Rebuild after making code changes. Restart the Diff Review daemon when a change 
 
 `daemon serve` is a long-lived foreground process. Never start it in a tool call that waits for exit; that call will hang until timeout.
 
-To restart: stop the existing listener on port `47658` (or `$DIFF_REVIEW_PORT`), build, then start the new binary detached and return immediately. Example:
-
-```sh
-nohup node dist/node/server/cli.js daemon serve >>"${DIFF_REVIEW_DATA_DIR:-$HOME/.diff-review}/daemon.log" 2>&1 &
-```
-
-Confirm readiness with `GET http://127.0.0.1:47658/api/health` (`ok: true`). Do not keep the serve process in the foreground of the agent session.
+To restart after a build: `node dist/node/server/cli.js service restart`. Confirm readiness with `GET http://127.0.0.1:47658/api/health` (`ok: true`). Do not keep the serve process in the foreground of the agent session.
 

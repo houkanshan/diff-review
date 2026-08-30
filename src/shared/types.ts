@@ -89,6 +89,33 @@ export function reviewTargetsEqual(left: ReviewTarget, right: ReviewTarget): boo
   return true
 }
 
+/** Target to open after switching repositories. `null` means the pull request list. */
+export function reviewTargetForRepositorySwitch(
+  target: ReviewTarget,
+  ranges: {
+    sourceBranchRange?: string | null
+    destinationBranchRange?: string | null
+  } = {},
+): ReviewTarget | null {
+  switch (target.kind) {
+    case 'pr':
+      return null
+    case 'range': {
+      const source = ranges.sourceBranchRange?.trim() ?? null
+      const destination = ranges.destinationBranchRange?.trim() ?? null
+      if (source != null && destination != null && target.expression.trim() === source) {
+        return { kind: 'range', expression: destination }
+      }
+      return target
+    }
+    case 'worktree':
+    case 'branch-worktree':
+    case 'unstaged':
+    case 'staged':
+      return target
+  }
+}
+
 export type SessionUpdatedEvent = {
   type: 'session-updated'
   sessionId: string
@@ -109,6 +136,22 @@ export interface CommitSummary {
   subject: string
   author: string
   authoredAt: string
+}
+
+export const LOCAL_CHANGES_OID = 'local-changes'
+
+export function isLocalChangesOid(oid: string | null | undefined): boolean {
+  return oid === LOCAL_CHANGES_OID
+}
+
+export function localChangesCommit(): CommitSummary {
+  return {
+    oid: LOCAL_CHANGES_OID,
+    shortOid: 'local',
+    subject: 'Local changes',
+    author: '',
+    authoredAt: '',
+  }
 }
 
 export interface SessionAnnotation {

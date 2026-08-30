@@ -38,6 +38,7 @@ import {
   getRepositoryInfo,
   readSnapshotFile,
   resolveCommitSpan,
+  resolveSelectedSpan,
   resolvePinnedCommitDiff,
   rerenderCommitReview,
   listMergeConflictFiles,
@@ -451,7 +452,7 @@ export class ApiHandler {
           )
         : isFullRange
           ? await resolveTarget(session.repositoryRoot, session.target, session.ignoreWhitespace)
-          : await resolveCommitSpan(
+          : await resolveSelectedSpan(
               session.repositoryRoot,
               input.start,
               input.end,
@@ -488,7 +489,7 @@ export class ApiHandler {
           )
         : isFullRange || session.selectedCommitStart == null || session.selectedCommitEnd == null
           ? await resolveTarget(session.repositoryRoot, session.target, ignoreWhitespace)
-          : await resolveCommitSpan(
+          : await resolveSelectedSpan(
               session.repositoryRoot,
               session.selectedCommitStart,
               session.selectedCommitEnd,

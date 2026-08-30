@@ -35,6 +35,17 @@ diff-review --pr 42
 
 The command starts the loopback-only daemon when needed and opens the review in a browser. In a multi-commit review, use the header's **Commits** dropdown: click a commit to view it alone or Shift-click another commit to select a continuous range.
 
+Control the daemon explicitly with:
+
+```bash
+diff-review service status
+diff-review service start
+diff-review service restart
+diff-review service stop
+```
+
+It listens on `http://127.0.0.1:47658` by default (`DIFF_REVIEW_PORT`).
+
 ## Agent annotations
 
 An already-running agent can open a session without opening the browser:

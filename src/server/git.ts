@@ -5,6 +5,8 @@ import path from 'node:path'
 
 import {
   type CommitSummary,
+  isLocalChangesOid,
+  localChangesCommit,
   type RepositoryInfo,
   type ReviewTarget,
   targetSupportsStaging,
@@ -217,6 +219,22 @@ export async function resolveCommitSpan(
   }
 }
 
+export async function resolveSelectedSpan(
+  repositoryPath: string,
+  oldestCommit: string,
+  newestCommit: string,
+  ignoreWhitespace = false,
+): Promise<ResolvedReview> {
+  if (!isLocalChangesOid(newestCommit)) {
+    return resolveCommitSpan(repositoryPath, oldestCommit, newestCommit, ignoreWhitespace)
+  }
+
+  const root = await resolveRepository(repositoryPath)
+  const resolved = await resolveWorktreeSpan(root, oldestCommit, ignoreWhitespace)
+  resolved.unstagedPaths = await listUnstagedPaths(root)
+  return resolved
+}
+
 export async function readSnapshotFile(
   repositoryPath: string,
   snapshot: SnapshotRef,
@@ -338,6 +356,27 @@ async function resolveBranchWorktree(
     gitCommand: `git diff${ignoreWhitespace ? ' --ignore-all-space' : ''} --merge-base ${shellQuote(defaultBranch)}`,
     patch,
     oldSnapshot: { kind: 'commit', id: base },
+    newSnapshot: { kind: 'worktree', id: contentId(patch) },
+    commits: [...await listCommits(root, base, head), localChangesCommit()],
+  }
+}
+
+async function resolveWorktreeSpan(
+  root: string,
+  oldestCommit: string,
+  ignoreWhitespace: boolean,
+): Promise<ResolvedReview> {
+  const localOnly = isLocalChangesOid(oldestCommit)
+  const oldCommit = localOnly
+    ? await resolveCommit(root, 'HEAD')
+    : await firstParentOrEmptyTree(root, oldestCommit)
+  const trackedPatch = await gitDiff(root, [oldCommit], ignoreWhitespace)
+  const patch = trackedPatch + (await untrackedPatch(root, ignoreWhitespace))
+  return {
+    label: localOnly ? 'Local changes' : `${shortOid(oldestCommit)}…local`,
+    gitCommand: `git diff${ignoreWhitespace ? ' --ignore-all-space' : ''} ${shellQuote(oldCommit)}`,
+    patch,
+    oldSnapshot: { kind: 'commit', id: oldCommit },
     newSnapshot: { kind: 'worktree', id: contentId(patch) },
     commits: [],
   }
