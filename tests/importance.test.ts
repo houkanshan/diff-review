@@ -110,6 +110,30 @@ describe('hover range rendering', () => {
     expect(oldContext.attributes.has('data-review-hover')).toBe(false)
     expect(newContext.attributes.has('data-review-hover')).toBe(true)
   })
+
+  test('clears the range when the hovered annotation is archived', () => {
+    const addition = lineElement({ lineType: 'change-addition', line: '8' })
+    const host = {
+      shadowRoot: {
+        querySelectorAll(selector: string) {
+          if (selector === '[data-review-hover]') {
+            return addition.attributes.has('data-review-hover') ? [addition] : []
+          }
+          if (selector === '[data-line-type]') return [addition]
+          return []
+        },
+      },
+    } as unknown as HTMLElement
+
+    applyHoveredRange(host, { item: { id: 'src/change.ts' } }, annotation(null))
+    expect(addition.attributes.has('data-review-hover')).toBe(true)
+
+    applyHoveredRange(host, { item: { id: 'src/change.ts' } }, {
+      ...annotation(null),
+      archivedAt: '2026-01-02T00:00:00Z',
+    })
+    expect(addition.attributes.has('data-review-hover')).toBe(false)
+  })
 })
 
 class FakeStyle {

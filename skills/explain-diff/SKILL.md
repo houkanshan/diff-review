@@ -10,6 +10,8 @@ Help someone review this diff. Explain the change in the context of what moved, 
 
 Example: `retry()` deleted from `a.ts` and added in `b.ts` → one note that this is a move into `b.ts`, and why that home makes sense.
 
+Explain in plain human language, with no jargon and speak coherently.
+
 ## Tools
 
 `diff-review` starts a local daemon when needed and writes notes onto a review session.

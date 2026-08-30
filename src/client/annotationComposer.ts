@@ -69,6 +69,16 @@ export function visibleAnnotationsForFile(
   )
 }
 
+export function activeAnnotationById(
+  annotations: readonly SessionAnnotation[],
+  id: string | null,
+): SessionAnnotation | null {
+  if (id == null) return null
+  return annotations.find((annotation) =>
+    annotation.id === id && annotation.archivedAt == null,
+  ) ?? null
+}
+
 export function fileIdForAnnotation(
   annotation: { filePath: string },
   files: readonly { name: string; prevName?: string | null }[],

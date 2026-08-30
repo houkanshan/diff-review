@@ -73,7 +73,7 @@ export function applyHoveredRange(
   for (const element of root.querySelectorAll<HTMLElement>('[data-review-hover]')) {
     element.removeAttribute('data-review-hover')
   }
-  if (annotation == null || annotation.filePath !== context.item.id) return
+  if (annotation == null || annotation.archivedAt != null || annotation.filePath !== context.item.id) return
 
   for (const element of root.querySelectorAll<HTMLElement>('[data-line-type]')) {
     const line = Number(element.dataset.line ?? element.dataset.columnNumber)

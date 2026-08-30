@@ -175,6 +175,7 @@ import { publishEmbedLocation } from './embedBridge'
 import { subscribeSessionEvents } from './sessionEvents'
 import {
   EMPTY_COMPOSER_DRAFT,
+  activeAnnotationById,
   areCodeViewSelectionsEqual,
   buildCodeViewItems,
   fileIdForAnnotation,
@@ -992,10 +993,7 @@ function ReviewWorkspace({
   composerSelectionRef.current = composerSelection
   onReloadRef.current = onReload
   annotationsRef.current = session.annotations
-  hoveredAnnotationRef.current =
-    hoveredAnnotationId == null
-      ? null
-      : session.annotations.find((annotation) => annotation.id === hoveredAnnotationId) ?? null
+  hoveredAnnotationRef.current = activeAnnotationById(session.annotations, hoveredAnnotationId)
   sessionContentsRef.current = { id: session.id, contentKey: patchContentKey(session.patch) }
 
   useDocumentChrome(
@@ -1213,11 +1211,16 @@ function ReviewWorkspace({
     for (const node of root.querySelectorAll<HTMLElement>('diffs-container')) {
       const fileId = node.querySelector('[data-file-id]')?.getAttribute('data-file-id')
       if (fileId == null) continue
-      applyHoveredRange(node, { item: { id: fileId } }, hovered)
+      const context = { item: { id: fileId } }
+      applyImportance(node, 'update', context, annotationsRef.current)
+      applyHoveredRange(node, context, hovered)
     }
   }, [hoveredAnnotationId, session.annotations])
 
   const setArchived = useCallback(async (annotationId: string, archived: boolean) => {
+    if (archived) {
+      setHoveredAnnotationId((current) => current === annotationId ? null : current)
+    }
     await setAnnotationArchived(session.id, annotationId, archived)
     await onReload()
   }, [onReload, session.id])
@@ -1250,6 +1253,7 @@ function ReviewWorkspace({
   }, [onReload, session.id])
 
   const archiveAll = useCallback(async () => {
+    setHoveredAnnotationId(null)
     onSessionChange(await archiveAllAnnotations(session.id))
   }, [onSessionChange, session.id])
 
@@ -4754,7 +4758,9 @@ function Inspector({
           value={[view]}
           onValueChange={(value) => {
             const next = value.at(0)
-            if (next === 'active' || next === 'archived') setView(next)
+            if (next !== 'active' && next !== 'archived') return
+            onHoverAnnotation(null)
+            setView(next)
           }}
         >
           <Toggle value="active">Active {activeCount}</Toggle>
@@ -4854,7 +4860,9 @@ function Inspector({
                   key={annotation.id}
                   className={`note-card ${annotation.source}${fileIdForAnnotation(annotation, files) === activeFilePath ? ' is-active' : ''}`}
                   data-file-path={fileIdForAnnotation(annotation, files)}
-                  onPointerEnter={() => onHoverAnnotation(annotation.id)}
+                  onPointerEnter={() => {
+                    if (view === 'active') onHoverAnnotation(annotation.id)
+                  }}
                   onPointerLeave={() => onHoverAnnotation(null)}
                 >
                   <button className="note-target" onClick={() => onNavigate(annotation)}>

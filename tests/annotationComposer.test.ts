@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 import type { CodeViewLineSelection, FileDiffMetadata } from '@pierre/diffs'
 
 import {
+  activeAnnotationById,
   areReviewAnnotationsEqual,
   annotationCoversLine,
   annotationsAtDifftasticRow,
@@ -53,6 +54,20 @@ function selection(id: string, line = 8): CodeViewLineSelection {
     range: { start: line, end: line, side: 'additions' },
   }
 }
+
+describe('active annotation lookup', () => {
+  test('ignores archived annotations for hover highlight', () => {
+    const live = annotation('src/a.ts', 'note-1')
+    const archived = {
+      ...annotation('src/a.ts', 'note-2'),
+      archivedAt: '2026-01-02T00:00:00.000Z',
+    }
+
+    expect(activeAnnotationById([live, archived], 'note-1')).toBe(live)
+    expect(activeAnnotationById([live, archived], 'note-2')).toBeNull()
+    expect(activeAnnotationById([live, archived], null)).toBeNull()
+  })
+})
 
 describe('annotation composer items', () => {
   test('attaches a composer annotation only to the selected file', () => {

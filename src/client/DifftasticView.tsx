@@ -12,6 +12,7 @@ import type { ThemedToken } from 'shiki'
 
 import { ClientError, getDifftasticAvailability, getDifftasticFile, getFileContents } from './api'
 import {
+  activeAnnotationById,
   annotationCoversLine,
   annotationsAtDifftasticRow,
   placeDifftasticAnnotations,
@@ -197,7 +198,7 @@ function DifftasticFiles({
   renderAnnotation,
 }: DifftasticViewProps) {
   const hover = useMemo(() => ({
-    annotation: session.annotations.find((annotation) => annotation.id === hoveredAnnotationId) ?? null,
+    annotation: activeAnnotationById(session.annotations, hoveredAnnotationId),
     onHover: onHoverAnnotation,
     renderAnnotation,
   }), [hoveredAnnotationId, onHoverAnnotation, renderAnnotation, session.annotations])
@@ -713,6 +714,7 @@ function lineInHoveredRange(
   lineNumber: number | null,
 ): boolean {
   return annotation != null &&
+    annotation.archivedAt == null &&
     lineNumber != null &&
     annotationCoversLine(annotation, side, lineNumber)
 }
