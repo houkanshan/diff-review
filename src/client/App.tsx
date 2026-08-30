@@ -171,6 +171,7 @@ import { DifftasticView, scrollDifftasticTarget } from './DifftasticView'
 import { OpenInEditorButton } from './OpenInEditorButton'
 import { ShortcutTooltip } from './ShortcutTooltip'
 import { showCopiedToast } from './Toasts'
+import { publishEmbedLocation } from './embedBridge'
 import { subscribeSessionEvents } from './sessionEvents'
 import {
   EMPTY_COMPOSER_DRAFT,
@@ -277,6 +278,10 @@ function pendingReviewComments(session: ReviewSession): SessionAnnotation[] {
 export default function App() {
   const theme = useThemePreference()
   const [route, setRoute] = useState<AppRoute>(() => routeFromLocation())
+
+  useEffect(() => {
+    publishEmbedLocation()
+  }, [route])
 
   useEffect(() => {
     const onPopState = () => setRoute(routeFromLocation())

@@ -30,7 +30,7 @@ Default bind: `127.0.0.1:47658` (`DIFF_REVIEW_PORT` / `DIFF_REVIEW_HOST`; host m
 | Store (`src/server/store.ts`) | SQLite CRUD; IDs `drs_`, `ann_`, `pir_` | shared types |
 | GitHub (`src/server/github.ts`) | `gh` CLI / GraphQL; cache and dedupe | `command.ts` |
 | Pi (`src/server/pi.ts`) | Detached PR worktrees and Pi sessions | store, git |
-| Client (`src/client`) | Routes, `@pierre/diffs` / difftastic UI, annotation composer | `/api/*`, `src/shared` |
+| Client (`src/client`) | Routes, `@pierre/diffs` / difftastic UI, annotation composer; loopback-parent embed location bridge | `/api/*`, `src/shared` |
 | Shared (`src/shared`) | Types and pure helpers | nothing runtime-specific |
 
 Build: Vite → `dist/client`; `tsc` (`tsconfig.server.json`) → `dist/node`. Production daemon serves both API and static client. Dev: Vite `:5173` proxies `/api` to the daemon.
@@ -51,7 +51,7 @@ Annotations: user or agent; optional GitHub `review-comment` intent on PRs. Agen
 
 **Open a review.** CLI `ensureDaemon()` → `POST /api/sessions` → resolve repo + target → create or reuse session → open `/s/{sessionId}`. PR sessions redirect to `/pull-requests`.
 
-**Render diffs.** Client parses `session.patch` with `@pierre/diffs`. File bytes come from `GET /api/sessions/:id/file`. Optional `GET .../difftastic` runs the `difft` CLI.
+**Render diffs.** Client parses `session.patch` with `@pierre/diffs`. File bytes come from `GET /api/sessions/:id/file`. Optional `GET .../difftastic` runs the `difft` CLI. When embedded, the client accepts a nonce handshake only from an HTTP loopback parent and reports route changes back to that exact parent origin with `postMessage`; the daemon remains directly loopback-served rather than reverse-proxied.
 
 **Annotate.** Browser composer or `diff-review annotate` → `POST /api/sessions/:id/annotations` → `validateAnnotationTarget` → SQLite → SSE `session-updated`. Client SSE uses a Web Lock leader plus BroadcastChannel so one tab holds the stream.
 

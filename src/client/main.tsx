@@ -4,8 +4,11 @@ import { Tooltip } from '@base-ui/react/tooltip'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import App from './App'
+import { installEmbedBridge } from './embedBridge'
 import { ToastHost } from './Toasts'
 import './styles.css'
+
+installEmbedBridge()
 
 const queryClient = new QueryClient({
   defaultOptions: {
