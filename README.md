@@ -11,11 +11,13 @@ The daemon has no authentication. It binds only to loopback (`127.0.0.1` / `loca
 Requires Node.js 22.12 or newer and Git. GitHub PR review also requires an authenticated [GitHub CLI](https://cli.github.com/).
 
 ```bash
-npm install
-npm run build
-npm link
+pnpm install
+pnpm run build
+pnpm link
 diff-review setup-skill
 ```
+
+`pnpm link` registers this package globally and puts the `diff-review` binary on your PATH (the directory from `pnpm bin -g`; run `pnpm setup` if that directory is missing). Confirm with `which diff-review` that it points at this checkout. If an older `npm link` still wins, remove it with `npm unlink -g diff-review`.
 
 `setup-skill` installs the bundled `/explain-diff` skill at `~/.agents/skills/explain-diff/SKILL.md`. Run it again after updating Diff Review to refresh the skill.
 
@@ -84,8 +86,8 @@ Diff comments default to local annotations stored in `~/.diff-review/reviews.db`
 ## Development
 
 ```bash
-npm run dev
-npm test
-npm run typecheck
-npm run build
+pnpm run dev
+pnpm test
+pnpm run typecheck
+pnpm run build
 ```
