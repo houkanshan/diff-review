@@ -109,47 +109,69 @@ export function assistantTextFromContent(content: unknown): string {
 }
 
 function activeMessageBranch(entries: readonly unknown[]): SessionMessageEntry[] {
-  const messages: SessionMessageEntry[] = []
+  const nodes: SessionTreeEntry[] = []
   for (const entry of entries) {
-    const parsed = parseMessageEntry(entry)
-    if (parsed != null) messages.push(parsed)
+    const parsed = parseTreeEntry(entry)
+    if (parsed != null) nodes.push(parsed)
   }
-  if (messages.length === 0) return []
-  const byId = new Map(messages.map((entry) => [entry.id, entry]))
+  if (nodes.length === 0) return []
+  const byId = new Map(nodes.map((entry) => [entry.id, entry]))
   const children = new Set<string>()
-  for (const entry of messages) {
+  for (const entry of nodes) {
     if (entry.parentId != null) children.add(entry.parentId)
   }
-  let leaf = [...messages].reverse().find((entry) => !children.has(entry.id)) ?? messages.at(-1)
-  const branch: SessionMessageEntry[] = []
+  let leaf = [...nodes].reverse().find((entry) => !children.has(entry.id)) ?? nodes.at(-1)
+  const branch: SessionTreeEntry[] = []
   const seen = new Set<string>()
   while (leaf != null && !seen.has(leaf.id)) {
     seen.add(leaf.id)
     branch.push(leaf)
     leaf = leaf.parentId == null ? undefined : byId.get(leaf.parentId)
   }
-  return branch.reverse()
+  return branch.reverse().filter(isMessageEntry)
 }
 
-function parseMessageEntry(value: unknown): SessionMessageEntry | null {
+function isMessageEntry(entry: SessionTreeEntry): entry is SessionMessageEntry {
+  return entry.type === 'message' && entry.message != null
+}
+
+interface SessionTreeEntry {
+  type: string
+  id: string
+  parentId: string | null
+  timestamp: string
+  message?: SessionMessageEntry['message']
+}
+
+function parseTreeEntry(value: unknown): SessionTreeEntry | null {
   if (typeof value !== 'object' || value == null) return null
   const entry = value as Record<string, unknown>
-  if (entry.type !== 'message' || typeof entry.id !== 'string') return null
-  if (typeof entry.message !== 'object' || entry.message == null) return null
-  const message = entry.message as Record<string, unknown>
-  if (typeof message.role !== 'string') return null
+  if (typeof entry.id !== 'string') return null
+  const parentId = typeof entry.parentId === 'string' ? entry.parentId : null
+  const timestamp = typeof entry.timestamp === 'string' ? entry.timestamp : ''
+  if (entry.type === 'message') {
+    if (typeof entry.message !== 'object' || entry.message == null) return null
+    const message = entry.message as Record<string, unknown>
+    if (typeof message.role !== 'string') return null
+    return {
+      type: 'message',
+      id: entry.id,
+      parentId,
+      timestamp,
+      message: {
+        role: message.role,
+        content: message.content,
+        timestamp: typeof message.timestamp === 'number' ? message.timestamp : undefined,
+        toolCallId: typeof message.toolCallId === 'string' ? message.toolCallId : undefined,
+        toolName: typeof message.toolName === 'string' ? message.toolName : undefined,
+      },
+    }
+  }
   return {
-    type: 'message',
+    type: typeof entry.type === 'string' ? entry.type : 'unknown',
     id: entry.id,
-    parentId: typeof entry.parentId === 'string' ? entry.parentId : null,
-    timestamp: typeof entry.timestamp === 'string' ? entry.timestamp : '',
-    message: {
-      role: message.role,
-      content: message.content,
-      timestamp: typeof message.timestamp === 'number' ? message.timestamp : undefined,
-      toolCallId: typeof message.toolCallId === 'string' ? message.toolCallId : undefined,
-      toolName: typeof message.toolName === 'string' ? message.toolName : undefined,
-    },
+    parentId,
+    timestamp,
   }
 }
 

@@ -410,6 +410,74 @@ svg {
   margin-bottom: 0;
 }
 
+.pi-chat-assistant [data-streamdown='code-block'] {
+  position: relative;
+  margin: 0 0 1.15em;
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface-inset);
+}
+
+.pi-chat-assistant [data-streamdown='code-block-header'] {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 56px 0 12px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.pi-chat-assistant [data-streamdown='code-block'] > :has(> [data-streamdown='code-block-actions']) {
+  height: 0;
+  margin: 0;
+  overflow: visible;
+}
+
+.pi-chat-assistant [data-streamdown='code-block-actions'] {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.pi-chat-assistant [data-streamdown='code-block-copy-button'],
+.pi-chat-assistant [data-streamdown='code-block-download-button'] {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  padding: 0;
+  place-items: center;
+  color: var(--faint);
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+}
+
+.pi-chat-assistant [data-streamdown='code-block-copy-button']:hover,
+.pi-chat-assistant [data-streamdown='code-block-download-button']:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.pi-chat-assistant [data-streamdown='code-block-copy-button'] svg,
+.pi-chat-assistant [data-streamdown='code-block-download-button'] svg {
+  width: 13px;
+  height: 13px;
+}
+
+.pi-chat-assistant [data-streamdown='code-block'] pre {
+  margin: 0;
+  padding: 8px 12px 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
 .pi-chat-work {
   color: var(--faint);
   font-size: 11px;

@@ -101,6 +101,63 @@ describe('projectPiChatTurns', () => {
     expect(turns[1]?.assistantText).toBe('B')
   })
 
+  test('walks through non-message session entries in the parent chain', () => {
+    const turns = projectPiChatTurns([
+      { type: 'session', id: 's1', timestamp: '2026-01-01T00:00:00.000Z' },
+      {
+        type: 'custom',
+        id: 'c1',
+        parentId: 's1',
+        timestamp: '2026-01-01T00:00:00.000Z',
+        customType: 'auto-title',
+      },
+      {
+        type: 'message',
+        id: 'u1',
+        parentId: 'c1',
+        timestamp: '2026-01-01T00:00:01.000Z',
+        message: { role: 'user', content: [{ type: 'text', text: 'first' }] },
+      },
+      {
+        type: 'session_info',
+        id: 'info1',
+        parentId: 'u1',
+        timestamp: '2026-01-01T00:00:01.100Z',
+      },
+      {
+        type: 'message',
+        id: 'a1',
+        parentId: 'info1',
+        timestamp: '2026-01-01T00:00:02.000Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'A' }] },
+      },
+      {
+        type: 'custom',
+        id: 'c2',
+        parentId: 'a1',
+        timestamp: '2026-01-01T00:00:02.100Z',
+        customType: 'auto-review-status',
+      },
+      {
+        type: 'message',
+        id: 'u2',
+        parentId: 'c2',
+        timestamp: '2026-01-01T00:00:03.000Z',
+        message: { role: 'user', content: [{ type: 'text', text: 'second' }] },
+      },
+      {
+        type: 'message',
+        id: 'a2',
+        parentId: 'u2',
+        timestamp: '2026-01-01T00:00:04.000Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'B' }] },
+      },
+    ])
+
+    expect(turns.map((turn) => turn.userText)).toEqual(['first', 'second'])
+    expect(turns.map((turn) => turn.assistantText)).toEqual(['A', 'B'])
+  })
+
   test('pages from the tail by turn id', () => {
     const turns = Array.from({ length: 5 }, (_, index) => ({
       id: `u${index + 1}`,
