@@ -66,6 +66,29 @@ describe('Git review targets', () => {
     expect(review.gitCommand).toBe("git diff 'origin/main...HEAD'")
   })
 
+  test('lists committer dates so amend updates the timestamp', async () => {
+    const isolated = createGitFixture()
+    try {
+      execFileSync('git', ['commit', '--amend', '--no-edit'], {
+        cwd: isolated.repository,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          GIT_AUTHOR_DATE: '2026-01-01T00:00:00Z',
+          GIT_COMMITTER_DATE: '2026-02-02T03:04:05Z',
+        },
+      })
+      const review = await resolveTarget(isolated.repository, {
+        kind: 'range',
+        expression: 'HEAD~1..HEAD',
+      })
+      expect(review.commits).toHaveLength(1)
+      expect(review.commits[0]?.authoredAt).toBe('2026-02-02T03:04:05Z')
+    } finally {
+      rmSync(isolated.directory, { recursive: true, force: true })
+    }
+  })
+
   test('can omit whitespace-only changes from a review', async () => {
     const review = await resolveTarget(
       fixture.repository,

@@ -593,7 +593,7 @@ async function listCommits(
     '--first-parent',
     '--reverse',
     '--date=iso-strict',
-    '--format=%H%x00%h%x00%s%x00%an%x00%aI%x1e',
+    '--format=%H%x00%h%x00%s%x00%an%x00%cI%x1e',
     `${oldRevision}..${newRevision}`,
   ])
 
