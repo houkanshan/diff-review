@@ -391,7 +391,11 @@ export class ApiHandler {
 
     if (method === 'POST' && piChatMatch != null) {
       const input = parseSendPiChatInput(await readJson(request))
-      sendJson(response, 202, await this.piReviews.send(piChatMatch[1] ?? '', input.message))
+      sendJson(
+        response,
+        202,
+        await this.piReviews.send(piChatMatch[1] ?? '', input.message, input.explain === true),
+      )
       return
     }
 
@@ -1021,7 +1025,13 @@ function parseSendPiChatInput(value: unknown): SendPiChatInput {
   if (typeof object.message !== 'string') {
     throw new AppError('INVALID_INPUT', 'message must be a string')
   }
-  return { message: object.message.trim() }
+  if (object.explain != null && typeof object.explain !== 'boolean') {
+    throw new AppError('INVALID_INPUT', 'explain must be a boolean')
+  }
+  return {
+    message: object.message.trim(),
+    explain: object.explain === true ? true : undefined,
+  }
 }
 
 async function resolvePullRequestCommitSelection(

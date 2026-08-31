@@ -127,9 +127,9 @@ export class PiReviewRunner {
     }
   }
 
-  async send(sessionId: string, message: string): Promise<PiChatPage> {
-    const trimmed = message.trim()
-    if (!trimmed) throw new AppError('INVALID_INPUT', 'Message is required')
+  async send(sessionId: string, message: string, explain = false): Promise<PiChatPage> {
+    const additional = message.trim()
+    if (!explain && !additional) throw new AppError('INVALID_INPUT', 'Message is required')
     if (!isPiInstalled()) {
       throw new AppError('COMMAND_NOT_FOUND', PI_INSTALL_HINT, 503)
     }
@@ -163,19 +163,28 @@ export class PiReviewRunner {
         session.revisionBaseOid,
         session.revisionHeadOid,
       )
+      const prompt = explain
+        ? buildExplainPrompt(
+            sessionId,
+            session.target.number,
+            session.revisionBaseOid,
+            session.revisionHeadOid,
+            additional,
+          )
+        : additional
       const overlay = createLiveOverlay({
         overlayId: randomUUID(),
         requestId: randomUUID(),
         afterTurnId,
         baseRevision: transcriptRevision(handle.watchPath ?? findPiSessionPath(run)),
-        userText: trimmed,
+        userText: prompt,
       })
       handle.overlay = overlay
       this.emitChat(sessionId, true)
       const response = await this.sendCommand(handle, {
         id: overlay.requestId,
         type: 'prompt',
-        message: trimmed,
+        message: prompt,
       })
       if (!response.success) {
         handle.overlay = {
@@ -683,6 +692,20 @@ function transcriptRevision(file: string | null): string {
   } catch {
     return 'none'
   }
+}
+
+function buildExplainPrompt(
+  sessionId: string,
+  pullRequestNumber: number,
+  baseOid: string,
+  headOid: string,
+  additionalInstructions: string,
+): string {
+  const extra = additionalInstructions.trim()
+  const userInstructions = extra
+    ? `\n\nAdditional instructions from the user:\n${extra}`
+    : ''
+  return `${buildReviewSystemPrompt(sessionId, pullRequestNumber, baseOid, headOid)}${userInstructions}`
 }
 
 function buildReviewSystemPrompt(

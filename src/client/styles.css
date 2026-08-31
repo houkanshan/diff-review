@@ -497,8 +497,61 @@ svg {
   border-color: var(--accent-border);
 }
 
+.pi-chat-composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.pi-chat-explain-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0;
+  color: var(--muted);
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.pi-chat-explain-toggle:hover {
+  color: var(--text);
+}
+
+.pi-chat-explain-toggle[data-checked] {
+  color: var(--text);
+}
+
+.pi-chat-explain-toggle:disabled {
+  opacity: 0.5;
+}
+
+.pi-chat-explain-checkbox {
+  width: 14px;
+  height: 14px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--input);
+}
+
+.pi-chat-explain-checkbox svg {
+  width: 10px;
+  height: 10px;
+}
+
+.pi-chat-explain-toggle[data-checked] .pi-chat-explain-checkbox {
+  color: var(--on-accent);
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
 .pi-chat-composer button[type='submit'] {
-  align-self: flex-end;
   height: 30px;
   padding: 0 12px;
   border: 0;

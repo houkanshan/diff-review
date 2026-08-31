@@ -172,10 +172,14 @@ export function getPiChat(
   return request(`/api/sessions/${encodeURIComponent(id)}/pi-chat${suffix}`)
 }
 
-export function sendPiChat(id: string, message: string): Promise<PiChatPage> {
+export function sendPiChat(
+  id: string,
+  message: string,
+  explain = false,
+): Promise<PiChatPage> {
   return request(`/api/sessions/${encodeURIComponent(id)}/pi-chat`, {
     method: 'POST',
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, explain: explain || undefined }),
     timeoutMs: 60_000,
   })
 }

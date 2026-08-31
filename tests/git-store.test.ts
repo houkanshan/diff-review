@@ -774,6 +774,17 @@ describe('local review storage', () => {
       const chat = runner.getChat(session.id)
       expect(chat.turns[0]?.userText).toBe('Emphasize how the data model changed.')
       expect(chat.turns[0]?.assistantText).toContain('Emphasize how the data model changed.')
+      await waitFor(() => runner.getChat(session.id).busy === false)
+      const explained = await runner.send(session.id, 'focus on auth', true)
+      expect(explained.overlay?.userText).toContain('Help someone review PR #42.')
+      expect(explained.overlay?.userText).toContain(`diff-review annotate ${session.id}`)
+      expect(explained.overlay?.userText).toContain(
+        'Additional instructions from the user:\nfocus on auth',
+      )
+      await waitFor(() => runner.getChat(session.id).turns.length === 2)
+      expect(runner.getChat(session.id).turns[1]?.userText).toContain(
+        'Additional instructions from the user:\nfocus on auth',
+      )
       const lines = readFileSync(output, 'utf8').split('\n')
       const worktree = lines[0] ?? ''
       expect(lines[1]).toBe(session.revisionHeadOid)

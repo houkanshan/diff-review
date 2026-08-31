@@ -1,6 +1,7 @@
+import { Checkbox } from '@base-ui/react/checkbox'
 import { Drawer } from '@base-ui/react/drawer'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArrowDown, ChevronRight, X as CloseIcon } from 'lucide-react'
+import { ArrowDown, Check as CheckIcon, ChevronRight, X as CloseIcon } from 'lucide-react'
 import {
   useCallback,
   useEffect,
@@ -128,6 +129,7 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
   const [piInstalled, setPiInstalled] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
+  const [explain, setExplain] = useState(false)
   const [pinned, setPinned] = useState(true)
   const [now, setNow] = useState(() => Date.now())
   const revisionRef = useRef('none')
@@ -222,21 +224,21 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
   }
 
   const send = async () => {
-    const message = draft.trim()
-    if (!message || sending || overlay?.working) return
+    const draftText = draft.trim()
+    if ((!draftText && !explain) || sending || overlay?.working) return
     setDraft('')
     setError(null)
     setPinned(true)
     setSending(true)
     try {
-      const page = await sendPiChat(sessionId, message)
+      const page = await sendPiChat(sessionId, draftText, explain)
       revisionRef.current = page.transcriptRevision
       setTurns((current) => mergeTurns(current, page.turns))
       setOverlay((current) => reconcilePiOverlay(current, page.overlay))
       setPiInstalled(page.piInstalled)
       setError(page.piInstalled ? page.error : null)
     } catch (caught) {
-      setDraft(message)
+      setDraft(draftText)
       if (caught instanceof ClientError && caught.code === 'COMMAND_NOT_FOUND') {
         setPiInstalled(false)
         setError(null)
@@ -321,7 +323,13 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
           value={draft}
           disabled={working || !piInstalled}
           placeholder={
-            !piInstalled ? 'Install Pi to chat' : working ? 'Pi is working…' : 'Message Pi'
+            !piInstalled
+              ? 'Install Pi to chat'
+              : working
+                ? 'Pi is working…'
+                : explain
+                  ? 'Additional instructions (optional)'
+                  : 'Message Pi'
           }
           rows={3}
           onChange={(event) => setDraft(event.target.value)}
@@ -331,9 +339,27 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
             event.currentTarget.form?.requestSubmit()
           }}
         />
-        <button type="submit" disabled={working || !piInstalled || draft.trim() === ''}>
-          Send
-        </button>
+        <div className="pi-chat-composer-actions">
+          <Checkbox.Root
+            className="pi-chat-explain-toggle"
+            checked={explain}
+            disabled={working || !piInstalled}
+            onCheckedChange={(checked) => setExplain(checked === true)}
+          >
+            <span className="pi-chat-explain-checkbox">
+              <Checkbox.Indicator>
+                <CheckIcon />
+              </Checkbox.Indicator>
+            </span>
+            Explain
+          </Checkbox.Root>
+          <button
+            type="submit"
+            disabled={working || !piInstalled || (!explain && draft.trim() === '')}
+          >
+            Send
+          </button>
+        </div>
       </form>
     </>
   )

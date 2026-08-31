@@ -461,6 +461,7 @@ export interface PiChatPage {
 
 export interface SendPiChatInput {
   message: string
+  explain?: boolean
 }
 
 export interface CreateSessionInput {
