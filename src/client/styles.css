@@ -509,10 +509,11 @@ svg {
   align-items: center;
   gap: 6px;
   height: 30px;
-  padding: 0;
-  color: var(--muted);
-  border: 0;
-  background: transparent;
+  padding: 0 10px 0 8px;
+  color: var(--text-soft);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
   font-size: 12px;
   font-weight: 650;
   white-space: nowrap;
@@ -520,10 +521,14 @@ svg {
 
 .pi-chat-explain-toggle:hover {
   color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--surface-raised);
 }
 
-.pi-chat-explain-toggle[data-checked] {
+.pi-chat-explain-toggle[aria-pressed='true'] {
   color: var(--text);
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
 }
 
 .pi-chat-explain-toggle:disabled {
@@ -545,7 +550,7 @@ svg {
   height: 10px;
 }
 
-.pi-chat-explain-toggle[data-checked] .pi-chat-explain-checkbox {
+.pi-chat-explain-toggle[aria-pressed='true'] .pi-chat-explain-checkbox {
   color: var(--on-accent);
   border-color: var(--accent);
   background: var(--accent);
@@ -933,28 +938,23 @@ svg {
 
 .commit-options {
   max-height: min(430px, calc(100vh - 180px));
-  padding: 6px;
+  padding: 4px;
   overflow: auto;
 }
 
 .commit-option {
-  min-height: 48px;
   display: grid;
-  grid-template-columns: 17px minmax(0, 1fr);
+  grid-template-columns: 16px minmax(0, 1fr);
   align-items: start;
-  gap: 10px;
-  padding: 7px 9px;
-  border-radius: 7px;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
   cursor: pointer;
   user-select: none;
 }
 
 .commit-option:hover {
   background: var(--hover);
-}
-
-.commit-option.selected {
-  background: var(--selected);
 }
 
 .commit-checkbox {
@@ -987,7 +987,7 @@ svg {
 .commit-option-copy {
   min-width: 0;
   display: grid;
-  gap: 4px;
+  gap: 1px;
 }
 
 .commit-option-copy > span {
@@ -995,16 +995,18 @@ svg {
   color: var(--text-soft);
   font-size: 11px;
   font-weight: 560;
+  line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .commit-option-copy small {
   display: flex;
-  gap: 9px;
+  gap: 8px;
   overflow: hidden;
   color: var(--faint);
   font-size: 9px;
+  line-height: 1.3;
 }
 
 .commit-option-copy small span,

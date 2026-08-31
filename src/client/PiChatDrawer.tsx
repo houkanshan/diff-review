@@ -1,4 +1,3 @@
-import { Checkbox } from '@base-ui/react/checkbox'
 import { Drawer } from '@base-ui/react/drawer'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { ArrowDown, Check as CheckIcon, ChevronRight, X as CloseIcon } from 'lucide-react'
@@ -340,19 +339,18 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
           }}
         />
         <div className="pi-chat-composer-actions">
-          <Checkbox.Root
+          <button
+            type="button"
             className="pi-chat-explain-toggle"
-            checked={explain}
+            aria-pressed={explain}
             disabled={working || !piInstalled}
-            onCheckedChange={(checked) => setExplain(checked === true)}
+            onClick={() => setExplain((current) => !current)}
           >
-            <span className="pi-chat-explain-checkbox">
-              <Checkbox.Indicator>
-                <CheckIcon />
-              </Checkbox.Indicator>
+            <span className="pi-chat-explain-checkbox" aria-hidden="true">
+              {explain ? <CheckIcon /> : null}
             </span>
             Explain
-          </Checkbox.Root>
+          </button>
           <button
             type="submit"
             disabled={working || !piInstalled || (!explain && draft.trim() === '')}
