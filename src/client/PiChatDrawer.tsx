@@ -23,9 +23,11 @@ import { subscribeServerEvents } from './sessionEvents'
 export function PiChatControl({
   sessionId,
   status,
+  onOpen,
 }: {
   sessionId: string
   status: PiReviewStatus
+  onOpen?(): void
 }) {
   const [open, setOpen] = useState(false)
   const running =
@@ -38,7 +40,10 @@ export function PiChatControl({
       <button
         type="button"
         className="agent-button"
-        onClick={() => setOpen(true)}
+        onClick={() => {
+          onOpen?.()
+          setOpen(true)
+        }}
       >
         <span className={running ? 'pi-pulse' : ''}>π</span>
         Chat

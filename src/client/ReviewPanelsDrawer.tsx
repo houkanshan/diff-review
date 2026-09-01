@@ -6,6 +6,8 @@ import { useEffect, useState, type ReactNode } from 'react'
 export const COMPACT_REVIEW_MAX_WIDTH = 940
 const COMPACT_REVIEW_MEDIA = `(max-width: ${COMPACT_REVIEW_MAX_WIDTH}px)`
 
+export type CompactLeftSurface = 'none' | 'prs' | 'review'
+
 export function useCompactReviewLayout() {
   const [compact, setCompact] = useState(
     () => typeof window !== 'undefined' && window.matchMedia(COMPACT_REVIEW_MEDIA).matches,
@@ -77,6 +79,41 @@ export function ReviewPanelsDrawer({
             </div>
             <Drawer.Content className="workspace-drawer-body">
               {panel === 'files' ? files : inspector}
+            </Drawer.Content>
+          </Drawer.Popup>
+        </Drawer.Viewport>
+      </Drawer.Portal>
+    </Drawer.Root>
+  )
+}
+
+export function PullRequestListDrawer({
+  open,
+  onOpenChange,
+  children,
+}: {
+  open: boolean
+  onOpenChange(open: boolean): void
+  children: ReactNode
+}) {
+  return (
+    <Drawer.Root
+      open={open}
+      onOpenChange={onOpenChange}
+      swipeDirection="left"
+    >
+      <Drawer.Portal>
+        <Drawer.Backdrop className="workspace-drawer-backdrop" />
+        <Drawer.Viewport className="workspace-drawer-viewport">
+          <Drawer.Popup className="workspace-drawer-popup">
+            <div className="workspace-drawer-header">
+              <Drawer.Title className="workspace-drawer-title">Pull requests</Drawer.Title>
+              <Drawer.Close className="icon-button" aria-label="Close pull requests">
+                <CloseIcon />
+              </Drawer.Close>
+            </div>
+            <Drawer.Content className="workspace-drawer-body">
+              {children}
             </Drawer.Content>
           </Drawer.Popup>
         </Drawer.Viewport>

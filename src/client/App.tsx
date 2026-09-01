@@ -21,7 +21,12 @@ import { ToggleGroup } from '@base-ui/react/toggle-group'
 import { Tooltip } from '@base-ui/react/tooltip'
 import { PiChatControl } from './PiChatDrawer'
 import { PanelResizeHandle, storePanelWidth, storedPanelWidth } from './PanelResizeHandle'
-import { ReviewPanelsDrawer, useCompactReviewLayout } from './ReviewPanelsDrawer'
+import {
+  PullRequestListDrawer,
+  ReviewPanelsDrawer,
+  useCompactReviewLayout,
+  type CompactLeftSurface,
+} from './ReviewPanelsDrawer'
 import type { GitStatusEntry } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
 import { Provider, createStore, useAtom, useAtomValue, useSetAtom, useStore } from 'jotai'
@@ -568,8 +573,27 @@ function PullRequestsPage({
     ])
   }, [queryClient, route.repositoryPath])
 
+  const compactLayout = useCompactReviewLayout()
+  const [leftSurface, setLeftSurface] = useState<CompactLeftSurface>('none')
+  const listPresentation = !compactLayout ? 'column' : number != null ? 'drawer' : 'page'
+  const onOpenPullRequestList = listPresentation === 'drawer'
+    ? () => setLeftSurface('prs')
+    : undefined
+  const setReviewPanelsOpen = useCallback((open: boolean) => {
+    if (open) setLeftSurface('review')
+    else setLeftSurface((current) => current === 'review' ? 'none' : current)
+  }, [])
+
   useEffect(() => {
     setPendingPullRequestView('overview')
+  }, [number])
+
+  useEffect(() => {
+    if (!compactLayout) setLeftSurface('none')
+  }, [compactLayout])
+
+  useEffect(() => {
+    setLeftSurface((current) => current === 'prs' ? 'none' : current)
   }, [number])
 
   useEffect(() => {
@@ -631,7 +655,9 @@ function PullRequestsPage({
         setLoadMoreError(null)
         setView(nextView)
       }}
+      fill={listPresentation !== 'column'}
       onSelect={(nextNumber) => {
+        setLeftSurface('none')
         if (nextNumber === route.pullRequestNumber) return
         onOpenPullRequests(route.repositoryPath, nextNumber)
       }}
@@ -683,12 +709,27 @@ function PullRequestsPage({
 
   if (session == null || details == null || currentSessionId == null) {
     return (
-      <PullRequestPageShell rail={rail}>
+      <PullRequestPageShell
+        rail={rail}
+        listPresentation={listPresentation}
+        prsOpen={leftSurface === 'prs'}
+        onPrsOpenChange={(open) => setLeftSurface(open ? 'prs' : 'none')}
+      >
         <header className="topbar">
           <div className="brand">
             <span className="brand-mark">Δ</span>
             <span>Diff Review</span>
           </div>
+          {onOpenPullRequestList != null && details == null && (
+            <button
+              type="button"
+              className="icon-button pr-list-trigger"
+              aria-label="Open pull requests"
+              onClick={onOpenPullRequestList}
+            >
+              <PullRequestIcon size={16} strokeWidth={2} />
+            </button>
+          )}
           <RepositoryPicker
             repositoryRoot={route.repositoryPath}
             repositoryName={repository?.name ?? repositoryNameFromPath(route.repositoryPath)}
@@ -721,6 +762,7 @@ function PullRequestsPage({
               view={pendingPullRequestView}
               details={details}
               onViewChange={setPendingPullRequestView}
+              onOpenPullRequestList={onOpenPullRequestList}
               onRemoveAdditionalReviewLabel={async () => {
                 await removePullRequestLabel(
                   details.number,
@@ -791,12 +833,21 @@ function PullRequestsPage({
   }
 
   return (
-    <PullRequestPageShell rail={rail}>
+    <PullRequestPageShell
+      rail={rail}
+      listPresentation={listPresentation}
+      prsOpen={leftSurface === 'prs'}
+      onPrsOpenChange={(open) => setLeftSurface(open ? 'prs' : 'none')}
+    >
       <ReviewWorkspaceStore sessionId={session.id}>
         <ReviewWorkspace
           embedded
           session={session}
           initialPullRequestView={pendingPullRequestView}
+          panelsOpen={leftSurface === 'review'}
+          onPanelsOpenChange={setReviewPanelsOpen}
+          onChatOpen={() => setLeftSurface('none')}
+          onOpenPullRequestList={onOpenPullRequestList}
           error={detailError}
           onSessionChange={(nextSession) => updateWorkspace((current) => ({
             ...current,
@@ -893,14 +944,30 @@ function PullRequestsPage({
 
 function PullRequestPageShell({
   rail,
+  listPresentation,
+  prsOpen,
+  onPrsOpenChange,
   children,
 }: {
   rail: ReactNode
+  listPresentation: 'column' | 'page' | 'drawer'
+  prsOpen: boolean
+  onPrsOpenChange(open: boolean): void
   children: ReactNode
 }) {
   return (
-    <main className="review-shell pr-review-shell">
-      {rail}
+    <main
+      className={`review-shell pr-review-shell${
+        listPresentation === 'column' ? '' : ` is-pr-${listPresentation}`
+      }`}
+    >
+      {listPresentation === 'drawer' ? (
+        <PullRequestListDrawer open={prsOpen} onOpenChange={onPrsOpenChange}>
+          {rail}
+        </PullRequestListDrawer>
+      ) : (
+        rail
+      )}
       {children}
     </main>
   )
@@ -935,6 +1002,10 @@ function ReviewWorkspace({
   onThemeChange,
   pullRequest,
   embedded = false,
+  panelsOpen: panelsOpenProp,
+  onPanelsOpenChange,
+  onChatOpen,
+  onOpenPullRequestList,
 }: {
   session: ReviewSession
   initialPullRequestView?: PullRequestViewMode
@@ -948,6 +1019,10 @@ function ReviewWorkspace({
   onThemeChange(theme: ThemePreference): void
   pullRequest?: PullRequestWorkspaceContext
   embedded?: boolean
+  panelsOpen?: boolean
+  onPanelsOpenChange?(open: boolean): void
+  onChatOpen?(): void
+  onOpenPullRequestList?(): void
 }) {
   const viewerRef = useRef<CodeViewHandle<ReviewLineAnnotation>>(null)
   const [layout, setLayout] = useState<DiffLayout>('unified')
@@ -980,8 +1055,10 @@ function ReviewWorkspace({
   const [busy, setBusy] = useState(false)
   const [repositorySwitchError, setRepositorySwitchError] = useState<string | null>(null)
   const [commentsCopied, setCommentsCopied] = useState(false)
-  const [panelsOpen, setPanelsOpen] = useState(false)
+  const [localPanelsOpen, setLocalPanelsOpen] = useState(false)
   const compactLayout = useCompactReviewLayout()
+  const panelsOpen = onPanelsOpenChange != null ? panelsOpenProp === true : localPanelsOpen
+  const setPanelsOpen = onPanelsOpenChange ?? setLocalPanelsOpen
   const viewedFiles = useMemo(() => new Set(session.viewedFiles), [session.viewedFiles])
   const [collapsedFiles, setCollapsedFiles] = useState(() => new Set(session.viewedFiles))
   const previousItemsRef = useRef<CodeViewItem<ReviewLineAnnotation>[]>([])
@@ -1032,7 +1109,11 @@ function ReviewWorkspace({
 
   useEffect(() => {
     if (!compactLayout) setPanelsOpen(false)
-  }, [compactLayout])
+  }, [compactLayout, setPanelsOpen])
+
+  useEffect(() => {
+    if (pullRequest != null && pullRequestView !== 'diff') setPanelsOpen(false)
+  }, [pullRequest, pullRequestView, setPanelsOpen])
 
   useEffect(() => {
     setCollapsedFiles(new Set(session.viewedFiles))
@@ -1662,12 +1743,14 @@ function ReviewWorkspace({
           <span className="brand-mark">Δ</span>
           <span>Diff Review</span>
         </div>
-        <ReviewPanelsDrawer
-          open={panelsOpen}
-          onOpenChange={setPanelsOpen}
-          files={compactLayout ? renderFileRail() : null}
-          inspector={compactLayout ? renderInspector() : null}
-        />
+        {compactLayout && (pullRequest == null || pullRequestView === 'diff') && (
+          <ReviewPanelsDrawer
+            open={panelsOpen}
+            onOpenChange={setPanelsOpen}
+            files={renderFileRail()}
+            inspector={renderInspector()}
+          />
+        )}
         <RepositoryPicker
           repositoryRoot={session.repositoryRoot}
           repositoryName={session.repositoryName}
@@ -1787,7 +1870,11 @@ function ReviewWorkspace({
           </button>
         </ShortcutTooltip>
         {pullRequest != null && (
-          <PiChatControl sessionId={session.id} status={pullRequest.piStatus} />
+          <PiChatControl
+            sessionId={session.id}
+            status={pullRequest.piStatus}
+            onOpen={onChatOpen}
+          />
         )}
       </header>
 
@@ -1804,6 +1891,7 @@ function ReviewWorkspace({
               view={pullRequestView}
               details={pullRequest.details}
               onViewChange={switchPullRequestView}
+              onOpenPullRequestList={onOpenPullRequestList}
               onRemoveAdditionalReviewLabel={pullRequest.onRemoveAdditionalReviewLabel}
               currentRevision={session.id === pullRequest.currentSessionId}
               reviewComments={pendingReviewComments(session)}
@@ -2287,6 +2375,7 @@ function PullRequestRail({
   loadingMore,
   hasNextPage,
   error,
+  fill = false,
   onViewChange,
   onSelect,
   onRefresh,
@@ -2299,6 +2388,7 @@ function PullRequestRail({
   loadingMore: boolean
   hasNextPage: boolean
   error: string | null
+  fill?: boolean
   onViewChange(view: PullRequestListView): void
   onSelect(number: number): void
   onRefresh(): void
@@ -2328,7 +2418,7 @@ function PullRequestRail({
     : items.filter((item) => item.author.login === authorLogin)
   return (
     <>
-    <aside className="pr-rail" style={{ width }}>
+    <aside className="pr-rail" style={fill ? undefined : { width }}>
       <div className="pr-rail-heading">
         <div>
           <div className="pr-rail-title">
@@ -2466,6 +2556,7 @@ function PullRequestRail({
         ) : null}
       </div>
     </aside>
+    {fill ? null : (
     <PanelResizeHandle
       label="Resize pull request list"
       side="left"
@@ -2477,6 +2568,7 @@ function PullRequestRail({
         storePanelWidth('pr', next)
       }}
     />
+    )}
     </>
   )
 }
@@ -2536,6 +2628,7 @@ function PullRequestViewHeader({
   reviewComments,
   reviewReady = true,
   onViewChange,
+  onOpenPullRequestList,
   onRemoveAdditionalReviewLabel,
   onSubmitReview,
   onSquashMerge,
@@ -2546,6 +2639,7 @@ function PullRequestViewHeader({
   reviewComments: SessionAnnotation[]
   reviewReady?: boolean
   onViewChange(view: PullRequestViewMode): void
+  onOpenPullRequestList?(): void
   onRemoveAdditionalReviewLabel(): Promise<void>
   onSubmitReview(event: PullRequestReviewEvent, body: string): Promise<void>
   onSquashMerge(): Promise<void>
@@ -2582,7 +2676,18 @@ function PullRequestViewHeader({
   }
   return (
     <header className="pr-workspace-header">
-      <div className="pr-workspace-tabs" role="tablist" aria-label="Pull request content">
+      <div className="pr-header-leading">
+        {onOpenPullRequestList != null && (
+          <button
+            type="button"
+            className="icon-button pr-list-trigger"
+            aria-label="Open pull requests"
+            onClick={onOpenPullRequestList}
+          >
+            <PullRequestIcon size={16} strokeWidth={2} />
+          </button>
+        )}
+        <div className="pr-workspace-tabs" role="tablist" aria-label="Pull request content">
         <button
           id="pull-request-overview-tab"
           role="tab"
@@ -2603,6 +2708,7 @@ function PullRequestViewHeader({
         >
           Diff
         </button>
+      </div>
       </div>
       <div className="pr-header-actions">
         {details.state === 'OPEN' && details.mergeable === 'CONFLICTING' && (

@@ -314,12 +314,23 @@ svg {
   transform: translateX(100%);
 }
 
-.pi-chat-title {
+.pi-chat-title,
+.workspace-drawer-title {
   min-width: 0;
   flex: 1;
   margin: 0;
   font-size: 13px;
   font-weight: 650;
+}
+
+.workspace-drawer-body .pr-rail {
+  width: auto;
+  min-height: 0;
+  flex: 1;
+}
+
+.workspace-drawer-body .pr-rail-title > span:first-of-type {
+  display: none;
 }
 
 .pi-chat-body {
@@ -1483,6 +1494,31 @@ svg {
   grid-row: 3;
 }
 
+.pr-review-shell.is-pr-page,
+.pr-review-shell.is-pr-drawer {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.pr-review-shell.is-pr-page > .pr-rail {
+  width: auto;
+  grid-column: 1;
+  grid-row: 2 / -1;
+}
+
+.pr-review-shell.is-pr-page > .pr-selection-empty {
+  display: none;
+}
+
+.pr-review-shell.is-pr-page .pr-workspace-header,
+.pr-review-shell.is-pr-drawer .pr-workspace-header,
+.pr-review-shell.is-pr-page .pr-overview-stage,
+.pr-review-shell.is-pr-drawer .pr-overview-stage,
+.pr-review-shell.is-pr-page .review-workspace-body,
+.pr-review-shell.is-pr-drawer .review-workspace-body,
+.pr-review-shell.is-pr-drawer > .pr-selection-empty {
+  grid-column: 1;
+}
+
 .review-workspace-body {
   min-width: 0;
   min-height: 0;
@@ -1516,6 +1552,17 @@ svg {
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface) 96%, transparent);
   backdrop-filter: blur(14px);
+}
+
+.pr-header-leading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pr-list-trigger {
+  flex: none;
 }
 
 .pr-workspace-tabs {
