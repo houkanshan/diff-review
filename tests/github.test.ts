@@ -30,13 +30,14 @@ import {
   parseMinimizedComments,
   parseReview,
   parseReviewComment,
+  setPullRequestDraft,
   squashMergePullRequest,
   submitPullRequestReview,
   toGitHubReviewComment,
 } from '../src/server/github.js'
 
 describe('GitHub pull request actions', () => {
-  test('sends comments, reviews, and squash merges through the expected REST endpoints', async () => {
+  test('sends comments, reviews, squash merges, and draft toggles through the expected gh commands', async () => {
     const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-github-actions-'))
     const bin = path.join(directory, 'bin')
     const calls = path.join(directory, 'calls.txt')
@@ -78,6 +79,8 @@ printf '%s\\n' '{\"merged\":true,\"message\":\"Pull Request successfully merged\
         }],
       )
       await squashMergePullRequest(directory, 42, 'abc123')
+      await setPullRequestDraft(directory, 42, false)
+      await setPullRequestDraft(directory, 42, true)
       const output = readFileSync(calls, 'utf8')
       expect(output).toContain('<repos/{owner}/{repo}/issues/42/comments>')
       expect(output).toContain('<body=A conversation comment>')
@@ -102,12 +105,44 @@ printf '%s\\n' '{\"merged\":true,\"message\":\"Pull Request successfully merged\
       expect(output).toContain('<repos/{owner}/{repo}/pulls/42/merge>')
       expect(output).toContain('<merge_method=squash>')
       expect(output).toContain('<sha=abc123>')
+      expect(output).toContain('<pr>')
+      expect(output).toContain('<ready>')
+      expect(output).toContain('<42>')
+      expect(output).toContain('<--undo>')
     } finally {
       process.env.PATH = originalPath
       if (originalOutput == null) delete process.env.GH_TEST_OUTPUT
       else process.env.GH_TEST_OUTPUT = originalOutput
       if (originalInput == null) delete process.env.GH_TEST_INPUT
       else process.env.GH_TEST_INPUT = originalInput
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test('treats an already matching draft state as success', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-github-draft-'))
+    const bin = path.join(directory, 'bin')
+    mkdirSync(bin)
+    const gh = path.join(bin, 'gh')
+    writeFileSync(gh, `#!/bin/sh
+printf '%s\n' "$GH_TEST_ERROR" >&2
+exit 1
+`)
+    chmodSync(gh, 0o755)
+    const originalPath = process.env.PATH
+    const originalError = process.env.GH_TEST_ERROR
+    process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`
+    try {
+      process.env.GH_TEST_ERROR = 'gh: pull request is already "ready for review"'
+      await expect(setPullRequestDraft(directory, 42, false)).resolves.toBeUndefined()
+      process.env.GH_TEST_ERROR = 'gh: pull request is already a draft'
+      await expect(setPullRequestDraft(directory, 42, true)).resolves.toBeUndefined()
+      process.env.GH_TEST_ERROR = 'gh: GraphQL: Pull request is closed'
+      await expect(setPullRequestDraft(directory, 42, false)).rejects.toThrow(/closed/i)
+    } finally {
+      process.env.PATH = originalPath
+      if (originalError == null) delete process.env.GH_TEST_ERROR
+      else process.env.GH_TEST_ERROR = originalError
       rmSync(directory, { recursive: true, force: true })
     }
   })

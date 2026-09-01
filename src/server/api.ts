@@ -13,6 +13,7 @@ import type {
   OpenPullRequestInput,
   SquashMergePullRequestInput,
   SubmitPullRequestReviewInput,
+  UpdatePullRequestDraftInput,
   UpdatePullRequestLabelInput,
   PullRequestDetails,
   PullRequestListView,
@@ -61,6 +62,7 @@ import {
   invalidatePullRequestListCache,
   listPullRequests,
   removePullRequestLabel,
+  setPullRequestDraft,
   squashMergePullRequest,
   submitPullRequestReview,
   pendingReviewComments,
@@ -175,6 +177,7 @@ export class ApiHandler {
     )
     const pullRequestCommentMatch = /^\/api\/pull-requests\/(\d+)\/comments$/.exec(url.pathname)
     const pullRequestReviewMatch = /^\/api\/pull-requests\/(\d+)\/reviews$/.exec(url.pathname)
+    const pullRequestDraftMatch = /^\/api\/pull-requests\/(\d+)\/draft$/.exec(url.pathname)
     const pullRequestMergeMatch = /^\/api\/pull-requests\/(\d+)\/merge$/.exec(url.pathname)
 
     if (method === 'GET' && url.pathname === '/api/avatar') {
@@ -315,6 +318,17 @@ export class ApiHandler {
       )
       invalidatePullRequestDetailsCache()
       this.emitSessionUpdate(session.id)
+      response.writeHead(204).end()
+      return
+    }
+
+    if (method === 'POST' && pullRequestDraftMatch != null) {
+      const number = Number(pullRequestDraftMatch[1])
+      const input = parseUpdatePullRequestDraftInput(await readJson(request))
+      const root = await resolveRepository(input.repositoryPath)
+      await setPullRequestDraft(root, number, input.isDraft)
+      invalidatePullRequestDetailsCache()
+      await invalidatePullRequestListCache(root)
       response.writeHead(204).end()
       return
     }
@@ -1020,6 +1034,14 @@ function parseSquashMergePullRequestInput(value: unknown): SquashMergePullReques
   }
 }
 
+function parseUpdatePullRequestDraftInput(value: unknown): UpdatePullRequestDraftInput {
+  const object = expectObject(value)
+  return {
+    repositoryPath: expectString(object.repositoryPath, 'repositoryPath'),
+    isDraft: expectBoolean(object.isDraft, 'isDraft'),
+  }
+}
+
 function parseSendPiChatInput(value: unknown): SendPiChatInput {
   const object = expectObject(value)
   if (typeof object.message !== 'string') {
@@ -1282,6 +1304,13 @@ function expectObject(value: unknown): Record<string, unknown> {
 function expectString(value: unknown, field: string): string {
   if (typeof value !== 'string' || value.length === 0) {
     throw new AppError('INVALID_INPUT', `${field} must be a non-empty string`)
+  }
+  return value
+}
+
+function expectBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw new AppError('INVALID_INPUT', `${field} must be a boolean`)
   }
   return value
 }

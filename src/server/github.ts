@@ -690,6 +690,34 @@ export async function submitPullRequestReview(
   )
 }
 
+export async function setPullRequestDraft(
+  root: string,
+  number: number,
+  isDraft: boolean,
+): Promise<void> {
+  validatePullRequestNumber(number)
+  try {
+    await runGitHub(
+      isDraft
+        ? ['pr', 'ready', String(number), '--undo']
+        : ['pr', 'ready', String(number)],
+      root,
+      undefined,
+      'mutate',
+    )
+  } catch (error) {
+    if (isAlreadyMatchingDraftState(error, isDraft)) return
+    throw error
+  }
+}
+
+function isAlreadyMatchingDraftState(error: unknown, isDraft: boolean): boolean {
+  if (!(error instanceof AppError) || error.code !== 'GITHUB_COMMAND_FAILED') return false
+  return isDraft
+    ? /already (?:a )?draft/i.test(error.message)
+    : /already .+ready for review/i.test(error.message)
+}
+
 export async function squashMergePullRequest(
   root: string,
   number: number,

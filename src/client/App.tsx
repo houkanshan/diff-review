@@ -161,6 +161,7 @@ import {
   setFileViewed,
   setIgnoreWhitespace,
   stageFile,
+  setPullRequestDraft,
   squashMergePullRequest,
   submitPullRequestReview,
   updateAnnotationComment,
@@ -224,6 +225,7 @@ interface PullRequestWorkspaceContext {
   onRemoveAdditionalReviewLabel(): Promise<void>
   onAddComment(body: string, replyToId?: string | null): Promise<void>
   onSubmitReview(event: PullRequestReviewEvent, body: string): Promise<void>
+  onSetDraft(isDraft: boolean): Promise<void>
   onSquashMerge(): Promise<void>
 }
 
@@ -784,6 +786,20 @@ function PullRequestsPage({
               reviewComments={[]}
               reviewReady={false}
               onSubmitReview={async () => undefined}
+              onSetDraft={async (isDraft) => {
+                await setPullRequestDraft(details.number, {
+                  repositoryPath: route.repositoryPath,
+                  isDraft,
+                })
+                queryClient.setQueryData(
+                  ['pull-request-details', route.repositoryPath, details.number],
+                  (current: PullRequestDetails | undefined) => current == null ? undefined : ({
+                    ...current,
+                    isDraft,
+                  }),
+                )
+                refreshPullRequestData(details.number)
+              }}
               onSquashMerge={async () => undefined}
             />
             <section
@@ -926,6 +942,27 @@ function PullRequestsPage({
                 body,
                 sessionId: session.id,
               })
+              refreshPullRequestData(details.number)
+            },
+            onSetDraft: async (isDraft) => {
+              await setPullRequestDraft(details.number, {
+                repositoryPath: route.repositoryPath,
+                isDraft,
+              })
+              queryClient.setQueriesData<PullRequestWorkspace>(
+                { queryKey: ['pull-request-workspace', route.repositoryPath, details.number] },
+                (current) => current == null ? undefined : ({
+                  ...current,
+                  details: { ...current.details, isDraft },
+                }),
+              )
+              queryClient.setQueryData(
+                ['pull-request-details', route.repositoryPath, details.number],
+                (current: PullRequestDetails | undefined) => current == null ? undefined : ({
+                  ...current,
+                  isDraft,
+                }),
+              )
               refreshPullRequestData(details.number)
             },
             onSquashMerge: async () => {
@@ -1896,6 +1933,7 @@ function ReviewWorkspace({
               currentRevision={session.id === pullRequest.currentSessionId}
               reviewComments={pendingReviewComments(session)}
               onSubmitReview={pullRequest.onSubmitReview}
+              onSetDraft={pullRequest.onSetDraft}
               onSquashMerge={pullRequest.onSquashMerge}
             />
             <section
@@ -2631,6 +2669,7 @@ function PullRequestViewHeader({
   onOpenPullRequestList,
   onRemoveAdditionalReviewLabel,
   onSubmitReview,
+  onSetDraft,
   onSquashMerge,
 }: {
   view: PullRequestViewMode
@@ -2642,10 +2681,13 @@ function PullRequestViewHeader({
   onOpenPullRequestList?(): void
   onRemoveAdditionalReviewLabel(): Promise<void>
   onSubmitReview(event: PullRequestReviewEvent, body: string): Promise<void>
+  onSetDraft(isDraft: boolean): Promise<void>
   onSquashMerge(): Promise<void>
 }) {
   const [labelBusy, setLabelBusy] = useState(false)
   const [labelError, setLabelError] = useState<string | null>(null)
+  const [draftBusy, setDraftBusy] = useState(false)
+  const [draftError, setDraftError] = useState<string | null>(null)
   const [mergeBusy, setMergeBusy] = useState(false)
   const [mergeError, setMergeError] = useState<string | null>(null)
   const hasAdditionalReviewLabel = details.labels.some(
@@ -2660,6 +2702,17 @@ function PullRequestViewHeader({
       setLabelError(caught instanceof Error ? caught.message : String(caught))
     } finally {
       setLabelBusy(false)
+    }
+  }
+  const setDraft = async (isDraft: boolean) => {
+    setDraftBusy(true)
+    setDraftError(null)
+    try {
+      await onSetDraft(isDraft)
+    } catch (caught) {
+      setDraftError(caught instanceof Error ? caught.message : String(caught))
+    } finally {
+      setDraftBusy(false)
     }
   }
   const squashMerge = async () => {
@@ -2715,6 +2768,7 @@ function PullRequestViewHeader({
           <span className="merge-conflict-badge" role="status">Merge conflicts</span>
         )}
         {labelError != null && <span role="alert">{labelError}</span>}
+        {draftError != null && <span role="alert">{draftError}</span>}
         {mergeError != null && <span role="alert">{mergeError}</span>}
         {hasAdditionalReviewLabel && (
           <button
@@ -2732,6 +2786,19 @@ function PullRequestViewHeader({
             allowedEvents={reviewEventsForPullRequest(details.state)}
             onSubmit={onSubmitReview}
           />
+        )}
+        {details.state === 'OPEN' && (
+          <button
+            type="button"
+            className="pr-draft-button"
+            disabled={draftBusy}
+            aria-pressed={details.isDraft}
+            onClick={() => void setDraft(!details.isDraft)}
+          >
+            {draftBusy
+              ? details.isDraft ? 'Marking as ready…' : 'Converting to draft…'
+              : details.isDraft ? 'Mark as ready' : 'Convert to draft'}
+          </button>
         )}
         {details.state === 'OPEN' && (
           <button

@@ -498,6 +498,11 @@ export interface SquashMergePullRequestInput {
   expectedHeadOid: string
 }
 
+export interface UpdatePullRequestDraftInput {
+  repositoryPath: string
+  isDraft: boolean
+}
+
 export interface AddAnnotationInput {
   filePath: string
   side: DiffSide

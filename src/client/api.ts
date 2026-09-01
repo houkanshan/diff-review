@@ -17,6 +17,7 @@ import type {
   PullRequestWorkspace,
   SquashMergePullRequestInput,
   SubmitPullRequestReviewInput,
+  UpdatePullRequestDraftInput,
   UpdatePullRequestLabelInput,
   RepositoryInfo,
   ReviewSession,
@@ -127,6 +128,16 @@ export function squashMergePullRequest(
   input: SquashMergePullRequestInput,
 ): Promise<void> {
   return request(`/api/pull-requests/${number}/merge`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function setPullRequestDraft(
+  number: number,
+  input: UpdatePullRequestDraftInput,
+): Promise<void> {
+  return request(`/api/pull-requests/${number}/draft`, {
     method: 'POST',
     body: JSON.stringify(input),
   })
