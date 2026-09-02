@@ -87,6 +87,27 @@ export function fileIdForAnnotation(
   return renamed?.name ?? annotation.filePath
 }
 
+export function orderFilesByAgentAnnotations<T extends { name: string; prevName?: string | null }>(
+  files: readonly T[],
+  annotations: readonly Pick<SessionAnnotation, 'filePath' | 'source'>[],
+): T[] {
+  if (files.length === 0) return []
+  const filesByName = new Map(files.map((file) => [file.name, file]))
+  const ranked: T[] = []
+  const seen = new Set<string>()
+  for (const annotation of annotations) {
+    if (annotation.source !== 'agent') continue
+    const fileId = fileIdForAnnotation(annotation, files)
+    if (seen.has(fileId)) continue
+    const file = filesByName.get(fileId)
+    if (file == null) continue
+    seen.add(fileId)
+    ranked.push(file)
+  }
+  if (ranked.length === 0) return [...files]
+  return [...ranked, ...files.filter((file) => !seen.has(file.name))]
+}
+
 export function annotationsForFile(
   annotations: SessionAnnotation[],
   fileDiff: FileDiffMetadata,

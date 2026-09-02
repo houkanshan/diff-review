@@ -2403,7 +2403,8 @@ body.resizing-panels * {
   font-size: 8px;
 }
 
-.notes-heading button:hover { color: var(--accent); }
+.notes-heading button:hover,
+.notes-heading button[aria-pressed='true'] { color: var(--accent); }
 
 .changed-file-tree {
   width: 100%;
@@ -2742,11 +2743,16 @@ body.resizing-panels * {
 .pr-overview-grid {
   display: grid;
   grid-template-columns: minmax(0, 760px) minmax(220px, 260px);
+  grid-template-areas:
+    "header sidebar"
+    "main sidebar";
   justify-content: space-between;
   align-items: start;
-  gap: clamp(28px, 4vw, 52px);
+  column-gap: clamp(28px, 4vw, 52px);
+  row-gap: 0;
 }
-.pr-overview-main { min-width: 0; }
+.pr-conversation-header { grid-area: header; min-width: 0; padding-bottom: 0; }
+.pr-overview-main { grid-area: main; min-width: 0; }
 
 .old-revision-banner {
   margin-bottom: 18px;
@@ -2758,8 +2764,6 @@ body.resizing-panels * {
   font-size: 9px;
   line-height: 1.4;
 }
-
-.pr-conversation-header { padding-bottom: 0; }
 
 .pr-conversation-kicker,
 .pr-conversation-meta {
@@ -2822,6 +2826,7 @@ body.resizing-panels * {
 .conversation-item a:hover { text-decoration: underline; }
 
 .pr-overview-sidebar {
+  grid-area: sidebar;
   position: sticky;
   top: 24px;
   min-width: 0;
@@ -2836,6 +2841,14 @@ body.resizing-panels * {
   padding-top: 18px;
   border-top: 1px solid var(--border-soft);
 }
+.pr-sidebar-status-section:has(+ .pr-sidebar-merger-section) {
+  padding-bottom: 0;
+}
+.pr-sidebar-status-section + .pr-sidebar-merger-section {
+  padding-top: 10px;
+  border-top: 0;
+}
+.pr-sidebar-merger-section h2 { display: none; }
 .pr-sidebar-section h2,
 .pr-sidebar-checks summary > span:first-child {
   margin: 0 0 10px;
@@ -4555,31 +4568,62 @@ body.resizing-panels * {
   .repository-trigger { max-width: 180px; }
   .local-review-trigger { max-width: 220px; }
   .commit-trigger { max-width: 200px; }
-  .pr-workspace > .review-workspace-body {
-    grid-template-columns:
-      var(--left-panel-width, 210px) 5px
-      minmax(340px, 1fr) 5px
-      var(--right-panel-width, 270px);
-  }
 }
 
 @media (max-width: 1050px) {
   .pr-conversation { padding-inline: 36px; }
-  .pr-overview-grid { display: block; }
+  .pr-overview-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "header"
+      "sidebar"
+      "main";
+    row-gap: 24px;
+  }
   .pr-overview-sidebar {
     position: static;
-    margin-top: 40px;
-    padding: 24px 0 0;
+    display: grid;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    grid-template-areas:
+      "status status status status reviewers reviewers reviewers reviewers assignees assignees assignees assignees"
+      "checks checks checks checks checks checks labels labels labels labels labels labels";
+    gap: 18px 20px;
+    margin: 0;
+    padding: 18px 0;
     border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
   }
+  .pr-overview-sidebar:has(.pr-sidebar-merger-section) {
+    grid-template-areas:
+      "status status status merger merger merger reviewers reviewers reviewers assignees assignees assignees"
+      "checks checks checks checks checks checks labels labels labels labels labels labels";
+  }
+  .pr-sidebar-section {
+    padding: 0;
+  }
+  .pr-sidebar-section + .pr-sidebar-section {
+    padding-top: 0;
+    border-top: 0;
+  }
+  .pr-sidebar-status-section { grid-area: status; }
+  .pr-sidebar-merger-section { grid-area: merger; }
+  .pr-sidebar-reviewers-section { grid-area: reviewers; }
+  .pr-sidebar-assignees-section { grid-area: assignees; }
+  .pr-sidebar-checks { grid-area: checks; }
+  .pr-sidebar-labels-section { grid-area: labels; }
+  .pr-sidebar-merger-section h2 { display: block; }
+  .pr-sidebar-status-person { margin-top: 0; }
 }
 
 /* Keep in sync with COMPACT_REVIEW_MAX_WIDTH in ReviewPanelsDrawer.tsx */
 @media (max-width: 940px) {
   .topbar:has(.workspace-panels-trigger) .brand { display: none; }
   .icon-button.workspace-panels-trigger { display: flex; }
-  .workspace:not(.pr-workspace) { grid-template-columns: 1fr; }
-  .review-workspace-body { grid-template-columns: minmax(0, 1fr); }
+  .workspace:not(.pr-workspace),
+  .review-workspace-body,
+  .pr-workspace > .review-workspace-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .review-workspace-body .file-rail,
   .review-workspace-body .inspector,
   .review-workspace-body .panel-resizer { display: none; }

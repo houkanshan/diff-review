@@ -9,6 +9,7 @@ import {
   annotationsForFile,
   buildCodeViewItems,
   fileIdForAnnotation,
+  orderFilesByAgentAnnotations,
   placeDifftasticAnnotations,
 } from '../src/client/annotationComposer.js'
 import type { DifftasticHunk, SessionAnnotation } from '../src/shared/types.js'
@@ -299,6 +300,40 @@ describe('annotationCoversLine', () => {
       { filePath: 'same.ts' },
       [{ name: 'new.ts', prevName: 'old.ts' }],
     )).toBe('same.ts')
+  })
+
+  test('orders files by first agent annotation and keeps later repeats from reshuffling', () => {
+    const files = [fileDiff('a.ts'), fileDiff('b.ts'), fileDiff('c.ts'), fileDiff('d.ts')]
+    const notes = [
+      { ...annotation('c.ts', 'agent-1'), source: 'agent' as const },
+      { ...annotation('a.ts', 'user-1'), source: 'user' as const },
+      { ...annotation('b.ts', 'agent-2'), source: 'agent' as const },
+      { ...annotation('c.ts', 'agent-3'), source: 'agent' as const },
+      { ...annotation('missing.ts', 'agent-4'), source: 'agent' as const },
+    ]
+    expect(orderFilesByAgentAnnotations(files, notes).map((file) => file.name)).toEqual([
+      'c.ts',
+      'b.ts',
+      'a.ts',
+      'd.ts',
+    ])
+  })
+
+  test('maps renamed agent annotations onto the current file before unannotated files', () => {
+    const files = [fileDiff('keep.ts'), fileDiff('new.ts', 'old.ts')]
+    const notes = [{ ...annotation('old.ts', 'agent-1'), source: 'agent' as const }]
+    expect(orderFilesByAgentAnnotations(files, notes).map((file) => file.name)).toEqual([
+      'new.ts',
+      'keep.ts',
+    ])
+  })
+
+  test('keeps path order when no agent annotations match', () => {
+    const files = [fileDiff('a.ts'), fileDiff('b.ts')]
+    expect(orderFilesByAgentAnnotations(files, [annotation('a.ts')]).map((file) => file.name)).toEqual([
+      'a.ts',
+      'b.ts',
+    ])
   })
 })
 

@@ -72,6 +72,7 @@ import {
   Columns2 as SplitIcon,
   AlignJustify as LineDiffIcon,
   Braces as StructuralDiffIcon,
+  ListOrdered as SortIcon,
   Settings2 as SettingsIcon,
   CircleCheck,
   CircleX as RequestChangesIcon,
@@ -186,6 +187,7 @@ import {
   areCodeViewSelectionsEqual,
   buildCodeViewItems,
   fileIdForAnnotation,
+  orderFilesByAgentAnnotations,
   composerDraftAtom,
   composerSelectionAtom,
   composerSessionIdAtom,
@@ -1064,6 +1066,7 @@ function ReviewWorkspace({
   const viewerRef = useRef<CodeViewHandle<ReviewLineAnnotation>>(null)
   const [layout, setLayout] = useState<DiffLayout>('unified')
   const [renderer, setRenderer] = useState<DiffRenderer>(() => storedDiffRenderer())
+  const [orderByAnnotation, setOrderByAnnotation] = useState(() => storedOrderByAnnotation())
   const [editor, setEditor] = useState<EditorId>(() => storedEditor())
   const [overflow, setOverflow] = useState<DiffOverflow>('wrap')
   const [diffStage, setDiffStage] = useState<HTMLElement | null>(null)
@@ -1221,9 +1224,16 @@ function ReviewWorkspace({
     })
   }, [store])
 
+  const displayFiles = useMemo(
+    () => orderByAnnotation
+      ? orderFilesByAgentAnnotations(parsedFiles, session.annotations)
+      : parsedFiles,
+    [orderByAnnotation, parsedFiles, session.annotations],
+  )
+
   const items = useMemo<CodeViewItem<ReviewLineAnnotation>[]>(() => {
     const nextItems = buildCodeViewItems(
-      parsedFiles,
+      displayFiles,
       session.annotations,
       composerSelection,
       collapsedFiles,
@@ -1231,7 +1241,7 @@ function ReviewWorkspace({
     )
     previousItemsRef.current = nextItems
     return nextItems
-  }, [collapsedFiles, composerSelection, parsedFiles, session.annotations])
+  }, [collapsedFiles, composerSelection, displayFiles, session.annotations])
 
   const openComposer = useCallback((next: CodeViewLineSelection) => {
     setSelection(next)
@@ -1756,6 +1766,7 @@ function ReviewWorkspace({
       session={session}
       files={parsedFiles}
       activeFilePath={activeFilePath}
+      orderByAnnotation={orderByAnnotation}
       commentsCopied={commentsCopied}
       hasHumanComments={hasHumanComments}
       onCopyComments={copyHumanComments}
@@ -1770,6 +1781,10 @@ function ReviewWorkspace({
       onOpenSession={onOpenSession}
       onHoverAnnotation={setHoveredAnnotationId}
       onNavigate={navigateToAnnotation}
+      onOrderByAnnotationChange={(next) => {
+        setOrderByAnnotation(next)
+        storeOrderByAnnotation(next)
+      }}
     />
   )
 
@@ -2001,7 +2016,7 @@ function ReviewWorkspace({
             ) : renderer === 'difftastic' ? (
               <DifftasticView
                 session={session}
-                files={parsedFiles}
+                files={displayFiles}
                 layout={layout}
                 resolvedTheme={resolvedTheme}
                 hoveredAnnotationId={hoveredAnnotationId}
@@ -2969,23 +2984,27 @@ function PullRequestConversation({
         </div>
       )}
       <div className="pr-overview-grid">
+        <header className="pr-conversation-header">
+          <h1>{details.title}</h1>
+          <div className="pr-conversation-meta">
+            <span className="pr-author">
+              <UserAvatar user={details.author} />
+              <strong>{details.author.name ?? details.author.login}</strong>
+            </span>
+            <CopyableMetaText value={`#${details.number}`}>#{details.number}</CopyableMetaText>
+            <code className="pr-branch-range">
+              <CopyableMetaText value={details.baseRefName}>{details.baseRefName}</CopyableMetaText>
+              {' ← '}
+              <CopyableMetaText value={details.headRefName}>{details.headRefName}</CopyableMetaText>
+            </code>
+            <a href={details.url} target="_blank" rel="noreferrer">Open on GitHub ↗</a>
+          </div>
+        </header>
+        <PullRequestSidebar
+          key={`${details.number}:${details.checkStatus}`}
+          details={details}
+        />
         <div className="pr-overview-main">
-          <header className="pr-conversation-header">
-            <h1>{details.title}</h1>
-            <div className="pr-conversation-meta">
-              <span className="pr-author">
-                <UserAvatar user={details.author} />
-                <strong>{details.author.name ?? details.author.login}</strong>
-              </span>
-              <CopyableMetaText value={`#${details.number}`}>#{details.number}</CopyableMetaText>
-              <code className="pr-branch-range">
-                <CopyableMetaText value={details.baseRefName}>{details.baseRefName}</CopyableMetaText>
-                {' ← '}
-                <CopyableMetaText value={details.headRefName}>{details.headRefName}</CopyableMetaText>
-              </code>
-              <a href={details.url} target="_blank" rel="noreferrer">Open on GitHub ↗</a>
-            </div>
-          </header>
           <section className="pr-description" aria-label="Pull request description">
             <MarkdownBody
               body={details.body || 'No description provided.'}
@@ -3045,10 +3064,6 @@ function PullRequestConversation({
             />
           )}
         </div>
-        <PullRequestSidebar
-          key={`${details.number}:${details.checkStatus}`}
-          details={details}
-        />
       </div>
     </section>
   )
@@ -3124,18 +3139,12 @@ function PullRequestSidebar({ details }: { details: PullRequestDetails }) {
       : details.checks
   return (
     <aside className="pr-overview-sidebar" aria-label="Pull request details">
-      <section className="pr-sidebar-section">
+      <section className="pr-sidebar-section pr-sidebar-status-section">
         <h2>Status</h2>
         <div className={`pr-sidebar-status state-${details.state.toLowerCase()}`}>
           <BranchIcon />
           <strong>{details.isDraft ? 'Draft' : titleCase(details.state)}</strong>
         </div>
-        {details.mergedBy != null && (
-          <div className="pr-sidebar-person pr-sidebar-status-person">
-            <UserAvatar user={details.mergedBy} />
-            <span><strong>{details.mergedBy.name ?? details.mergedBy.login}</strong> merged</span>
-          </div>
-        )}
         {details.state === 'OPEN' && details.mergeable === 'CONFLICTING' && (
           <div className="pr-sidebar-conflict">
             <strong>Has conflicts</strong>
@@ -3162,6 +3171,15 @@ function PullRequestSidebar({ details }: { details: PullRequestDetails }) {
           <span className="deletion">−{details.deletions}</span>
         </div>
       </section>
+      {details.mergedBy != null && (
+        <section className="pr-sidebar-section pr-sidebar-merger-section">
+          <h2>Merged by</h2>
+          <div className="pr-sidebar-person pr-sidebar-status-person">
+            <UserAvatar user={details.mergedBy} />
+            <span><strong>{details.mergedBy.name ?? details.mergedBy.login}</strong> merged</span>
+          </div>
+        </section>
+      )}
 
       <details
         className={`pr-sidebar-section pr-sidebar-checks checks-${details.checkStatus}`}
@@ -3193,14 +3211,20 @@ function PullRequestSidebar({ details }: { details: PullRequestDetails }) {
       </details>
 
       <SidebarPeople
+        className="pr-sidebar-reviewers-section"
         title="Reviewers"
         people={details.reviewers}
         emptyLabel="No reviewers"
         renderTrailing={(reviewer) => <ReviewStatus status={reviewer.reviewStatus} />}
       />
-      <SidebarPeople title="Assignees" people={details.assignees} emptyLabel="No assignees" />
+      <SidebarPeople
+        className="pr-sidebar-assignees-section"
+        title="Assignees"
+        people={details.assignees}
+        emptyLabel="No assignees"
+      />
 
-      <section className="pr-sidebar-section">
+      <section className="pr-sidebar-section pr-sidebar-labels-section">
         <h2>Labels</h2>
         {details.labels.length === 0
           ? <p className="pr-sidebar-empty">No labels</p>
@@ -3303,15 +3327,17 @@ function SidebarPeople<T extends GitHubUser>({
   title,
   people,
   emptyLabel,
+  className,
   renderTrailing,
 }: {
   title: string
   people: T[]
   emptyLabel: string
+  className?: string
   renderTrailing?: (person: T) => ReactNode
 }) {
   return (
-    <section className="pr-sidebar-section">
+    <section className={className == null ? 'pr-sidebar-section' : `pr-sidebar-section ${className}`}>
       <h2>{title}</h2>
       {people.length === 0
         ? <p className="pr-sidebar-empty">{emptyLabel}</p>
@@ -4866,6 +4892,7 @@ function Inspector({
   session,
   files,
   activeFilePath,
+  orderByAnnotation,
   commentsCopied,
   hasHumanComments,
   onCopyComments,
@@ -4880,10 +4907,12 @@ function Inspector({
   onNavigate,
   onHoverAnnotation,
   onReload,
+  onOrderByAnnotationChange,
 }: {
   session: ReviewSession
   files: FileDiffMetadata[]
   activeFilePath: string | null
+  orderByAnnotation: boolean
   commentsCopied: boolean
   hasHumanComments: boolean
   onCopyComments(): Promise<void>
@@ -4898,6 +4927,7 @@ function Inspector({
   onNavigate(annotation: SessionAnnotation): void
   onHoverAnnotation(annotationId: string | null): void
   onReload(): Promise<void>
+  onOrderByAnnotationChange(orderByAnnotation: boolean): void
 }) {
   const reviewCommentAvailable = useAtomValue(reviewCommentAvailableAtom)
   const [view, setView] = useState<'active' | 'archived'>('active')
@@ -4977,6 +5007,13 @@ function Inspector({
                 <ArchiveIcon />
               </AnnotationIconButton>
             )}
+            <AnnotationIconButton
+              label="Order by annotation"
+              aria-pressed={orderByAnnotation}
+              onClick={() => onOrderByAnnotationChange(!orderByAnnotation)}
+            >
+              <SortIcon />
+            </AnnotationIconButton>
             <em>{activeCount}</em>
           </div>
         </div>
@@ -6043,6 +6080,15 @@ function patchContentKey(patch: string): string {
     hash = Math.imul(hash, 16777619)
   }
   return `${patch.length.toString(36)}:${(hash >>> 0).toString(36)}`
+}
+
+function storedOrderByAnnotation(): boolean {
+  return window.localStorage.getItem('diff-review-order-by-annotation') === '1'
+}
+
+function storeOrderByAnnotation(orderByAnnotation: boolean): void {
+  if (!orderByAnnotation) window.localStorage.removeItem('diff-review-order-by-annotation')
+  else window.localStorage.setItem('diff-review-order-by-annotation', '1')
 }
 
 function storedDiffRenderer(): DiffRenderer {
