@@ -35,6 +35,7 @@ export const fileCollapsedAtom = atomFamily((filePath: string) => atom(false))
 export const fileViewedAtom = atomFamily((filePath: string) => atom(false))
 export const composerSessionIdAtom = atom<string | null>(null)
 export const reviewCommentAvailableAtom = atom(false)
+export const activeFilePathAtom = atom<string | null>(null)
 
 export type InlineAnnotationUi = {
   editingId: string | null

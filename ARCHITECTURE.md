@@ -53,11 +53,13 @@ Annotations: user or agent; optional GitHub `review-comment` intent on PRs. Agen
 
 **Render diffs.** Client parses `session.patch` with `@pierre/diffs`. File bytes come from `GET /api/sessions/:id/file`. Optional `GET .../difftastic` runs the `difft` CLI. When embedded, the client accepts a nonce handshake only from an HTTP loopback parent and reports route changes back to that exact parent origin with `postMessage`; the daemon remains directly loopback-served rather than reverse-proxied.
 
+**Copy comments.** ⌘C copies the reviewer's comments only when nothing is selected. Diff text lives in `@pierre/diffs` open ShadowRoots, so `window.getSelection()` often looks collapsed; use `hasDocumentSelection()` in `src/client/documentSelection.ts`, which also checks inputs, shadow-root selections, and composed ranges.
+
 **Annotate.** Browser composer or `diff-review annotate` → `POST /api/sessions/:id/annotations` → `validateAnnotationTarget` → SQLite → SSE `session-updated`. Client SSE uses a Web Lock leader plus BroadcastChannel so one tab holds the stream.
 
 **PR workspace.** `POST /api/pull-requests/:n/open` returns GitHub metadata, sessions, revision history, and Pi status. Client never calls GitHub; the server uses `gh`.
 
-**Chat.** `POST /api/sessions/:id/pi-chat` creates a detached PR worktree and a daemon-owned `pi --mode rpc` child. Chat is per pull request (repo + number), not per revision SHA: a new push reuses the same Pi transcript and refreshes the worktree to the selected head. `GET` pages projected turns from the Pi JSONL; SSE `pi-chat` events carry the live overlay. The browser never reads the session file. Retention: 14 days; cleanup at daemon start and every six hours; skip the live RPC child and dirty worktrees.
+**Chat.** `POST /api/sessions/:id/pi-chat` creates a detached PR worktree and a daemon-owned `pi --mode rpc` child. The selected model is stored in `pi-chat-model.json` and applied with `--model` / `--thinking` (or a respawn) so Pi's `defaultModel` is untouched. Chat is per pull request (repo + number), not per revision SHA: a new push reuses the same Pi transcript and refreshes the worktree to the selected head. `GET` pages projected turns from the Pi JSONL; SSE `pi-chat` events carry the live overlay. The browser never reads the session file. Retention: 14 days; cleanup at daemon start and every six hours; skip the live RPC child and dirty worktrees.
 
 ## Extension points
 

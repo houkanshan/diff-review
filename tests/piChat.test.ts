@@ -1,6 +1,17 @@
 import { describe, expect, test } from 'vitest'
 
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+
 import { formatWorkDuration, pagePiChatTurns, projectPiChatTurns } from '../src/shared/piChat'
+import {
+  normalizePiChatModelChoice,
+  parsePiChatModelChoice,
+  piChatCliArgs,
+  PI_CHAT_MODELS,
+} from '../src/shared/piChatModel'
+import { readPiAgentDefaultModel, readPiChatModel, writePiChatModel } from '../src/server/piChatModel'
 
 describe('projectPiChatTurns', () => {
   test('folds thinking and tools into work and keeps user plus final assistant text', () => {
@@ -174,6 +185,70 @@ describe('projectPiChatTurns', () => {
       nextBefore: 'u2',
     })
     expect(pagePiChatTurns(turns, 'u2', 2).nextBefore).toBeNull()
+  })
+})
+
+describe('pi chat model', () => {
+  test('maps a catalog choice to Pi CLI flags without a default-model write', () => {
+    const sol = PI_CHAT_MODELS.find((model) => model.id === 'gpt-5.6-sol')
+    if (sol == null) throw new Error('expected sol')
+    const choice = normalizePiChatModelChoice(sol, 'high')
+    expect(parsePiChatModelChoice({ provider: 'unknown', modelId: 'nope' })).toBeNull()
+    expect(piChatCliArgs(null)).toEqual([])
+    expect(piChatCliArgs(choice)).toEqual([
+      '--model',
+      'openai-codex/gpt-5.6-sol',
+      '--thinking',
+      'high',
+    ])
+    expect(normalizePiChatModelChoice(
+      PI_CHAT_MODELS.find((model) => model.id === 'composer-2.5')!,
+      'high',
+    ).thinkingLevel).toBeNull()
+  })
+
+  test('remembers the choice in the Diff Review data directory', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-model-'))
+    try {
+      expect(readPiChatModel(directory)).toBeNull()
+      const saved = writePiChatModel(directory, {
+        provider: 'openai-codex',
+        modelId: 'gpt-5.6-sol',
+        thinkingLevel: 'medium',
+      })
+      expect(saved).toEqual({
+        provider: 'openai-codex',
+        modelId: 'gpt-5.6-sol',
+        thinkingLevel: 'medium',
+      })
+      expect(JSON.parse(readFileSync(path.join(directory, 'pi-chat-model.json'), 'utf8'))).toEqual(
+        saved,
+      )
+      expect(readPiChatModel(directory)).toEqual(saved)
+      expect(writePiChatModel(directory, null)).toBeNull()
+      expect(readPiChatModel(directory)).toBeNull()
+      writeFileSync(path.join(directory, 'pi-chat-model.json'), '{')
+      expect(() => readPiChatModel(directory)).toThrow()
+      expect(
+        readPiAgentDefaultModel(path.join(directory, 'missing-pi-settings.json')),
+      ).toBeNull()
+      const settings = path.join(directory, 'settings.json')
+      writeFileSync(
+        settings,
+        JSON.stringify({
+          defaultProvider: 'openai-codex',
+          defaultModel: 'gpt-5.6-sol',
+          defaultThinkingLevel: 'high',
+        }),
+      )
+      expect(readPiAgentDefaultModel(settings)).toEqual({
+        provider: 'openai-codex',
+        modelId: 'gpt-5.6-sol',
+        thinkingLevel: 'high',
+      })
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 })
 

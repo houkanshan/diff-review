@@ -23,8 +23,11 @@ import type {
   SessionFreshness,
   SessionUpdatedEvent,
   PiChatEvent,
+  PiChatModelChoice,
+  PiChatModelSettings,
   SendPiChatInput,
 } from '../shared/types.js'
+import { parsePiChatModelChoice } from '../shared/piChatModel.js'
 import { sessionUsesFullCommitRange, targetSupportsStaging } from '../shared/types.js'
 import { pullRequestAllowsReviewEvent } from '../shared/pull-request.js'
 import {
@@ -196,6 +199,16 @@ export class ApiHandler {
     }
     if (method === 'GET' && url.pathname === '/api/difftastic') {
       sendJson(response, 200, await getDifftasticAvailability())
+      return
+    }
+    if (method === 'GET' && url.pathname === '/api/pi-chat/model') {
+      sendJson(response, 200, { model: this.piReviews.getModel() } satisfies PiChatModelSettings)
+      return
+    }
+    if (method === 'PUT' && url.pathname === '/api/pi-chat/model') {
+      sendJson(response, 200, {
+        model: this.piReviews.setModel(parsePiChatModelSettings(await readJson(request))),
+      } satisfies PiChatModelSettings)
       return
     }
 
@@ -408,7 +421,12 @@ export class ApiHandler {
       sendJson(
         response,
         202,
-        await this.piReviews.send(piChatMatch[1] ?? '', input.message, input.explain === true),
+        await this.piReviews.send(
+          piChatMatch[1] ?? '',
+          input.message,
+          input.explain === true,
+          input.model,
+        ),
       )
       return
     }
@@ -1053,7 +1071,29 @@ function parseSendPiChatInput(value: unknown): SendPiChatInput {
   return {
     message: object.message.trim(),
     explain: object.explain === true ? true : undefined,
+    model: parseOptionalPiChatModel(object),
   }
+}
+
+function parsePiChatModelSettings(value: unknown): PiChatModelChoice | null {
+  const object = expectObject(value)
+  if (!('model' in object)) {
+    throw new AppError('INVALID_INPUT', 'model is required')
+  }
+  if (object.model == null) return null
+  const model = parsePiChatModelChoice(object.model)
+  if (model == null) throw new AppError('INVALID_INPUT', 'Unknown Pi chat model')
+  return model
+}
+
+function parseOptionalPiChatModel(
+  object: Record<string, unknown>,
+): PiChatModelChoice | null | undefined {
+  if (!('model' in object)) return undefined
+  if (object.model == null) return null
+  const model = parsePiChatModelChoice(object.model)
+  if (model == null) throw new AppError('INVALID_INPUT', 'Unknown Pi chat model')
+  return model
 }
 
 async function resolvePullRequestCommitSelection(

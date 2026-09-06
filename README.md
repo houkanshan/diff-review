@@ -81,7 +81,7 @@ Diff comments default to local annotations stored in `~/.diff-review/reviews.db`
 
 ## Chat
 
-**Chat** on a pull request opens a drawer over the review. The first message creates a detached PR worktree and a Pi RPC session under `~/.diff-review/worktrees` and `~/.diff-review/pi-sessions` (or `DIFF_REVIEW_DATA_DIR`). Follow-ups reuse that session. Saved runs remain available for 14 days after their last use. The daemon checks for expired runs at startup and every six hours. Automatic cleanup skips the live Pi process and worktrees with modified or untracked files; annotations remain in Diff Review after the worktree and Pi session are removed.
+**Chat** on a pull request opens a drawer over the review. Pick a model in the drawer; Diff Review remembers it in `pi-chat-model.json` under the data directory and passes `--model` / `--thinking` to that Pi process only — it does not change Pi's default. The first message creates a detached PR worktree and a Pi RPC session under `~/.diff-review/worktrees` and `~/.diff-review/pi-sessions` (or `DIFF_REVIEW_DATA_DIR`). Follow-ups reuse that session. Saved runs remain available for 14 days after their last use. The daemon checks for expired runs at startup and every six hours. Automatic cleanup skips the live Pi process and worktrees with modified or untracked files; annotations remain in Diff Review after the worktree and Pi session are removed.
 
 ## Development
 

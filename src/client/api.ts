@@ -8,6 +8,8 @@ import type {
   DifftasticAvailability,
   DifftasticFileDiff,
   OpenPullRequestInput,
+  PiChatModelChoice,
+  PiChatModelSettings,
   PiChatPage,
   PiReviewStatus,
   PullRequestDetails,
@@ -187,11 +189,29 @@ export function sendPiChat(
   id: string,
   message: string,
   explain = false,
+  model?: PiChatModelChoice | null,
 ): Promise<PiChatPage> {
   return request(`/api/sessions/${encodeURIComponent(id)}/pi-chat`, {
     method: 'POST',
-    body: JSON.stringify({ message, explain: explain || undefined }),
+    body: JSON.stringify({
+      message,
+      explain: explain || undefined,
+      ...(model === undefined ? {} : { model }),
+    }),
     timeoutMs: 60_000,
+  })
+}
+
+export function getPiChatModel(): Promise<PiChatModelSettings> {
+  return request('/api/pi-chat/model')
+}
+
+export function setPiChatModel(
+  model: PiChatModelChoice | null,
+): Promise<PiChatModelSettings> {
+  return request('/api/pi-chat/model', {
+    method: 'PUT',
+    body: JSON.stringify({ model }),
   })
 }
 

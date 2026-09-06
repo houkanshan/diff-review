@@ -18,13 +18,16 @@ import {
   publicPiOverlay,
   type LivePiOverlay,
 } from '../shared/piOverlay.js'
+import { piChatCliArgs, piChatModelKey } from '../shared/piChatModel.js'
 import type {
+  PiChatModelChoice,
   PiChatOverlay,
   PiChatPage,
   PiReviewRun,
   PiReviewStatus,
 } from '../shared/types.js'
 import { AppError } from './errors.js'
+import { readPiAgentDefaultModel, readPiChatModel, writePiChatModel } from './piChatModel.js'
 import { ReviewStore } from './store.js'
 
 const RETENTION_MS = 14 * 24 * 60 * 60 * 1000
@@ -36,6 +39,7 @@ interface RpcHandle {
   runId: string
   baseOid: string
   headOid: string
+  modelKey: string
   child: ChildProcess
   pending: Map<string, { resolve(value: RpcResponse): void; reject(error: unknown): void; timer: NodeJS.Timeout }>
   buffer: string
@@ -124,12 +128,27 @@ export class PiReviewRunner {
       busy: this.isBusy(),
       error: run?.error ?? (isPiInstalled() ? null : PI_INSTALL_HINT),
       piInstalled: isPiInstalled(),
+      model: this.getModel(),
     }
   }
 
-  async send(sessionId: string, message: string, explain = false): Promise<PiChatPage> {
+  getModel(): PiChatModelChoice | null {
+    return readPiChatModel(this.store.dataDirectory)
+  }
+
+  setModel(choice: PiChatModelChoice | null): PiChatModelChoice | null {
+    return writePiChatModel(this.store.dataDirectory, choice)
+  }
+
+  async send(
+    sessionId: string,
+    message: string,
+    explain = false,
+    model?: PiChatModelChoice | null,
+  ): Promise<PiChatPage> {
     const additional = message.trim()
     if (!explain && !additional) throw new AppError('INVALID_INPUT', 'Message is required')
+    if (model !== undefined) this.setModel(model)
     if (!isPiInstalled()) {
       throw new AppError('COMMAND_NOT_FOUND', PI_INSTALL_HINT, 503)
     }
@@ -306,12 +325,19 @@ export class PiReviewRunner {
     baseOid: string,
     headOid: string,
   ): Promise<RpcHandle> {
+    const sessionPath = run.piSessionPath ?? findPiSessionPath(run)
+    const model = spawnPiChatModel(
+      readPiChatModel(this.store.dataDirectory),
+      sessionPath != null && pathExists(sessionPath),
+    )
+    const modelKey = model.key
     if (
       this.rpc != null
       && this.rpc.runId === run.id
       && this.rpc.sessionId === sessionId
       && this.rpc.baseOid === baseOid
       && this.rpc.headOid === headOid
+      && this.rpc.modelKey === modelKey
       && this.rpc.child.exitCode == null
       && !this.rpc.closed
     ) {
@@ -319,7 +345,6 @@ export class PiReviewRunner {
     }
     this.stopRpc()
 
-    const sessionPath = run.piSessionPath ?? findPiSessionPath(run)
     const args = [
       '--mode',
       'rpc',
@@ -328,6 +353,7 @@ export class PiReviewRunner {
       'read,bash,grep,find,ls',
       '--append-system-prompt',
       buildReviewSystemPrompt(sessionId, pullRequestNumber, baseOid, headOid),
+      ...model.args,
     ]
     if (sessionPath != null && pathExists(sessionPath)) {
       args.push('--session', sessionPath)
@@ -349,6 +375,7 @@ export class PiReviewRunner {
       runId: run.id,
       baseOid,
       headOid,
+      modelKey,
       child,
       pending: new Map(),
       buffer: '',
@@ -691,6 +718,20 @@ function transcriptRevision(file: string | null): string {
     return `${stats.size}:${stats.mtimeMs}`
   } catch {
     return 'none'
+  }
+}
+
+function spawnPiChatModel(
+  stored: PiChatModelChoice | null,
+  resumeSession: boolean,
+): { args: string[]; key: string } {
+  if (stored != null) {
+    return { args: piChatCliArgs(stored), key: piChatModelKey(stored) }
+  }
+  const fallback = readPiAgentDefaultModel()
+  return {
+    args: resumeSession ? piChatCliArgs(fallback) : [],
+    key: `pi-default:${piChatModelKey(fallback)}`,
   }
 }
 

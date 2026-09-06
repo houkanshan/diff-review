@@ -31,6 +31,7 @@ import type { GitStatusEntry } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
 import { Provider, createStore, useAtom, useAtomValue, useSetAtom, useStore } from 'jotai'
 import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import {
   readStoredPullRequestList,
   storePullRequestList,
@@ -130,6 +131,7 @@ import type {
   ReviewSession,
   ReviewTarget,
   SessionAnnotation,
+  SessionGlobalComment,
 } from '../shared/types'
 import { EDITORS, parseEditorId, type EditorId } from '../shared/editor'
 import { pullRequestAllowsReviewEvent } from '../shared/pull-request'
@@ -180,10 +182,12 @@ import { OpenInEditorButton } from './OpenInEditorButton'
 import { ShortcutTooltip } from './ShortcutTooltip'
 import { showCopiedToast } from './Toasts'
 import { publishEmbedLocation } from './embedBridge'
+import { hasDocumentSelection } from './documentSelection'
 import { subscribeSessionEvents } from './sessionEvents'
 import {
   EMPTY_COMPOSER_DRAFT,
   activeAnnotationById,
+  activeFilePathAtom,
   areCodeViewSelectionsEqual,
   buildCodeViewItems,
   fileIdForAnnotation,
@@ -250,17 +254,6 @@ function isTextareaSubmitEnter(event: KeyboardEvent<HTMLTextAreaElement>) {
     !event.shiftKey &&
     !event.nativeEvent.isComposing &&
     event.keyCode !== 229
-}
-
-function hasDocumentSelection(): boolean {
-  const selection = window.getSelection()
-  if (selection != null && !selection.isCollapsed) return true
-
-  const activeElement = document.activeElement
-  if (activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement) {
-    return activeElement.selectionStart !== activeElement.selectionEnd
-  }
-  return false
 }
 
 function queryErrorMessage(error: unknown): string | null {
@@ -565,8 +558,8 @@ function PullRequestsPage({
     [number, queryClient, route.repositoryPath, route.revisionId, workspaceKey],
   )
 
-  const refreshPullRequestData = useCallback((pullRequestNumber: number) => {
-    void Promise.all([
+  const refreshPullRequestData = useCallback(async (pullRequestNumber: number): Promise<void> => {
+    await Promise.all([
       queryClient.invalidateQueries({
         queryKey: ['pull-request-workspace', route.repositoryPath, pullRequestNumber],
       }),
@@ -972,7 +965,7 @@ function PullRequestsPage({
                 repositoryPath: route.repositoryPath,
                 expectedHeadOid: pullRequestRevisionHead(session),
               })
-              refreshPullRequestData(details.number)
+              await refreshPullRequestData(details.number)
             },
           }}
         />
@@ -1024,6 +1017,7 @@ function ReviewWorkspaceStore({
     store.set(composerSessionIdAtom, sessionId)
     store.set(composerSelectionAtom, null)
     store.set(composerDraftAtom, EMPTY_COMPOSER_DRAFT)
+    store.set(activeFilePathAtom, null)
   }, [sessionId, store])
   return <Provider store={store}>{children}</Provider>
 }
@@ -1082,7 +1076,7 @@ function ReviewWorkspace({
   })
   const [selection, setSelection] = useState<CodeViewLineSelection | null>(null)
   const [hoveredAnnotationId, setHoveredAnnotationId] = useState<string | null>(null)
-  const [activeFilePath, setActiveFilePath] = useState<string | null>(null)
+  const setActiveFilePath = useSetAtom(activeFilePathAtom)
   const [composerSelection, setComposerSelection] = useAtom(composerSelectionAtom)
   const setComposerDraft = useSetAtom(composerDraftAtom)
   const setReviewCommentAvailable = useSetAtom(reviewCommentAvailableAtom)
@@ -1141,7 +1135,7 @@ function ReviewWorkspace({
     setComposerSelection(null)
     setComposerDraft(EMPTY_COMPOSER_DRAFT)
     setActiveFilePath(null)
-  }, [session.patch, setComposerDraft, setComposerSelection])
+  }, [session.patch, setActiveFilePath, setComposerDraft, setComposerSelection])
 
   useEffect(() => {
     setReviewCommentAvailable(pullRequest != null && sessionUsesFullCommitRange(session))
@@ -1448,6 +1442,12 @@ function ReviewWorkspace({
       replies={replies}
       onArchive={(annotationId) => setArchived(annotationId, true)}
       onUpdateComment={editAnnotation}
+      onCopy={(item) => copyAnnotationForAgent(
+        session.id,
+        item,
+        session.annotations,
+        parsedFiles,
+      )}
       onReply={annotation.source === 'agent' && annotation.replyToId == null
         ? (comment) => addAnnotation(session.id, {
             filePath: annotation.filePath,
@@ -1461,7 +1461,7 @@ function ReviewWorkspace({
           }).then(() => onReloadRef.current())
         : undefined}
     />
-  ), [editAnnotation, session.id, setArchived])
+  ), [editAnnotation, parsedFiles, session.annotations, session.id, setArchived])
 
   const renderAnnotation = useCallback((annotation: DiffLineAnnotation<ReviewLineAnnotation>) => {
     const metadata = annotation.metadata
@@ -1523,7 +1523,7 @@ function ReviewWorkspace({
     const viewer = viewerRef.current?.getInstance()
     const filePath =
       (pointer != null ? fileIdAtClientPoint(pointer.x, pointer.y) : null)
-      ?? activeFilePath
+      ?? store.get(activeFilePathAtom)
       ?? (viewer != null ? fileIdAtCodeViewScroll(viewer, items, viewer.getScrollTop()) : null)
       ?? items.at(0)?.id
 
@@ -1757,7 +1757,6 @@ function ReviewWorkspace({
       files={parsedFiles}
       viewedFiles={viewedFiles}
       resolvedTheme={resolvedTheme}
-      activeFilePath={activeFilePath}
       onSelect={selectFile}
     />
   )
@@ -1765,7 +1764,6 @@ function ReviewWorkspace({
     <Inspector
       session={session}
       files={parsedFiles}
-      activeFilePath={activeFilePath}
       orderByAnnotation={orderByAnnotation}
       commentsCopied={commentsCopied}
       hasHumanComments={hasHumanComments}
@@ -2674,6 +2672,16 @@ function RevisionPicker({
   )
 }
 
+function squashMergeBlockedReason(
+  details: PullRequestDetails,
+  currentRevision: boolean,
+): string | null {
+  if (!currentRevision) return 'Switch to the current revision before merging'
+  if (details.isDraft) return 'Draft pull requests cannot be merged'
+  if (details.mergeable === 'CONFLICTING') return 'Resolve merge conflicts before merging'
+  return null
+}
+
 function PullRequestViewHeader({
   view,
   details,
@@ -2705,6 +2713,8 @@ function PullRequestViewHeader({
   const [draftError, setDraftError] = useState<string | null>(null)
   const [mergeBusy, setMergeBusy] = useState(false)
   const [mergeError, setMergeError] = useState<string | null>(null)
+  const [mergeOpen, setMergeOpen] = useState(false)
+  const mergeBlockedReason = squashMergeBlockedReason(details, currentRevision)
   const hasAdditionalReviewLabel = details.labels.some(
     (label) => label.name === 'additional-review-needed',
   )
@@ -2731,11 +2741,15 @@ function PullRequestViewHeader({
     }
   }
   const squashMerge = async () => {
-    if (!window.confirm(`Squash and merge #${details.number}? This cannot be undone.`)) return
+    if (mergeBlockedReason != null) {
+      setMergeError(mergeBlockedReason)
+      return
+    }
     setMergeBusy(true)
     setMergeError(null)
     try {
       await onSquashMerge()
+      setMergeOpen(false)
     } catch (caught) {
       setMergeError(caught instanceof Error ? caught.message : String(caught))
     } finally {
@@ -2816,21 +2830,52 @@ function PullRequestViewHeader({
           </button>
         )}
         {details.state === 'OPEN' && (
-          <button
-            className="squash-merge-button"
-            disabled={!currentRevision || mergeBusy || details.isDraft || details.mergeable === 'CONFLICTING'}
-            title={!currentRevision
-              ? 'Switch to the current revision before merging'
-              : details.isDraft
-                ? 'Draft pull requests cannot be merged'
-                : details.mergeable === 'CONFLICTING'
-                  ? 'Resolve merge conflicts before merging'
-                  : undefined}
-            onClick={() => void squashMerge()}
+          <Popover.Root
+            open={mergeOpen}
+            onOpenChange={(open) => {
+              if (mergeBusy) return
+              setMergeOpen(open)
+            }}
           >
-            <MergeIcon />
-            {mergeBusy ? 'Merging…' : 'Squash & merge'}
-          </button>
+            <Popover.Trigger
+              type="button"
+              className={`squash-merge-button${mergeBlockedReason != null ? ' is-blocked' : ''}`}
+              disabled={mergeBusy}
+              title={mergeBlockedReason ?? undefined}
+            >
+              <MergeIcon />
+              {mergeBusy ? 'Merging…' : 'Squash & merge'}
+            </Popover.Trigger>
+            <Popover.Portal>
+              <Popover.Positioner className="popup-positioner" sideOffset={8} align="end">
+                <Popover.Popup className="submit-review-popover squash-merge-popover">
+                  <Popover.Title>Squash and merge #{details.number}?</Popover.Title>
+                  <p>This cannot be undone.</p>
+                  {(mergeBlockedReason ?? mergeError) != null && (
+                    <p className="submit-review-error" role="alert">
+                      {mergeBlockedReason ?? mergeError}
+                    </p>
+                  )}
+                  <footer>
+                    <button
+                      type="button"
+                      disabled={mergeBusy}
+                      onClick={() => setMergeOpen(false)}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={mergeBusy || mergeBlockedReason != null}
+                      onClick={() => void squashMerge()}
+                    >
+                      {mergeBusy ? 'Merging…' : 'Confirm squash & merge'}
+                    </button>
+                  </footer>
+                </Popover.Popup>
+              </Popover.Positioner>
+            </Popover.Portal>
+          </Popover.Root>
         )}
         {details.state === 'MERGED' && (
           <span className="pr-header-merged" role="status">
@@ -4448,15 +4493,14 @@ function FileRail({
   files,
   viewedFiles,
   resolvedTheme,
-  activeFilePath,
   onSelect,
 }: {
   files: FileDiffMetadata[]
   viewedFiles: Set<string>
   resolvedTheme: ResolvedTheme
-  activeFilePath: string | null
   onSelect(id: string): void
 }) {
+  const activeFilePath = useAtomValue(activeFilePathAtom)
   const [query, setQuery] = useState('')
   const normalizedQuery = query.trim().toLowerCase()
   const filteredFiles =
@@ -4888,10 +4932,20 @@ function SessionHistoryMenu({
 }
 
 
+type NotesListItem =
+  | { key: 'composer'; kind: 'composer' }
+  | { key: string; kind: 'global'; note: SessionGlobalComment }
+  | {
+      key: string
+      kind: 'thread'
+      annotation: SessionAnnotation
+      replies: SessionAnnotation[]
+      fileId: string
+    }
+
 function Inspector({
   session,
   files,
-  activeFilePath,
   orderByAnnotation,
   commentsCopied,
   hasHumanComments,
@@ -4911,7 +4965,6 @@ function Inspector({
 }: {
   session: ReviewSession
   files: FileDiffMetadata[]
-  activeFilePath: string | null
   orderByAnnotation: boolean
   commentsCopied: boolean
   hasHumanComments: boolean
@@ -4930,19 +4983,60 @@ function Inspector({
   onOrderByAnnotationChange(orderByAnnotation: boolean): void
 }) {
   const reviewCommentAvailable = useAtomValue(reviewCommentAvailableAtom)
+  const activeFilePath = useAtomValue(activeFilePathAtom)
   const [view, setView] = useState<'active' | 'archived'>('active')
   const [busyId, setBusyId] = useState<string | null>(null)
   const [bulkBusy, setBulkBusy] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [caretOffset, setCaretOffset] = useState<number | null>(null)
   const [addingGlobal, setAddingGlobal] = useState(false)
-  const startEditing = (id: string, nextCaretOffset: number | null = null) => {
+  const [drafts, setDrafts] = useState<Record<string, { comment: string; intent: AnnotationIntent }>>({})
+  const setDraftComment = (id: string, comment: string) => {
+    setDrafts((current) => {
+      const existing = current[id] ?? { comment: '', intent: 'annotation' }
+      return { ...current, [id]: { ...existing, comment } }
+    })
+  }
+  const setDraftIntent = (id: string, intent: AnnotationIntent) => {
+    setDrafts((current) => {
+      const existing = current[id] ?? { comment: '', intent: 'annotation' }
+      return { ...current, [id]: { ...existing, intent } }
+    })
+  }
+  const clearDraft = (id: string) => {
+    setDrafts((current) => {
+      if (!(id in current)) return current
+      const next = { ...current }
+      delete next[id]
+      return next
+    })
+  }
+  const startEditing = (
+    id: string,
+    comment: string,
+    nextCaretOffset: number | null = null,
+    intent: AnnotationIntent = 'annotation',
+  ) => {
+    setDrafts((current) => (
+      current[id] != null ? current : { ...current, [id]: { comment, intent } }
+    ))
     setCaretOffset(nextCaretOffset)
     setEditingId(id)
   }
   const stopEditing = () => {
+    if (editingId != null) clearDraft(editingId)
     setCaretOffset(null)
     setEditingId(null)
+  }
+  const startAddingGlobal = () => {
+    setDrafts((current) => (
+      current.composer != null ? current : { ...current, composer: { comment: '', intent: 'annotation' } }
+    ))
+    setAddingGlobal(true)
+  }
+  const stopAddingGlobal = () => {
+    clearDraft('composer')
+    setAddingGlobal(false)
   }
   const notesListRef = useRef<HTMLDivElement>(null)
   const active = session.annotations.filter((annotation) => annotation.archivedAt == null)
@@ -4954,13 +5048,46 @@ function Inspector({
   const showGlobalComment = visibleGlobals.length > 0 || addingGlobal
   const activeCount = active.length + activeGlobals.length
   const archivedCount = archived.length + archivedGlobals.length
+  const notes = useMemo<NotesListItem[]>(() => {
+    const visibleAnnotations = view === 'active'
+      ? session.annotations.filter((annotation) => annotation.archivedAt == null)
+      : session.annotations.filter((annotation) => annotation.archivedAt != null)
+    const visibleGlobalComments = view === 'active'
+      ? session.globalComments.filter((comment) => comment.archivedAt == null)
+      : session.globalComments.filter((comment) => comment.archivedAt != null)
+    const items: NotesListItem[] = []
+    if (addingGlobal) items.push({ key: 'composer', kind: 'composer' })
+    for (const note of visibleGlobalComments) {
+      items.push({ key: note.id, kind: 'global', note })
+    }
+    for (const thread of annotationThreads(visibleAnnotations)) {
+      items.push({
+        key: thread.root.id,
+        kind: 'thread',
+        annotation: thread.root,
+        replies: thread.replies,
+        fileId: fileIdForAnnotation(thread.root, files),
+      })
+    }
+    return items
+  }, [addingGlobal, files, session.annotations, session.globalComments, view])
+  const notesRef = useRef(notes)
+  notesRef.current = notes
+  const virtualizer = useVirtualizer({
+    count: notes.length,
+    getScrollElement: () => notesListRef.current,
+    estimateSize: () => 140,
+    overscan: 6,
+    getItemKey: (index) => notes[index]?.key ?? index,
+  })
   useEffect(() => {
     if (activeFilePath == null) return
-    const card = notesListRef.current?.querySelector<HTMLElement>(
-      `[data-file-path="${cssEscape(activeFilePath)}"]`,
+    const index = notesRef.current.findIndex(
+      (item) => item.kind === 'thread' && item.fileId === activeFilePath,
     )
-    card?.scrollIntoView({ block: 'nearest' })
-  }, [activeFilePath, view])
+    if (index < 0) return
+    virtualizer.scrollToIndex(index, { align: 'auto' })
+  }, [activeFilePath, view, virtualizer])
 
   return (
     <aside className="inspector">
@@ -4978,7 +5105,7 @@ function Inspector({
             {view === 'active' && !addingGlobal && (
               <AnnotationIconButton
                 label="Add global comment"
-                onClick={() => setAddingGlobal(true)}
+                onClick={startAddingGlobal}
               >
                 <AddCommentIcon />
               </AnnotationIconButton>
@@ -5039,32 +5166,41 @@ function Inspector({
           </p>
         ) : (
           <div className="notes-list" ref={notesListRef}>
-            {addingGlobal && (
+            <div className="notes-virtual" style={{ height: virtualizer.getTotalSize() }}>
+              {virtualizer.getVirtualItems().map((virtualItem) => {
+                const item = notes[virtualItem.index]
+                if (item == null) return null
+                let card: ReactNode = null
+                if (item.kind === 'composer') {
+                  card = (
               <article className="note-card global-comment-card user">
                 <div className="global-comment-heading">
                   <strong>Global comment</strong>
                 </div>
                 <CommentEditor
                   comment=""
-                  onCancel={() => setAddingGlobal(false)}
+                  value={drafts.composer?.comment ?? ''}
+                  onValueChange={(comment) => setDraftComment('composer', comment)}
+                  onCancel={stopAddingGlobal}
                   onSave={async (comment) => {
                     await onAddGlobalComment(comment)
-                    setAddingGlobal(false)
+                    stopAddingGlobal()
                   }}
                 />
               </article>
-            )}
-            {visibleGlobals.map((note) => {
+                  )
+                } else if (item.kind === 'global') {
+              const note = item.note
               const editing = editingId === note.id
-              return (
-                <article key={note.id} className={`note-card global-comment-card ${note.source}`}>
+              card = (
+                <article className={`note-card global-comment-card ${note.source}`}>
                   <div className="global-comment-heading">
                     <strong>Global comment</strong>
                     <div className="note-actions">
                       {note.source === 'user' && note.archivedAt == null && !editing && (
                         <AnnotationIconButton
                           label="Edit global comment"
-                          onClick={() => startEditing(note.id)}
+                          onClick={() => startEditing(note.id, note.comment)}
                         >
                           <EditIcon />
                         </AnnotationIconButton>
@@ -5090,6 +5226,8 @@ function Inspector({
                   {editing ? (
                     <CommentEditor
                       comment={note.comment}
+                      value={drafts[note.id]?.comment ?? note.comment}
+                      onValueChange={(comment) => setDraftComment(note.id, comment)}
                       caretOffset={caretOffset ?? undefined}
                       onCancel={stopEditing}
                       onSave={async (comment) => {
@@ -5101,7 +5239,7 @@ function Inspector({
                     <AnnotationBody
                       comment={note.comment}
                       onEdit={note.source === 'user' && note.archivedAt == null
-                        ? (offset) => startEditing(note.id, offset)
+                        ? (offset) => startEditing(note.id, note.comment, offset)
                         : undefined}
                     />
                   )}
@@ -5112,20 +5250,20 @@ function Inspector({
                   </footer>
                 </article>
               )
-            })}
-            {annotationThreads(visible).map(({ root: annotation, replies }) => {
+                } else {
+              const annotation = item.annotation
+              const replies = item.replies
               const viewed = annotation.viewedAt != null
               const editing = editingId === annotation.id
               const canReply =
                 view === 'active' &&
                 annotation.source === 'agent' &&
                 annotation.replyToId == null
-              return (
+              card = (
                 <article
-                  key={annotation.id}
-                  className={`note-card ${annotation.source}${fileIdForAnnotation(annotation, files) === activeFilePath ? ' is-active' : ''}`}
+                  className={`note-card ${annotation.source}${item.fileId === activeFilePath ? ' is-active' : ''}`}
                   data-annotation-id={annotation.id}
-                  data-file-path={fileIdForAnnotation(annotation, files)}
+                  data-file-path={item.fileId}
                   onPointerEnter={() => {
                     if (view === 'active') onHoverAnnotation(annotation.id)
                   }}
@@ -5148,6 +5286,10 @@ function Inspector({
                     <CommentEditor
                       comment={annotation.comment ?? ''}
                       intent={annotation.intent}
+                      value={drafts[annotation.id]?.comment ?? annotation.comment ?? ''}
+                      onValueChange={(comment) => setDraftComment(annotation.id, comment)}
+                      intentValue={drafts[annotation.id]?.intent ?? annotation.intent}
+                      onIntentChange={(intent) => setDraftIntent(annotation.id, intent)}
                       reviewCommentAvailable={
                         reviewCommentAvailable &&
                         annotation.source === 'user' &&
@@ -5165,7 +5307,12 @@ function Inspector({
                     <AnnotationBody
                       comment={annotation.comment}
                       onEdit={annotation.source === 'user' && annotation.submittedAt == null
-                        ? (offset) => startEditing(annotation.id, offset)
+                        ? (offset) => startEditing(
+                            annotation.id,
+                            annotation.comment ?? '',
+                            offset,
+                            annotation.intent,
+                          )
                         : undefined}
                     />
                   ) : null}
@@ -5188,15 +5335,29 @@ function Inspector({
                       {canReply && editingId !== `reply:${annotation.id}` && (
                         <AnnotationIconButton
                           label="Reply"
-                          onClick={() => startEditing(`reply:${annotation.id}`)}
+                          onClick={() => startEditing(`reply:${annotation.id}`, '')}
                         >
                           <ReplyIcon />
                         </AnnotationIconButton>
                       )}
+                      <CopyAnnotationButton
+                        annotation={annotation}
+                        onCopy={(item) => copyAnnotationForAgent(
+                          session.id,
+                          item,
+                          session.annotations,
+                          files,
+                        )}
+                      />
                       {annotation.source === 'user' && annotation.submittedAt == null && annotation.comment != null && !editing && (
                         <AnnotationIconButton
                           label="Edit comment"
-                          onClick={() => startEditing(annotation.id)}
+                          onClick={() => startEditing(
+                            annotation.id,
+                            annotation.comment ?? '',
+                            null,
+                            annotation.intent,
+                          )}
                         >
                           <EditIcon />
                         </AnnotationIconButton>
@@ -5224,6 +5385,8 @@ function Inspector({
                   {editingId === `reply:${annotation.id}` && (
                     <CommentEditor
                       comment=""
+                      value={drafts[`reply:${annotation.id}`]?.comment ?? ''}
+                      onValueChange={(comment) => setDraftComment(`reply:${annotation.id}`, comment)}
                       onCancel={stopEditing}
                       onSave={async (comment) => {
                         await addAnnotation(session.id, {
@@ -5248,6 +5411,8 @@ function Inspector({
                         {replyEditing ? (
                           <CommentEditor
                             comment={reply.comment ?? ''}
+                            value={drafts[reply.id]?.comment ?? reply.comment ?? ''}
+                            onValueChange={(comment) => setDraftComment(reply.id, comment)}
                             caretOffset={caretOffset ?? undefined}
                             onCancel={stopEditing}
                             onSave={async (comment) => {
@@ -5259,7 +5424,7 @@ function Inspector({
                           <AnnotationBody
                             comment={reply.comment ?? ''}
                             onEdit={reply.source === 'user' && reply.submittedAt == null
-                              ? (offset) => startEditing(reply.id, offset)
+                              ? (offset) => startEditing(reply.id, reply.comment ?? '', offset)
                               : undefined}
                           />
                         )}
@@ -5271,10 +5436,19 @@ function Inspector({
                             </time>
                           </div>
                           <div className="note-actions">
+                            <CopyAnnotationButton
+                              annotation={reply}
+                              onCopy={(item) => copyAnnotationForAgent(
+                                session.id,
+                                item,
+                                session.annotations,
+                                files,
+                              )}
+                            />
                             {reply.source === 'user' && reply.submittedAt == null && !replyEditing && (
                               <AnnotationIconButton
                                 label="Edit comment"
-                                onClick={() => startEditing(reply.id)}
+                                onClick={() => startEditing(reply.id, reply.comment ?? '')}
                               >
                                 <EditIcon />
                               </AnnotationIconButton>
@@ -5300,7 +5474,20 @@ function Inspector({
                   })}
                 </article>
               )
-            })}
+                }
+                return (
+                  <div
+                    key={virtualItem.key}
+                    data-index={virtualItem.index}
+                    ref={virtualizer.measureElement}
+                    className="notes-virtual-item"
+                    style={{ transform: `translateY(${virtualItem.start}px)` }}
+                  >
+                    {card}
+                  </div>
+                )
+              })}
+            </div>
           </div>
         )}
       </section>
@@ -5420,6 +5607,29 @@ function AnnotationBody({
     >
       {comment}
     </p>
+  )
+}
+
+function CopyAnnotationButton({
+  annotation,
+  onCopy,
+}: {
+  annotation: SessionAnnotation
+  onCopy(annotation: SessionAnnotation): Promise<void>
+}) {
+  const [copied, setCopied] = useState(false)
+  if (!annotation.comment?.trim()) return null
+  return (
+    <AnnotationIconButton
+      label={copied ? 'Copied' : 'Copy comment'}
+      onClick={async () => {
+        await onCopy(annotation)
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 1600)
+      }}
+    >
+      {copied ? <CheckIcon /> : <CopyIcon />}
+    </AnnotationIconButton>
   )
 }
 
@@ -5570,6 +5780,7 @@ function InlineAnnotation({
   onHover,
   onArchive,
   onUpdateComment,
+  onCopy,
   onReply,
 }: {
   annotation: SessionAnnotation
@@ -5578,6 +5789,7 @@ function InlineAnnotation({
   onHover?(annotationId: string | null): void
   onArchive(annotationId: string): Promise<void>
   onUpdateComment(annotationId: string, comment: string, intent?: AnnotationIntent): Promise<void>
+  onCopy(annotation: SessionAnnotation): Promise<void>
   onReply?(comment: string): Promise<void>
 }) {
   const [ui, setUi] = useAtom(inlineAnnotationUiAtom(annotation.id))
@@ -5638,6 +5850,7 @@ function InlineAnnotation({
               <ReplyIcon />
             </AnnotationIconButton>
           )}
+          <CopyAnnotationButton annotation={annotation} onCopy={onCopy} />
           {annotation.source === 'user' && annotation.comment != null && !editing && (
             <AnnotationIconButton
               label="Edit comment"
@@ -5712,6 +5925,7 @@ function InlineAnnotation({
                 </time>
               </div>
               <div>
+                <CopyAnnotationButton annotation={reply} onCopy={onCopy} />
                 {reply.source === 'user' && reply.comment != null && !replyEditing && (
                   <AnnotationIconButton
                     label="Edit comment"
@@ -5894,6 +6108,52 @@ function lineLabel(annotation: SessionAnnotation): string {
   return `${prefix}${annotation.startLine}${annotation.startLine === annotation.endLine ? '' : `–${annotation.endLine}`}`
 }
 
+async function copyAnnotationForAgent(
+  sessionId: string,
+  annotation: SessionAnnotation,
+  allAnnotations: SessionAnnotation[],
+  files: FileDiffMetadata[],
+): Promise<void> {
+  await navigator.clipboard.writeText(
+    await formatAnnotationForAgent(sessionId, annotation, allAnnotations, files),
+  )
+  showCopiedToast('Copied annotation')
+}
+
+async function formatAnnotationForAgent(
+  sessionId: string,
+  annotation: SessionAnnotation,
+  allAnnotations: SessionAnnotation[],
+  files: FileDiffMetadata[],
+  contents = new Map<string, Promise<string | null>>(),
+): Promise<string> {
+  const file = files.find(
+    (candidate) =>
+      candidate.name === annotation.filePath || candidate.prevName === annotation.filePath,
+  )
+  const filePath = annotation.side === 'old'
+    ? file?.prevName ?? annotation.filePath
+    : file?.name ?? annotation.filePath
+  const key = `${annotation.side}:${filePath}`
+  let contentsRequest = contents.get(key)
+  if (contentsRequest == null) {
+    contentsRequest = getFileContents(sessionId, filePath, annotation.side)
+    contents.set(key, contentsRequest)
+  }
+  const fileContents = await contentsRequest
+  const code = truncateCodeLine(fileContents?.split('\n')[annotation.startLine - 1] ?? '')
+  const header = `> ${annotation.filePath}:${annotationPosition(annotation)}: ${code}`
+  const parent = annotation.replyToId == null
+    ? null
+    : allAnnotations.find((candidate) => candidate.id === annotation.replyToId)
+  const quotedParent = parent?.comment?.trim()
+  if (quotedParent) {
+    const quoted = quotedParent.split('\n').map((line) => `> ${line}`).join('\n')
+    return `${header}\n\n${quoted}\n\n${annotation.comment!.trim()}`
+  }
+  return `${header}\n\n${annotation.comment!.trim()}`
+}
+
 async function formatCommentsForAgent(
   sessionId: string,
   globalComment: string | null,
@@ -5902,32 +6162,9 @@ async function formatCommentsForAgent(
   files: FileDiffMetadata[],
 ): Promise<string> {
   const contents = new Map<string, Promise<string | null>>()
-  const byId = new Map(allAnnotations.map((annotation) => [annotation.id, annotation]))
-  const comments = await Promise.all(annotations.map(async (annotation) => {
-    const file = files.find(
-      (candidate) =>
-        candidate.name === annotation.filePath || candidate.prevName === annotation.filePath,
-    )
-    const filePath = annotation.side === 'old'
-      ? file?.prevName ?? annotation.filePath
-      : file?.name ?? annotation.filePath
-    const key = `${annotation.side}:${filePath}`
-    let contentsRequest = contents.get(key)
-    if (contentsRequest == null) {
-      contentsRequest = getFileContents(sessionId, filePath, annotation.side)
-      contents.set(key, contentsRequest)
-    }
-    const fileContents = await contentsRequest
-    const code = truncateCodeLine(fileContents?.split('\n')[annotation.startLine - 1] ?? '')
-    const header = `> ${annotation.filePath}:${annotationPosition(annotation)}: ${code}`
-    const parent = annotation.replyToId == null ? null : byId.get(annotation.replyToId)
-    const quotedParent = parent?.comment?.trim()
-    if (quotedParent) {
-      const quoted = quotedParent.split('\n').map((line) => `> ${line}`).join('\n')
-      return `${header}\n\n${quoted}\n\n${annotation.comment!.trim()}`
-    }
-    return `${header}\n\n${annotation.comment!.trim()}`
-  }))
+  const comments = await Promise.all(annotations.map((annotation) => (
+    formatAnnotationForAgent(sessionId, annotation, allAnnotations, files, contents)
+  )))
   return [globalComment?.trim(), ...comments].filter(Boolean).join('\n\n')
 }
 

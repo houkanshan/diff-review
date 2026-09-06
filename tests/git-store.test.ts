@@ -34,6 +34,7 @@ import { LOCAL_CHANGES_OID } from '../src/shared/types.js'
 import { ApiHandler } from '../src/server/api.js'
 import { PiReviewRunner } from '../src/server/pi.js'
 import { ReviewStore } from '../src/server/store.js'
+import { piChatModelPath } from '../src/server/piChatModel.js'
 import { PI_INSTALL_HINT } from '../src/shared/piChat.js'
 
 const fixture = createGitFixture()
@@ -815,6 +816,9 @@ describe('local review storage', () => {
       expect(lines.join('\n')).toContain('Help someone review PR #42.')
       expect(lines.join('\n')).toContain('[summary]')
       expect(lines.join('\n')).toContain('action(domain):')
+      expect(lines).toContain('--append-system-prompt')
+      expect(lines).not.toContain('--model')
+      expect(lines).not.toContain('--thinking')
       expect(lines).toContain('--mode')
       expect(lines).toContain('rpc')
       expect(lines).toContain('--session-dir')
@@ -845,6 +849,78 @@ describe('local review storage', () => {
       process.env.PATH = originalPath
       if (originalOutput == null) delete process.env.PI_TEST_OUTPUT
       else process.env.PI_TEST_OUTPUT = originalOutput
+    }
+  })
+
+  test('passes the remembered Diff Review model to Pi without changing Pi defaults', async () => {
+    const review = await resolveTarget(fixture.repository, {
+      kind: 'range',
+      expression: 'origin/main...HEAD',
+    })
+    const dataDirectory = path.join(fixture.directory, 'pi-model-data')
+    mkdirSync(dataDirectory, { recursive: true })
+    const store = new ReviewStore(path.join(dataDirectory, 'reviews.db'))
+    const session = store.createSession(
+      fixture.repository,
+      'repo',
+      { kind: 'pr', number: 44 },
+      review,
+      false,
+    )
+    const bin = path.join(fixture.directory, 'pi-model-bin')
+    mkdirSync(bin, { recursive: true })
+    const output = path.join(fixture.directory, 'pi-model-output.txt')
+    copyFileSync(path.join(import.meta.dirname, 'fixtures/fake-pi-rpc.cjs'), path.join(bin, 'pi'))
+    chmodSync(path.join(bin, 'pi'), 0o755)
+    const originalPath = process.env.PATH
+    const originalOutput = process.env.PI_TEST_OUTPUT
+    const originalPiSettings = process.env.DIFF_REVIEW_PI_AGENT_SETTINGS
+    const piSettings = path.join(dataDirectory, 'pi-agent-settings.json')
+    writeFileSync(
+      piSettings,
+      JSON.stringify({
+        defaultProvider: 'xai',
+        defaultModel: 'grok-4.6',
+        defaultThinkingLevel: 'medium',
+      }),
+    )
+    process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`
+    process.env.PI_TEST_OUTPUT = output
+    process.env.DIFF_REVIEW_PI_AGENT_SETTINGS = piSettings
+    const runner = new PiReviewRunner(store, () => undefined)
+    const choice = {
+      provider: 'openai-codex',
+      modelId: 'gpt-5.6-sol',
+      thinkingLevel: 'high' as const,
+    }
+    try {
+      const sent = await runner.send(session.id, 'Use sol', false, choice)
+      expect(sent.model).toEqual(choice)
+      await waitFor(() => runner.getChat(session.id).busy === false)
+      const spawned = readFileSync(output, 'utf8')
+      expect(spawned).toContain('--model')
+      expect(spawned).toContain('openai-codex/gpt-5.6-sol')
+      expect(spawned).toContain('--thinking')
+      expect(spawned).toContain('high')
+      expect(JSON.parse(readFileSync(piChatModelPath(store.dataDirectory), 'utf8'))).toEqual(choice)
+      expect(existsSync(path.join(store.dataDirectory, 'settings.json'))).toBe(false)
+      runner.setModel(null)
+      await runner.send(session.id, 'Back to Pi default')
+      await waitFor(() => runner.getChat(session.id).turns.length === 2)
+      expect(runner.getChat(session.id).model).toBeNull()
+      const restored = readFileSync(output, 'utf8')
+      expect(restored).toContain('--session')
+      expect(restored).toContain('--append-system-prompt')
+      expect(restored).toContain('xai/grok-4.6')
+      expect(restored).not.toContain('openai-codex/gpt-5.6-sol')
+      expect(JSON.parse(readFileSync(piSettings, 'utf8')).defaultModel).toBe('grok-4.6')
+    } finally {
+      runner.close()
+      process.env.PATH = originalPath
+      if (originalOutput == null) delete process.env.PI_TEST_OUTPUT
+      else process.env.PI_TEST_OUTPUT = originalOutput
+      if (originalPiSettings == null) delete process.env.DIFF_REVIEW_PI_AGENT_SETTINGS
+      else process.env.DIFF_REVIEW_PI_AGENT_SETTINGS = originalPiSettings
     }
   })
 
@@ -907,8 +983,7 @@ describe('local review storage', () => {
       expect(git(status.worktreePath, ['rev-parse', 'HEAD']).trim()).toBe(later.revisionHeadOid)
       const spawned = readFileSync(output, 'utf8')
       expect(spawned).toContain(later.revisionHeadOid)
-      expect(spawned).toContain(`git diff ${later.revisionBaseOid} ${later.revisionHeadOid} --`)
-      expect(spawned).toContain(`diff-review annotate ${later.id}`)
+      expect(spawned).toContain('--append-system-prompt')
       expect(spawned).toContain('--session')
     } finally {
       runner.close()

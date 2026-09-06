@@ -1,6 +1,14 @@
 import { Drawer } from '@base-ui/react/drawer'
+import { Menu } from '@base-ui/react/menu'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArrowDown, Check as CheckIcon, ChevronRight, X as CloseIcon } from 'lucide-react'
+import {
+  ArrowDown,
+  Check as CheckIcon,
+  ChevronDown as ChevronIcon,
+  ChevronRight,
+  Copy as CopyIcon,
+  X as CloseIcon,
+} from 'lucide-react'
 import {
   useCallback,
   useEffect,
@@ -9,16 +17,32 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type ReactNode,
 } from 'react'
 import { Streamdown } from 'streamdown'
 import 'streamdown/styles.css'
 
 import { formatWorkDuration, PI_CHAT_PAGE_SIZE } from '../shared/piChat'
+import {
+  findPiChatModel,
+  normalizePiChatModelChoice,
+  PI_CHAT_MODELS,
+  PI_CHAT_THINKING_LEVELS,
+  piChatModelLabel,
+} from '../shared/piChatModel'
 import { reconcilePiOverlay } from '../shared/piOverlay'
-import type { PiChatOverlay, PiChatTurn, PiReviewStatus } from '../shared/types'
-import { ClientError, getPiChat, sendPiChat } from './api'
+import type {
+  PiChatModelChoice,
+  PiChatOverlay,
+  PiChatThinkingLevel,
+  PiChatTurn,
+  PiReviewRun,
+  PiReviewStatus,
+} from '../shared/types'
+import { ClientError, getPiChat, sendPiChat, setPiChatModel } from './api'
 import { PanelResizeHandle, storePanelWidth, storedPanelWidth } from './PanelResizeHandle'
 import { subscribeServerEvents } from './sessionEvents'
+import { formatTimestamp } from './time'
 
 export function PiChatControl({
   sessionId,
@@ -48,7 +72,7 @@ export function PiChatControl({
         <span className={running ? 'pi-pulse' : ''}>π</span>
         Chat
       </button>
-      <PiChatDrawer open={open} onOpenChange={setOpen} sessionId={sessionId} />
+      <PiChatDrawer open={open} onOpenChange={setOpen} sessionId={sessionId} status={status} />
     </>
   )
 }
@@ -64,10 +88,12 @@ function PiChatDrawer({
   open,
   onOpenChange,
   sessionId,
+  status,
 }: {
   open: boolean
   onOpenChange(open: boolean): void
   sessionId: string
+  status: PiReviewStatus
 }) {
   const [width, setWidth] = useState(() =>
     storedPanelWidth('chat', CHAT_WIDTH_FALLBACK, CHAT_WIDTH_MIN, chatWidthMax()),
@@ -117,6 +143,7 @@ function PiChatDrawer({
                 <CloseIcon />
               </Drawer.Close>
             </div>
+            {status.state !== 'idle' ? <PiChatRunInfo run={status} /> : null}
             {open ? <PiChatConversation sessionId={sessionId} /> : null}
           </Drawer.Popup>
         </Drawer.Viewport>
@@ -133,6 +160,8 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
   const [piInstalled, setPiInstalled] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
+  const [model, setModel] = useState<PiChatModelChoice | null>(null)
+  const [modelSaving, setModelSaving] = useState(false)
   const [explain, setExplain] = useState(false)
   const [pinned, setPinned] = useState(true)
   const [now, setNow] = useState(() => Date.now())
@@ -149,6 +178,7 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
     setOverlay((current) => reconcilePiOverlay(current, page.overlay))
     setPiInstalled(page.piInstalled)
     setError(page.piInstalled ? page.error : null)
+    setModel(page.model)
   }, [sessionId])
 
   useEffect(() => {
@@ -229,13 +259,13 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
 
   const send = async () => {
     const draftText = draft.trim()
-    if ((!draftText && !explain) || sending || overlay?.working) return
+    if ((!draftText && !explain) || sending || modelSaving || overlay?.working) return
     setDraft('')
     setError(null)
     setPinned(true)
     setSending(true)
     try {
-      const page = await sendPiChat(sessionId, draftText, explain)
+      const page = await sendPiChat(sessionId, draftText, explain, model)
       revisionRef.current = page.transcriptRevision
       setTurns((current) => mergeTurns(current, page.turns))
       setOverlay((current) => reconcilePiOverlay(current, page.overlay))
@@ -255,7 +285,7 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
   }
 
   const caughtUp = overlay != null && overlayCaughtUp(turns, overlay)
-  const working = sending || (overlay?.working === true && !caughtUp)
+  const working = sending || modelSaving || (overlay?.working === true && !caughtUp)
 
   return (
     <>
@@ -344,33 +374,237 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
           }}
         />
         <div className="pi-chat-composer-actions">
-          <button
-            type="button"
-            className="pi-chat-explain-toggle"
-            aria-pressed={explain}
+          <PiChatModelControls
+            model={model}
             disabled={working || !piInstalled}
-            onClick={() => setExplain((current) => !current)}
-          >
-            <span className="pi-chat-explain-checkbox" aria-hidden="true">
-              {explain ? <CheckIcon /> : null}
-            </span>
-            Explain
-          </button>
-          <button
-            type="submit"
-            disabled={working || !piInstalled || (!explain && draft.trim() === '')}
-          >
-            Send
-          </button>
+            onChange={async (next) => {
+              const previous = model
+              setModel(next)
+              setModelSaving(true)
+              try {
+                const saved = await setPiChatModel(next)
+                setModel(saved.model)
+              } catch (caught) {
+                setModel(previous)
+                setError(caught instanceof Error ? caught.message : String(caught))
+              } finally {
+                setModelSaving(false)
+              }
+            }}
+          />
+          <div className="pi-chat-composer-actions-end">
+            <button
+              type="button"
+              className="pi-chat-explain-toggle"
+              aria-pressed={explain}
+              disabled={working || !piInstalled}
+              onClick={() => setExplain((current) => !current)}
+            >
+              <span className="pi-chat-explain-checkbox" aria-hidden="true">
+                {explain ? <CheckIcon /> : null}
+              </span>
+              Explain
+            </button>
+            <button
+              type="submit"
+              disabled={working || !piInstalled || (!explain && draft.trim() === '')}
+            >
+              Send
+            </button>
+          </div>
         </div>
       </form>
     </>
   )
 }
 
+function PiChatModelControls({
+  model,
+  disabled,
+  onChange,
+}: {
+  model: PiChatModelChoice | null
+  disabled: boolean
+  onChange(model: PiChatModelChoice | null): void | Promise<void>
+}) {
+  const option = model == null ? null : findPiChatModel(model.provider, model.modelId)
+  return (
+    <div className="pi-chat-model-controls">
+      <PiChatChoiceMenu
+        label="Model"
+        value={piChatModelLabel(model)}
+        disabled={disabled}
+      >
+        <Menu.RadioGroup
+          value={model == null ? 'pi-default' : `${model.provider}/${model.modelId}`}
+          onValueChange={(value) => {
+            if (value == null || value === 'pi-default') {
+              void onChange(null)
+              return
+            }
+            const selected = PI_CHAT_MODELS.find(
+              (candidate) => `${candidate.provider}/${candidate.id}` === value,
+            )
+            if (selected == null) return
+            void onChange(normalizePiChatModelChoice(selected, model?.thinkingLevel))
+          }}
+        >
+          <Menu.RadioItem value="pi-default" className="diff-option">
+            <Menu.RadioItemIndicator keepMounted className="diff-option-check">
+              <CheckIcon />
+            </Menu.RadioItemIndicator>
+            Pi default
+          </Menu.RadioItem>
+          {PI_CHAT_MODELS.map((candidate) => (
+            <Menu.RadioItem
+              key={`${candidate.provider}/${candidate.id}`}
+              value={`${candidate.provider}/${candidate.id}`}
+              className="diff-option"
+            >
+              <Menu.RadioItemIndicator keepMounted className="diff-option-check">
+                <CheckIcon />
+              </Menu.RadioItemIndicator>
+              {candidate.name}
+            </Menu.RadioItem>
+          ))}
+        </Menu.RadioGroup>
+      </PiChatChoiceMenu>
+      {option?.thinking ? (
+        <PiChatChoiceMenu
+          label="Thinking"
+          value={model?.thinkingLevel ?? 'medium'}
+          disabled={disabled}
+        >
+          <Menu.RadioGroup
+            value={model?.thinkingLevel ?? 'medium'}
+            onValueChange={(value) => {
+              if (value == null || model == null) return
+              void onChange({
+                ...model,
+                thinkingLevel: value as PiChatThinkingLevel,
+              })
+            }}
+          >
+            {PI_CHAT_THINKING_LEVELS.map((level) => (
+              <Menu.RadioItem key={level} value={level} className="diff-option">
+                <Menu.RadioItemIndicator keepMounted className="diff-option-check">
+                  <CheckIcon />
+                </Menu.RadioItemIndicator>
+                {level}
+              </Menu.RadioItem>
+            ))}
+          </Menu.RadioGroup>
+        </PiChatChoiceMenu>
+      ) : null}
+    </div>
+  )
+}
+
+function PiChatChoiceMenu({
+  label,
+  value,
+  disabled,
+  children,
+}: {
+  label: string
+  value: string
+  disabled: boolean
+  children: ReactNode
+}) {
+  return (
+    <Menu.Root>
+      <Menu.Trigger
+        type="button"
+        className="pi-chat-model-trigger"
+        disabled={disabled}
+        aria-label={label}
+      >
+        <span>{value}</span>
+        <ChevronIcon />
+      </Menu.Trigger>
+      <Menu.Portal>
+        <Menu.Positioner className="popup-positioner" sideOffset={6} align="start">
+          <Menu.Popup className="diff-options-menu pi-chat-model-menu">
+            <Menu.Group>
+              <Menu.GroupLabel className="menu-kicker">{label}</Menu.GroupLabel>
+              {children}
+            </Menu.Group>
+          </Menu.Popup>
+        </Menu.Positioner>
+      </Menu.Portal>
+    </Menu.Root>
+  )
+}
+
 type ChatRow =
   | { key: string; kind: 'turn'; turn: PiChatTurn }
   | { key: string; kind: 'live'; overlay: PiChatOverlay }
+
+function PiChatRunInfo({ run }: { run: PiReviewRun }) {
+  const cleaned = run.state === 'cleaned' || run.state === 'cleaning'
+  const resume = tuiResumeCommand(run)
+  return (
+    <div className="pi-chat-run">
+      <p className="pi-chat-run-started">
+        Started{' '}
+        <time dateTime={run.startedAt} title={formatTimestamp(run.startedAt)}>
+          {formatTimestamp(run.startedAt)}
+        </time>
+      </p>
+      <dl>
+        <div>
+          <dt>Directory</dt>
+          <dd>
+            {cleaned ? (
+              'Removed'
+            ) : (
+              <CopyableValue value={run.worktreePath} label="Copy directory" />
+            )}
+          </dd>
+        </div>
+        <div>
+          <dt>Resume</dt>
+          <dd>
+            {resume == null ? (
+              cleaned ? 'Removed' : 'Saving…'
+            ) : (
+              <CopyableValue value={resume} label="Copy resume command" />
+            )}
+          </dd>
+        </div>
+      </dl>
+    </div>
+  )
+}
+
+function tuiResumeCommand(run: PiReviewRun): string | null {
+  if (run.state === 'cleaned' || run.state === 'cleaning') return null
+  if (run.piSessionPath != null) return `pi --session ${run.piSessionPath}`
+  if (run.state === 'creating' || run.state === 'running') return null
+  return `pi --session-dir ${run.piSessionDir} --session-id ${run.piSessionId}`
+}
+
+function CopyableValue({ value, label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <span className="pi-chat-run-copy">
+      <code title={value}>{value}</code>
+      <button
+        type="button"
+        className="icon-button"
+        aria-label={copied ? 'Copied' : label}
+        title={copied ? 'Copied' : label}
+        onClick={async () => {
+          await navigator.clipboard.writeText(value)
+          setCopied(true)
+          window.setTimeout(() => setCopied(false), 1600)
+        }}
+      >
+        {copied ? <CheckIcon /> : <CopyIcon />}
+      </button>
+    </span>
+  )
+}
 
 function InstallPiHelp() {
   return (

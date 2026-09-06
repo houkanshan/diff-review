@@ -449,6 +449,21 @@ export interface PiChatOverlay {
   seq: number
 }
 
+export type PiChatThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+
+export interface PiChatModelChoice {
+  provider: string
+  modelId: string
+  thinkingLevel: PiChatThinkingLevel | null
+}
+
 export interface PiChatPage {
   turns: PiChatTurn[]
   nextBefore: string | null
@@ -457,11 +472,17 @@ export interface PiChatPage {
   busy: boolean
   error: string | null
   piInstalled: boolean
+  model: PiChatModelChoice | null
 }
 
 export interface SendPiChatInput {
   message: string
   explain?: boolean
+  model?: PiChatModelChoice | null
+}
+
+export interface PiChatModelSettings {
+  model: PiChatModelChoice | null
 }
 
 export interface CreateSessionInput {
