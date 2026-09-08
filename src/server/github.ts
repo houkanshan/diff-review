@@ -76,12 +76,15 @@ const MINIMIZED_COMMENTS_QUERY = `
       pullRequest(number: $number) {
         comments(first: 100, after: $endCursor) {
           pageInfo { hasNextPage endCursor }
-          nodes { databaseId isMinimized minimizedReason }
+          nodes { fullDatabaseId isMinimized minimizedReason }
+        }
+        reviews(first: 100) {
+          nodes { fullDatabaseId isMinimized minimizedReason }
         }
         reviewThreads(first: 100) {
           nodes {
             comments(first: 100) {
-              nodes { databaseId isMinimized minimizedReason }
+              nodes { fullDatabaseId isMinimized minimizedReason }
             }
           }
         }
@@ -996,7 +999,7 @@ export function parseConversationComment(value: unknown): PullRequestActivity {
     createdAt: expectString(raw.createdAt, 'comment.createdAt'),
     updatedAt: optionalString(raw.updatedAt) ?? expectString(raw.createdAt, 'comment.createdAt'),
     url: optionalString(raw.url),
-    minimizedReason: parseMinimizedReason(raw.minimized),
+    minimizedReason: parseMinimizedState(raw),
   }
 }
 
@@ -1014,6 +1017,7 @@ export function parseReview(value: unknown): PullRequestActivity {
     createdAt: submittedAt,
     updatedAt: submittedAt,
     url: optionalString(raw.html_url),
+    minimizedReason: parseMinimizedState(raw),
   }
 }
 
@@ -1036,7 +1040,7 @@ export function parseReviewComment(value: unknown): PullRequestActivity {
     updatedAt: expectString(raw.updated_at, 'reviewComment.updated_at'),
     url: optionalString(raw.html_url),
     diffHunk: optionalString(raw.diff_hunk) ?? '',
-    minimizedReason: parseMinimizedReason(raw.minimized),
+    minimizedReason: parseMinimizedState(raw),
   }
 }
 
@@ -1045,9 +1049,17 @@ export function applyMinimizedComments(
   minimizedComments: Map<string, MinimizedCommentReason>,
 ): void {
   for (const activity of activities) {
-    if (activity.kind !== 'comment' && activity.kind !== 'review-comment') continue
+    if (activity.kind === 'timeline') continue
     activity.minimizedReason = minimizedComments.get(activity.id) ?? activity.minimizedReason
   }
+}
+
+function parseMinimizedState(raw: Record<string, unknown>): MinimizedCommentReason | null {
+  if (raw.isMinimized === false) return null
+  if (raw.isMinimized === true) {
+    return parseMinimizedReason(raw.minimizedReason) ?? parseMinimizedReason(raw.minimized) ?? 'resolved'
+  }
+  return parseMinimizedReason(raw.minimizedReason) ?? parseMinimizedReason(raw.minimized)
 }
 
 export function parseMinimizedReason(value: unknown): MinimizedCommentReason | null {
@@ -1103,6 +1115,7 @@ export function parseMinimizedComments(value: unknown): Map<string, MinimizedCom
     const pullRequest = optionalObject(optionalObject(optionalObject(page.data)?.repository)?.pullRequest)
     if (pullRequest == null) continue
     collectMinimizedComments(optionalObject(pullRequest.comments)?.nodes, minimized)
+    collectMinimizedComments(optionalObject(pullRequest.reviews)?.nodes, minimized)
     for (const thread of expectArray(optionalObject(pullRequest.reviewThreads)?.nodes ?? [])) {
       collectMinimizedComments(optionalObject(expectObject(thread).comments)?.nodes, minimized)
     }
@@ -1118,8 +1131,9 @@ function collectMinimizedComments(
     const raw = expectObject(node)
     if (raw.isMinimized !== true) continue
     const reason = parseMinimizedReason(raw.minimizedReason) ?? 'resolved'
-    const databaseId = raw.databaseId
-    if (databaseId != null) minimized.set(String(databaseId), reason)
+    const id = optionalString(raw.fullDatabaseId)
+      ?? (raw.databaseId == null ? null : String(raw.databaseId))
+    if (id != null) minimized.set(id, reason)
   }
 }
 

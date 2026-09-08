@@ -27,6 +27,8 @@ import {
   parsePullRequestReviewStatus,
   pendingReviewComments,
   parsePullRequestTimelineEvents,
+  applyMinimizedComments,
+  parseConversationComment,
   parseMinimizedComments,
   parseReview,
   parseReviewComment,
@@ -275,6 +277,22 @@ describe('GitHub pull request review comments', () => {
     })
   })
 
+  test('reads minimized conversation comments from gh pr view fields', () => {
+    expect(parseConversationComment({
+      id: 'IC_kwDOExample',
+      author: { login: 'reviewer', avatarUrl: 'https://example.com/avatar.png' },
+      body: 'This is off topic.',
+      createdAt: '2026-03-01T10:00:00Z',
+      url: 'https://github.com/acme/repo/pull/1#issuecomment-11',
+      isMinimized: true,
+      minimizedReason: 'OFF_TOPIC',
+    })).toMatchObject({
+      kind: 'comment',
+      id: 'IC_kwDOExample',
+      minimizedReason: 'off-topic',
+    })
+  })
+
 
   test('parses a submitted REST review with a numeric id', () => {
     expect(parseReview({
@@ -291,22 +309,26 @@ describe('GitHub pull request review comments', () => {
       state: 'COMMENTED',
       createdAt: '2026-03-01T10:05:00Z',
       url: 'https://github.com/acme/repo/pull/1#pullrequestreview-80',
+      minimizedReason: null,
     })
   })
 
 
-  test('maps GraphQL minimized review comments onto numeric ids', () => {
+  test('maps GraphQL minimized comments, reviews, and review comments onto numeric ids', () => {
     expect([...parseMinimizedComments({
       data: {
         repository: {
           pullRequest: {
             comments: {
-              nodes: [{ databaseId: 11, isMinimized: true, minimizedReason: 'off-topic' }],
+              nodes: [{ fullDatabaseId: '11', isMinimized: true, minimizedReason: 'off-topic' }],
+            },
+            reviews: {
+              nodes: [{ fullDatabaseId: '80', isMinimized: true, minimizedReason: 'outdated' }],
             },
             reviewThreads: {
               nodes: [{
                 comments: {
-                  nodes: [{ databaseId: 42, isMinimized: true, minimizedReason: 'resolved' }],
+                  nodes: [{ fullDatabaseId: '42', isMinimized: true, minimizedReason: 'resolved' }],
                 },
               }],
             },
@@ -315,7 +337,43 @@ describe('GitHub pull request review comments', () => {
       },
     })]).toEqual([
       ['11', 'off-topic'],
+      ['80', 'outdated'],
       ['42', 'resolved'],
+    ])
+  })
+
+  test('overlays minimized reviews and review comments onto REST numeric ids', () => {
+    const activity = [
+      parseReview({
+        id: 80,
+        user: { login: 'reviewer', avatar_url: 'https://example.com/avatar.png' },
+        body: 'Looks good overall.',
+        state: 'COMMENTED',
+        submitted_at: '2026-03-01T10:05:00Z',
+        html_url: 'https://github.com/acme/repo/pull/1#pullrequestreview-80',
+      }),
+      parseReviewComment({
+        id: 42,
+        user: { login: 'reviewer', avatar_url: 'https://example.com/avatar.png' },
+        body: 'Please keep this branch explicit.',
+        path: 'src/example.ts',
+        line: 18,
+        side: 'RIGHT',
+        pull_request_review_id: 80,
+        in_reply_to_id: null,
+        diff_hunk: '@@ -16,2 +16,3 @@\n context\n+selected code',
+        created_at: '2026-03-01T10:00:00Z',
+        updated_at: '2026-03-01T10:01:00Z',
+        html_url: 'https://github.com/acme/repo/pull/1#discussion_r42',
+      }),
+    ]
+    applyMinimizedComments(activity, new Map([
+      ['80', 'outdated'],
+      ['42', 'resolved'],
+    ]))
+    expect(activity).toMatchObject([
+      { kind: 'review', id: '80', minimizedReason: 'outdated' },
+      { kind: 'review-comment', id: '42', minimizedReason: 'resolved' },
     ])
   })
 

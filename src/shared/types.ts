@@ -326,6 +326,7 @@ export type PullRequestActivity =
       createdAt: string
       updatedAt: string
       url: string | null
+      minimizedReason: MinimizedCommentReason | null
     }
   | {
       kind: 'review-comment'

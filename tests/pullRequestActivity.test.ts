@@ -20,6 +20,7 @@ function review(
     createdAt,
     updatedAt: createdAt,
     url: null,
+    minimizedReason: null,
   }
 }
 
