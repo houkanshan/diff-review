@@ -18,7 +18,7 @@ import {
   publicPiOverlay,
   type LivePiOverlay,
 } from '../shared/piOverlay.js'
-import { piChatCliArgs, piChatModelKey } from '../shared/piChatModel.js'
+import { defaultPiChatModel, piChatCliArgs, piChatModelKey } from '../shared/piChatModel.js'
 import type {
   PiChatModelChoice,
   PiChatOverlay,
@@ -31,7 +31,6 @@ import { AppError } from './errors.js'
 import {
   type ChatModelSelection,
   readChatModelSelection,
-  readPiAgentDefaultModel,
   readPiChatModel,
   writeChatModelSelection,
 } from './piChatModel.js'
@@ -141,12 +140,18 @@ export class PiReviewRunner {
 
   setChatModel(sessionId: string, choice: PiChatModelChoice | null): PiChatModelChoice | null {
     const session = this.store.getSession(sessionId)
-    return writeChatModelSelection(this.store.dataDirectory, chatModelKey(session), choice)
+    return writeChatModelSelection(
+      this.store.dataDirectory,
+      chatModelKey(session),
+      choice ?? defaultPiChatModel(),
+    )
   }
 
-  private chatModel(sessionId: string): PiChatModelChoice | null {
+  private chatModel(sessionId: string): PiChatModelChoice {
     const selection = this.chatModelSelection(sessionId)
-    return selection.status === 'set' ? selection.model : null
+    return selection.status === 'set' && selection.model != null
+      ? selection.model
+      : defaultPiChatModel()
   }
 
   private chatModelSelection(sessionId: string) {
@@ -350,7 +355,7 @@ export class PiReviewRunner {
   ): Promise<RpcHandle> {
     const sessionPath = run.piSessionPath ?? findPiSessionPath(run)
     const resumeSession = sessionPath != null && pathExists(sessionPath)
-    const model = spawnPiChatModel(this.chatModelSelection(sessionId), resumeSession)
+    const model = spawnPiChatModel(this.chatModelSelection(sessionId))
     const modelKey = model.key
     if (
       this.rpc != null
@@ -747,22 +752,11 @@ function chatModelKey(session: ReviewSession): string {
   return `session:${session.id}`
 }
 
-function spawnPiChatModel(
-  selection: ChatModelSelection,
-  resumeSession: boolean,
-): { args: string[]; key: string } {
-  const stored = selection.status === 'set' ? selection.model : null
-  if (stored != null) {
-    return { args: piChatCliArgs(stored), key: piChatModelKey(stored) }
-  }
-  if (selection.status === 'set' && resumeSession) {
-    const fallback = readPiAgentDefaultModel()
-    return {
-      args: piChatCliArgs(fallback),
-      key: `pi-default:${piChatModelKey(fallback)}`,
-    }
-  }
-  return { args: [], key: 'pi-default' }
+function spawnPiChatModel(selection: ChatModelSelection): { args: string[]; key: string } {
+  const stored = selection.status === 'set' && selection.model != null
+    ? selection.model
+    : defaultPiChatModel()
+  return { args: piChatCliArgs(stored), key: piChatModelKey(stored) }
 }
 
 function buildExplainPrompt(

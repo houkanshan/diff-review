@@ -6,6 +6,7 @@ import path from 'node:path'
 
 import { formatWorkDuration, pagePiChatTurns, projectPiChatModel, projectPiChatTurns } from '../src/shared/piChat'
 import {
+  defaultPiChatModel,
   normalizePiChatModelChoice,
   parsePiChatModelChoice,
   piChatCliArgs,
@@ -13,7 +14,6 @@ import {
 } from '../src/shared/piChatModel'
 import {
   readChatModelSelection,
-  readPiAgentDefaultModel,
   readPiChatModel,
   writeChatModelSelection,
   writePiChatModel,
@@ -264,7 +264,7 @@ describe('pi chat model', () => {
     ).thinkingLevel).toBeNull()
   })
 
-  test('stores an explicit Pi default separately from an unset chat', () => {
+  test('stores a chat selection and treats a missing entry as unset', () => {
     const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-chat-model-'))
     try {
       expect(readChatModelSelection(directory, 'pr:/repo:1')).toEqual({ status: 'unset' })
@@ -277,7 +277,7 @@ describe('pi chat model', () => {
         modelId: 'gpt-5.6-sol',
         thinkingLevel: 'high',
       })
-      expect(writeChatModelSelection(directory, 'pr:/repo:2', null)).toBeNull()
+      expect(writeChatModelSelection(directory, 'pr:/repo:2', null)).toEqual(defaultPiChatModel())
       expect(readChatModelSelection(directory, 'pr:/repo:1')).toEqual({
         status: 'set',
         model: {
@@ -288,7 +288,7 @@ describe('pi chat model', () => {
       })
       expect(readChatModelSelection(directory, 'pr:/repo:2')).toEqual({
         status: 'set',
-        model: null,
+        model: defaultPiChatModel(),
       })
       expect(readChatModelSelection(directory, 'pr:/repo:3')).toEqual({ status: 'unset' })
     } finally {
@@ -318,23 +318,6 @@ describe('pi chat model', () => {
       expect(readPiChatModel(directory)).toBeNull()
       writeFileSync(path.join(directory, 'pi-chat-model.json'), '{')
       expect(() => readPiChatModel(directory)).toThrow()
-      expect(
-        readPiAgentDefaultModel(path.join(directory, 'missing-pi-settings.json')),
-      ).toBeNull()
-      const settings = path.join(directory, 'settings.json')
-      writeFileSync(
-        settings,
-        JSON.stringify({
-          defaultProvider: 'openai-codex',
-          defaultModel: 'gpt-5.6-sol',
-          defaultThinkingLevel: 'high',
-        }),
-      )
-      expect(readPiAgentDefaultModel(settings)).toEqual({
-        provider: 'openai-codex',
-        modelId: 'gpt-5.6-sol',
-        thinkingLevel: 'high',
-      })
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }

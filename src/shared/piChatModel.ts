@@ -28,9 +28,13 @@ export function findPiChatModel(
   return PI_CHAT_MODELS.find((model) => model.provider === provider && model.id === modelId)
 }
 
+export function defaultPiChatModel(): PiChatModelChoice {
+  return normalizePiChatModelChoice(PI_CHAT_MODELS[0])
+}
+
 export function piChatModelLabel(choice: PiChatModelChoice | null): string {
-  if (choice == null) return 'Pi default'
-  return findPiChatModel(choice.provider, choice.modelId)?.name ?? choice.modelId
+  const resolved = choice ?? defaultPiChatModel()
+  return findPiChatModel(resolved.provider, resolved.modelId)?.name ?? resolved.modelId
 }
 
 export function piChatModelKey(choice: PiChatModelChoice | null): string {

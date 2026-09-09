@@ -1,8 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 
-import { parsePiChatModelChoice, parsePiChatThinkingLevel } from '../shared/piChatModel.js'
+import { defaultPiChatModel, parsePiChatModelChoice } from '../shared/piChatModel.js'
 import type { PiChatModelChoice } from '../shared/types.js'
 
 export const PI_CHAT_MODEL_FILE = 'pi-chat-model.json'
@@ -33,11 +32,12 @@ export function writeChatModelSelection(
   dataDirectory: string,
   chatKey: string,
   model: PiChatModelChoice | null,
-): PiChatModelChoice | null {
+): PiChatModelChoice {
   const all = readChatModelMap(dataDirectory)
-  all[chatKey] = model
+  const saved = model ?? defaultPiChatModel()
+  all[chatKey] = saved
   writeChatModelMap(dataDirectory, all)
-  return model
+  return saved
 }
 
 export function readPiChatModel(dataDirectory: string): PiChatModelChoice | null {
@@ -46,24 +46,6 @@ export function readPiChatModel(dataDirectory: string): PiChatModelChoice | null
   } catch (error) {
     if (isMissingFile(error)) return null
     throw error
-  }
-}
-
-export function readPiAgentDefaultModel(
-  settingsPath = process.env.DIFF_REVIEW_PI_AGENT_SETTINGS ?? defaultPiAgentSettingsPath(),
-): PiChatModelChoice | null {
-  try {
-    const raw = JSON.parse(readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
-    const provider = typeof raw.defaultProvider === 'string' ? raw.defaultProvider.trim() : ''
-    const modelId = typeof raw.defaultModel === 'string' ? raw.defaultModel.trim() : ''
-    if (!provider || !modelId) return null
-    return {
-      provider,
-      modelId,
-      thinkingLevel: parsePiChatThinkingLevel(raw.defaultThinkingLevel),
-    }
-  } catch {
-    return null
   }
 }
 
@@ -94,7 +76,7 @@ function readChatModelMap(dataDirectory: string): Record<string, PiChatModelChoi
     const result: Record<string, PiChatModelChoice | null> = {}
     for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
       if (value == null) {
-        result[key] = null
+        result[key] = defaultPiChatModel()
         continue
       }
       const parsed = parsePiChatModelChoice(value)
@@ -116,10 +98,6 @@ function writeChatModelMap(
   const temp = `${file}.${process.pid}.tmp`
   writeFileSync(temp, `${JSON.stringify(models, null, 2)}\n`)
   renameSync(temp, file)
-}
-
-function defaultPiAgentSettingsPath(): string {
-  return path.join(os.homedir(), '.pi', 'agent', 'settings.json')
 }
 
 function isMissingFile(error: unknown): boolean {

@@ -24,6 +24,7 @@ import 'streamdown/styles.css'
 
 import { formatWorkDuration, PI_CHAT_PAGE_SIZE } from '../shared/piChat'
 import {
+  defaultPiChatModel,
   findPiChatModel,
   normalizePiChatModelChoice,
   PI_CHAT_MODELS,
@@ -430,34 +431,26 @@ function PiChatModelControls({
   disabled: boolean
   onChange(model: PiChatModelChoice | null): void | Promise<void>
 }) {
-  const option = model == null ? null : findPiChatModel(model.provider, model.modelId)
+  const resolved = model ?? defaultPiChatModel()
+  const option = findPiChatModel(resolved.provider, resolved.modelId)
   return (
     <div className="pi-chat-model-controls">
       <PiChatChoiceMenu
         label="Model"
-        value={piChatModelLabel(model)}
+        value={piChatModelLabel(resolved)}
         disabled={disabled}
       >
         <Menu.RadioGroup
-          value={model == null ? 'pi-default' : `${model.provider}/${model.modelId}`}
+          value={`${resolved.provider}/${resolved.modelId}`}
           onValueChange={(value) => {
-            if (value == null || value === 'pi-default') {
-              void onChange(null)
-              return
-            }
+            if (value == null) return
             const selected = PI_CHAT_MODELS.find(
               (candidate) => `${candidate.provider}/${candidate.id}` === value,
             )
             if (selected == null) return
-            void onChange(normalizePiChatModelChoice(selected, model?.thinkingLevel))
+            void onChange(normalizePiChatModelChoice(selected, resolved.thinkingLevel))
           }}
         >
-          <Menu.RadioItem value="pi-default" closeOnClick className="diff-option">
-            <Menu.RadioItemIndicator keepMounted className="diff-option-check">
-              <CheckIcon />
-            </Menu.RadioItemIndicator>
-            Pi default
-          </Menu.RadioItem>
           {PI_CHAT_MODELS.map((candidate) => (
             <Menu.RadioItem
               key={`${candidate.provider}/${candidate.id}`}
@@ -476,15 +469,15 @@ function PiChatModelControls({
       {option?.thinking ? (
         <PiChatChoiceMenu
           label="Thinking"
-          value={model?.thinkingLevel ?? 'medium'}
+          value={resolved.thinkingLevel ?? 'medium'}
           disabled={disabled}
         >
           <Menu.RadioGroup
-            value={model?.thinkingLevel ?? 'medium'}
+            value={resolved.thinkingLevel ?? 'medium'}
             onValueChange={(value) => {
-              if (value == null || model == null) return
+              if (value == null) return
               void onChange({
-                ...model,
+                ...resolved,
                 thinkingLevel: value as PiChatThinkingLevel,
               })
             }}

@@ -817,8 +817,9 @@ describe('local review storage', () => {
       expect(lines.join('\n')).toContain('[summary]')
       expect(lines.join('\n')).toContain('action(domain):')
       expect(lines).toContain('--append-system-prompt')
-      expect(lines).not.toContain('--model')
-      expect(lines).not.toContain('--thinking')
+      expect(lines).toContain('--model')
+      expect(lines).toContain('xai/grok-4.6')
+      expect(lines).toContain('--thinking')
       expect(lines).toContain('--mode')
       expect(lines).toContain('rpc')
       expect(lines).toContain('--session-dir')
@@ -874,19 +875,8 @@ describe('local review storage', () => {
     chmodSync(path.join(bin, 'pi'), 0o755)
     const originalPath = process.env.PATH
     const originalOutput = process.env.PI_TEST_OUTPUT
-    const originalPiSettings = process.env.DIFF_REVIEW_PI_AGENT_SETTINGS
-    const piSettings = path.join(dataDirectory, 'pi-agent-settings.json')
-    writeFileSync(
-      piSettings,
-      JSON.stringify({
-        defaultProvider: 'xai',
-        defaultModel: 'grok-4.6',
-        defaultThinkingLevel: 'medium',
-      }),
-    )
     process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`
     process.env.PI_TEST_OUTPUT = output
-    process.env.DIFF_REVIEW_PI_AGENT_SETTINGS = piSettings
     const runner = new PiReviewRunner(store, () => undefined)
     const choice = {
       provider: 'openai-codex',
@@ -920,26 +910,11 @@ describe('local review storage', () => {
       const continued = readFileSync(output, 'utf8')
       expect(continued).toContain('--session')
       expect(continued).toContain('openai-codex/gpt-5.6-sol')
-      runner.setChatModel(session.id, null)
-      expect(runner.getChat(session.id).model).toBeNull()
-      await runner.send(session.id, 'Back to Pi default')
-      await waitFor(() => {
-        const chat = runner.getChat(session.id)
-        return chat.turns.length === 3 && chat.busy === false
-      })
-      expect(runner.getChat(session.id).model).toBeNull()
-      const restored = readFileSync(output, 'utf8')
-      expect(restored).toContain('--session')
-      expect(restored).toContain('xai/grok-4.6')
-      expect(restored).not.toContain('openai-codex/gpt-5.6-sol')
-      expect(JSON.parse(readFileSync(piSettings, 'utf8')).defaultModel).toBe('grok-4.6')
     } finally {
       runner.close()
       process.env.PATH = originalPath
       if (originalOutput == null) delete process.env.PI_TEST_OUTPUT
       else process.env.PI_TEST_OUTPUT = originalOutput
-      if (originalPiSettings == null) delete process.env.DIFF_REVIEW_PI_AGENT_SETTINGS
-      else process.env.DIFF_REVIEW_PI_AGENT_SETTINGS = originalPiSettings
     }
   })
 
