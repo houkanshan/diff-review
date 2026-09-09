@@ -21,6 +21,7 @@ import {
 import { defaultPiChatModel, piChatCliArgs, piChatModelKey } from '../shared/piChatModel.js'
 import type {
   PiChatModelChoice,
+  PiChatModelOption,
   PiChatOverlay,
   PiChatPage,
   PiReviewRun,
@@ -30,6 +31,7 @@ import type {
 import { AppError } from './errors.js'
 import {
   type ChatModelSelection,
+  cachedPiChatModels,
   listPiChatModels,
   readChatModelSelection,
   readPiChatModel,
@@ -85,6 +87,7 @@ export class PiReviewRunner {
 
   initialize(): void {
     void this.reconcileAndCleanup()
+    void listPiChatModels()
     this.cleanupTimer = setInterval(() => void this.reconcileAndCleanup(), CLEANUP_INTERVAL_MS)
     this.cleanupTimer.unref()
   }
@@ -136,7 +139,7 @@ export class PiReviewRunner {
       error: run?.error ?? (isPiInstalled() ? null : PI_INSTALL_HINT),
       piInstalled: isPiInstalled(),
       model: this.chatModel(sessionId),
-      models: listPiChatModels(),
+      models: cachedPiChatModels(),
     }
   }
 
@@ -145,7 +148,7 @@ export class PiReviewRunner {
     return writeChatModelSelection(
       this.store.dataDirectory,
       chatModelKey(session),
-      choice ?? defaultPiChatModel(listPiChatModels()),
+      choice ?? defaultPiChatModel(cachedPiChatModels()),
     )
   }
 
@@ -153,7 +156,7 @@ export class PiReviewRunner {
     const selection = this.chatModelSelection(sessionId)
     return selection.status === 'set' && selection.model != null
       ? selection.model
-      : defaultPiChatModel(listPiChatModels())
+      : defaultPiChatModel(cachedPiChatModels())
   }
 
   private chatModelSelection(sessionId: string) {
@@ -208,7 +211,6 @@ export class PiReviewRunner {
       const handle = await this.ensureRpc(
         run,
         sessionId,
-        session.target.number,
         session.revisionBaseOid,
         session.revisionHeadOid,
       )
@@ -351,13 +353,12 @@ export class PiReviewRunner {
   private async ensureRpc(
     run: PiReviewRun,
     sessionId: string,
-    pullRequestNumber: number,
     baseOid: string,
     headOid: string,
   ): Promise<RpcHandle> {
     const sessionPath = run.piSessionPath ?? findPiSessionPath(run)
     const resumeSession = sessionPath != null && pathExists(sessionPath)
-    const model = spawnPiChatModel(this.chatModelSelection(sessionId))
+    const model = spawnPiChatModel(this.chatModelSelection(sessionId), await listPiChatModels())
     const modelKey = model.key
     if (
       this.rpc != null
@@ -379,8 +380,6 @@ export class PiReviewRunner {
       '--approve',
       '--tools',
       'read,bash,grep,find,ls',
-      '--append-system-prompt',
-      buildReviewSystemPrompt(sessionId, pullRequestNumber, baseOid, headOid),
       ...model.args,
     ]
     if (sessionPath != null && pathExists(sessionPath)) {
@@ -754,10 +753,13 @@ function chatModelKey(session: ReviewSession): string {
   return `session:${session.id}`
 }
 
-function spawnPiChatModel(selection: ChatModelSelection): { args: string[]; key: string } {
+function spawnPiChatModel(
+  selection: ChatModelSelection,
+  models: readonly PiChatModelOption[],
+): { args: string[]; key: string } {
   const stored = selection.status === 'set' && selection.model != null
     ? selection.model
-    : defaultPiChatModel(listPiChatModels())
+    : defaultPiChatModel(models)
   return { args: piChatCliArgs(stored), key: piChatModelKey(stored) }
 }
 
@@ -772,10 +774,10 @@ function buildExplainPrompt(
   const userInstructions = extra
     ? `\n\nAdditional instructions from the user:\n${extra}`
     : ''
-  return `${buildReviewSystemPrompt(sessionId, pullRequestNumber, baseOid, headOid)}${userInstructions}`
+  return `${buildReviewPrompt(sessionId, pullRequestNumber, baseOid, headOid)}${userInstructions}`
 }
 
-function buildReviewSystemPrompt(
+function buildReviewPrompt(
   sessionId: string,
   pullRequestNumber: number,
   baseOid: string,

@@ -28,6 +28,7 @@ import type {
   SendPiChatInput,
 } from '../shared/types.js'
 import { parsePiChatModelChoice } from '../shared/piChatModel.js'
+import { listPiChatModels } from './piChatModel.js'
 import { sessionUsesFullCommitRange, targetSupportsStaging } from '../shared/types.js'
 import { pullRequestAllowsReviewEvent } from '../shared/pull-request.js'
 import {
@@ -406,6 +407,7 @@ export class ApiHandler {
       const before = url.searchParams.get('before')
       const limitValue = url.searchParams.get('limit')
       const limit = limitValue == null ? undefined : Number(limitValue)
+      await listPiChatModels()
       sendJson(
         response,
         200,

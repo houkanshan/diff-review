@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
@@ -26,22 +26,75 @@ export function piChatModelsPath(dataDirectory: string): string {
 }
 
 let listedModels: { key: string; models: PiChatModelOption[] } | null = null
+let listedModelsInflight: { key: string; promise: Promise<PiChatModelOption[]> } | null = null
 
-export function listPiChatModels(): PiChatModelOption[] {
+export function cachedPiChatModels(): PiChatModelOption[] {
+  const key = process.env.PATH ?? ''
+  return listedModels?.key === key ? listedModels.models : []
+}
+
+export async function listPiChatModels(): Promise<PiChatModelOption[]> {
   const key = process.env.PATH ?? ''
   if (listedModels?.key === key) return listedModels.models
+  if (listedModelsInflight?.key === key) return listedModelsInflight.promise
+  const promise = loadPiChatModels().then(
+    (models) => {
+      listedModels = { key, models }
+      if (listedModelsInflight?.promise === promise) listedModelsInflight = null
+      return models
+    },
+    (error: unknown) => {
+      if (listedModelsInflight?.promise === promise) listedModelsInflight = null
+      throw error
+    },
+  )
+  listedModelsInflight = { key, promise }
+  try {
+    return await promise
+  } catch {
+    return []
+  }
+}
+
+async function loadPiChatModels(): Promise<PiChatModelOption[]> {
   const env = { ...process.env }
   delete env.PI_TEST_OUTPUT
-  const result = spawnSync('pi', ['--list-models'], {
-    encoding: 'utf8',
-    timeout: 20_000,
-    env,
+  const result = await runPiListModels(env)
+  if (result.status !== 0) {
+    throw new Error(result.stderr.trim() || `pi --list-models exited with ${result.status}`)
+  }
+  return filterPiChatModels(parsePiListModelsTable(result.stdout))
+}
+
+function runPiListModels(
+  env: NodeJS.ProcessEnv,
+): Promise<{ stdout: string; stderr: string; status: number }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('pi', ['--list-models'], {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    const stdout: Buffer[] = []
+    const stderr: Buffer[] = []
+    const timer = setTimeout(() => {
+      child.kill()
+      reject(new Error('pi --list-models timed out'))
+    }, 20_000)
+    child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk))
+    child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk))
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      reject(error)
+    })
+    child.on('close', (status) => {
+      clearTimeout(timer)
+      resolve({
+        stdout: Buffer.concat(stdout).toString('utf8'),
+        stderr: Buffer.concat(stderr).toString('utf8'),
+        status: status ?? 1,
+      })
+    })
   })
-  const models = result.status === 0
-    ? filterPiChatModels(parsePiListModelsTable(result.stdout ?? ''))
-    : []
-  listedModels = { key, models }
-  return models
 }
 
 export function readChatModelSelection(
