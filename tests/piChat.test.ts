@@ -11,7 +11,13 @@ import {
   piChatCliArgs,
   PI_CHAT_MODELS,
 } from '../src/shared/piChatModel'
-import { readPiAgentDefaultModel, readPiChatModel, writePiChatModel } from '../src/server/piChatModel'
+import {
+  readChatModelSelection,
+  readPiAgentDefaultModel,
+  readPiChatModel,
+  writeChatModelSelection,
+  writePiChatModel,
+} from '../src/server/piChatModel'
 
 describe('projectPiChatTurns', () => {
   test('folds thinking and tools into work and keeps user plus final assistant text', () => {
@@ -256,6 +262,38 @@ describe('pi chat model', () => {
       PI_CHAT_MODELS.find((model) => model.id === 'composer-2.5')!,
       'high',
     ).thinkingLevel).toBeNull()
+  })
+
+  test('stores an explicit Pi default separately from an unset chat', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-chat-model-'))
+    try {
+      expect(readChatModelSelection(directory, 'pr:/repo:1')).toEqual({ status: 'unset' })
+      expect(writeChatModelSelection(directory, 'pr:/repo:1', {
+        provider: 'openai-codex',
+        modelId: 'gpt-5.6-sol',
+        thinkingLevel: 'high',
+      })).toEqual({
+        provider: 'openai-codex',
+        modelId: 'gpt-5.6-sol',
+        thinkingLevel: 'high',
+      })
+      expect(writeChatModelSelection(directory, 'pr:/repo:2', null)).toBeNull()
+      expect(readChatModelSelection(directory, 'pr:/repo:1')).toEqual({
+        status: 'set',
+        model: {
+          provider: 'openai-codex',
+          modelId: 'gpt-5.6-sol',
+          thinkingLevel: 'high',
+        },
+      })
+      expect(readChatModelSelection(directory, 'pr:/repo:2')).toEqual({
+        status: 'set',
+        model: null,
+      })
+      expect(readChatModelSelection(directory, 'pr:/repo:3')).toEqual({ status: 'unset' })
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 
   test('remembers the choice in the Diff Review data directory', () => {

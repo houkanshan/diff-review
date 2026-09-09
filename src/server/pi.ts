@@ -25,9 +25,16 @@ import type {
   PiChatPage,
   PiReviewRun,
   PiReviewStatus,
+  ReviewSession,
 } from '../shared/types.js'
 import { AppError } from './errors.js'
-import { readPiChatModel, writePiChatModel } from './piChatModel.js'
+import {
+  type ChatModelSelection,
+  readChatModelSelection,
+  readPiAgentDefaultModel,
+  readPiChatModel,
+  writeChatModelSelection,
+} from './piChatModel.js'
 import { ReviewStore } from './store.js'
 
 const RETENTION_MS = 14 * 24 * 60 * 60 * 1000
@@ -133,26 +140,27 @@ export class PiReviewRunner {
   }
 
   setChatModel(sessionId: string, choice: PiChatModelChoice | null): PiChatModelChoice | null {
-    this.store.getSession(sessionId)
-    writePiChatModel(this.store.dataDirectory, choice)
-    const run = this.store.latestPiReviewRunForChat(sessionId)
-    if (run != null && pathExists(run.piSessionDir)) {
-      writePiChatModel(run.piSessionDir, choice)
-    }
-    return choice
+    const session = this.store.getSession(sessionId)
+    return writeChatModelSelection(this.store.dataDirectory, chatModelKey(session), choice)
   }
 
   private chatModel(sessionId: string): PiChatModelChoice | null {
-    const run = this.store.latestPiReviewRunForChat(sessionId)
-    if (run == null) return readPiChatModel(this.store.dataDirectory)
-    return this.runModel(run) ?? readPiChatModel(this.store.dataDirectory)
+    const selection = this.chatModelSelection(sessionId)
+    return selection.status === 'set' ? selection.model : null
   }
 
-  private runModel(run: PiReviewRun): PiChatModelChoice | null {
-    const stored = readPiChatModel(run.piSessionDir)
-    if (stored != null) return stored
+  private chatModelSelection(sessionId: string) {
+    const session = this.store.getSession(sessionId)
+    const stored = readChatModelSelection(this.store.dataDirectory, chatModelKey(session))
+    if (stored.status === 'set') return stored
+    const run = this.store.latestPiReviewRunForChat(sessionId)
+    if (run == null) return stored
+    const sidecar = readPiChatModel(run.piSessionDir)
+    if (sidecar != null) return { status: 'set' as const, model: sidecar }
     const file = run.piSessionPath ?? findPiSessionPath(run)
-    return projectPiChatModel(readSessionEntries(file))
+    const transcript = projectPiChatModel(readSessionEntries(file))
+    if (transcript != null) return { status: 'set' as const, model: transcript }
+    return stored
   }
 
   async send(
@@ -341,7 +349,8 @@ export class PiReviewRunner {
     headOid: string,
   ): Promise<RpcHandle> {
     const sessionPath = run.piSessionPath ?? findPiSessionPath(run)
-    const model = spawnPiChatModel(this.runModel(run))
+    const resumeSession = sessionPath != null && pathExists(sessionPath)
+    const model = spawnPiChatModel(this.chatModelSelection(sessionId), resumeSession)
     const modelKey = model.key
     if (
       this.rpc != null
@@ -733,9 +742,25 @@ function transcriptRevision(file: string | null): string {
   }
 }
 
-function spawnPiChatModel(stored: PiChatModelChoice | null): { args: string[]; key: string } {
+function chatModelKey(session: ReviewSession): string {
+  if (session.target.kind === 'pr') return `pr:${session.repositoryRoot}:${session.target.number}`
+  return `session:${session.id}`
+}
+
+function spawnPiChatModel(
+  selection: ChatModelSelection,
+  resumeSession: boolean,
+): { args: string[]; key: string } {
+  const stored = selection.status === 'set' ? selection.model : null
   if (stored != null) {
     return { args: piChatCliArgs(stored), key: piChatModelKey(stored) }
+  }
+  if (selection.status === 'set' && resumeSession) {
+    const fallback = readPiAgentDefaultModel()
+    return {
+      args: piChatCliArgs(fallback),
+      key: `pi-default:${piChatModelKey(fallback)}`,
+    }
   }
   return { args: [], key: 'pi-default' }
 }

@@ -34,7 +34,7 @@ import { LOCAL_CHANGES_OID } from '../src/shared/types.js'
 import { ApiHandler } from '../src/server/api.js'
 import { PiReviewRunner } from '../src/server/pi.js'
 import { ReviewStore } from '../src/server/store.js'
-import { piChatModelPath } from '../src/server/piChatModel.js'
+import { piChatModelsPath } from '../src/server/piChatModel.js'
 import { PI_INSTALL_HINT } from '../src/shared/piChat.js'
 
 const fixture = createGitFixture()
@@ -894,7 +894,9 @@ describe('local review storage', () => {
       thinkingLevel: 'high' as const,
     }
     try {
-      const sent = await runner.send(session.id, 'Use sol', false, choice)
+      expect(runner.setChatModel(session.id, choice)).toEqual(choice)
+      expect(runner.getChat(session.id).model).toEqual(choice)
+      const sent = await runner.send(session.id, 'Use sol')
       expect(sent.model).toEqual(choice)
       await waitFor(() => {
         const chat = runner.getChat(session.id)
@@ -905,12 +907,10 @@ describe('local review storage', () => {
       expect(spawned).toContain('openai-codex/gpt-5.6-sol')
       expect(spawned).toContain('--thinking')
       expect(spawned).toContain('high')
-      const run = store.latestPiReviewRunForChat(session.id)
-      if (run == null) throw new Error('Expected a Pi run')
-      expect(JSON.parse(readFileSync(piChatModelPath(run.piSessionDir), 'utf8'))).toEqual(choice)
-      expect(JSON.parse(readFileSync(piChatModelPath(store.dataDirectory), 'utf8'))).toEqual(choice)
+      expect(JSON.parse(readFileSync(piChatModelsPath(store.dataDirectory), 'utf8'))).toEqual({
+        [`pr:${session.repositoryRoot}:44`]: choice,
+      })
       expect(existsSync(path.join(store.dataDirectory, 'settings.json'))).toBe(false)
-      expect(runner.getChat(session.id).model).toEqual(choice)
       await runner.send(session.id, 'Keep sol')
       await waitFor(() => {
         const chat = runner.getChat(session.id)
@@ -920,21 +920,18 @@ describe('local review storage', () => {
       const continued = readFileSync(output, 'utf8')
       expect(continued).toContain('--session')
       expect(continued).toContain('openai-codex/gpt-5.6-sol')
-      const next = {
-        provider: 'openai-codex',
-        modelId: 'gpt-5.6-luna',
-        thinkingLevel: 'low' as const,
-      }
-      runner.setChatModel(session.id, next)
-      await runner.send(session.id, 'Switch to luna', false, next)
+      runner.setChatModel(session.id, null)
+      expect(runner.getChat(session.id).model).toBeNull()
+      await runner.send(session.id, 'Back to Pi default')
       await waitFor(() => {
         const chat = runner.getChat(session.id)
         return chat.turns.length === 3 && chat.busy === false
       })
-      expect(runner.getChat(session.id).model).toEqual(next)
-      const switched = readFileSync(output, 'utf8')
-      expect(switched).toContain('openai-codex/gpt-5.6-luna')
-      expect(switched).not.toContain('openai-codex/gpt-5.6-sol')
+      expect(runner.getChat(session.id).model).toBeNull()
+      const restored = readFileSync(output, 'utf8')
+      expect(restored).toContain('--session')
+      expect(restored).toContain('xai/grok-4.6')
+      expect(restored).not.toContain('openai-codex/gpt-5.6-sol')
       expect(JSON.parse(readFileSync(piSettings, 'utf8')).defaultModel).toBe('grok-4.6')
     } finally {
       runner.close()
