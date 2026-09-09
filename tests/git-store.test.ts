@@ -812,11 +812,9 @@ describe('local review storage', () => {
       const lines = readFileSync(output, 'utf8').split('\n')
       const worktree = lines[0] ?? ''
       expect(lines[1]).toBe(session.revisionHeadOid)
-      expect(lines.join('\n')).toContain(`diff-review annotate ${session.id}`)
-      expect(lines.join('\n')).toContain('Help someone review PR #42.')
-      expect(lines.join('\n')).toContain('[summary]')
-      expect(lines.join('\n')).toContain('action(domain):')
-      expect(lines).toContain('--append-system-prompt')
+      expect(lines.join('\n')).not.toContain(`diff-review annotate ${session.id}`)
+      expect(lines.join('\n')).not.toContain('Help someone review PR #42.')
+      expect(lines).not.toContain('--append-system-prompt')
       expect(lines).toContain('--model')
       expect(lines).toContain('openai-codex/gpt-5.6-luna')
       expect(lines).toContain('--thinking')
@@ -977,7 +975,7 @@ describe('local review storage', () => {
       expect(git(status.worktreePath, ['rev-parse', 'HEAD']).trim()).toBe(later.revisionHeadOid)
       const spawned = readFileSync(output, 'utf8')
       expect(spawned).toContain(later.revisionHeadOid)
-      expect(spawned).toContain('--append-system-prompt')
+      expect(spawned).not.toContain('--append-system-prompt')
       expect(spawned).toContain('--session')
     } finally {
       runner.close()
