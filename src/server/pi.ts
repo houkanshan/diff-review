@@ -11,7 +11,7 @@ import {
 import { mkdir, rm } from 'node:fs/promises'
 import path from 'node:path'
 
-import { pagePiChatTurns, PI_INSTALL_HINT, projectPiChatTurns } from '../shared/piChat.js'
+import { pagePiChatTurns, PI_INSTALL_HINT, projectPiChatModel, projectPiChatTurns } from '../shared/piChat.js'
 import {
   applyPiOverlayEvent,
   createLiveOverlay,
@@ -27,7 +27,7 @@ import type {
   PiReviewStatus,
 } from '../shared/types.js'
 import { AppError } from './errors.js'
-import { readPiAgentDefaultModel, readPiChatModel, writePiChatModel } from './piChatModel.js'
+import { readPiChatModel, writePiChatModel } from './piChatModel.js'
 import { ReviewStore } from './store.js'
 
 const RETENTION_MS = 14 * 24 * 60 * 60 * 1000
@@ -128,16 +128,31 @@ export class PiReviewRunner {
       busy: this.isBusy(),
       error: run?.error ?? (isPiInstalled() ? null : PI_INSTALL_HINT),
       piInstalled: isPiInstalled(),
-      model: this.getModel(),
+      model: this.chatModel(sessionId),
     }
   }
 
-  getModel(): PiChatModelChoice | null {
-    return readPiChatModel(this.store.dataDirectory)
+  setChatModel(sessionId: string, choice: PiChatModelChoice | null): PiChatModelChoice | null {
+    this.store.getSession(sessionId)
+    writePiChatModel(this.store.dataDirectory, choice)
+    const run = this.store.latestPiReviewRunForChat(sessionId)
+    if (run != null && pathExists(run.piSessionDir)) {
+      writePiChatModel(run.piSessionDir, choice)
+    }
+    return choice
   }
 
-  setModel(choice: PiChatModelChoice | null): PiChatModelChoice | null {
-    return writePiChatModel(this.store.dataDirectory, choice)
+  private chatModel(sessionId: string): PiChatModelChoice | null {
+    const run = this.store.latestPiReviewRunForChat(sessionId)
+    if (run == null) return readPiChatModel(this.store.dataDirectory)
+    return this.runModel(run) ?? readPiChatModel(this.store.dataDirectory)
+  }
+
+  private runModel(run: PiReviewRun): PiChatModelChoice | null {
+    const stored = readPiChatModel(run.piSessionDir)
+    if (stored != null) return stored
+    const file = run.piSessionPath ?? findPiSessionPath(run)
+    return projectPiChatModel(readSessionEntries(file))
   }
 
   async send(
@@ -148,7 +163,6 @@ export class PiReviewRunner {
   ): Promise<PiChatPage> {
     const additional = message.trim()
     if (!explain && !additional) throw new AppError('INVALID_INPUT', 'Message is required')
-    if (model !== undefined) this.setModel(model)
     if (!isPiInstalled()) {
       throw new AppError('COMMAND_NOT_FOUND', PI_INSTALL_HINT, 503)
     }
@@ -173,6 +187,7 @@ export class PiReviewRunner {
         session.repositoryRoot,
         session.revisionHeadOid,
       )
+      if (model !== undefined) this.setChatModel(sessionId, model)
       if (this.rpc != null && this.rpc.runId !== run.id) this.stopRpc()
       const afterTurnId = this.getChat(sessionId).turns.at(-1)?.id ?? null
       const handle = await this.ensureRpc(
@@ -326,10 +341,7 @@ export class PiReviewRunner {
     headOid: string,
   ): Promise<RpcHandle> {
     const sessionPath = run.piSessionPath ?? findPiSessionPath(run)
-    const model = spawnPiChatModel(
-      readPiChatModel(this.store.dataDirectory),
-      sessionPath != null && pathExists(sessionPath),
-    )
+    const model = spawnPiChatModel(this.runModel(run))
     const modelKey = model.key
     if (
       this.rpc != null
@@ -721,18 +733,11 @@ function transcriptRevision(file: string | null): string {
   }
 }
 
-function spawnPiChatModel(
-  stored: PiChatModelChoice | null,
-  resumeSession: boolean,
-): { args: string[]; key: string } {
+function spawnPiChatModel(stored: PiChatModelChoice | null): { args: string[]; key: string } {
   if (stored != null) {
     return { args: piChatCliArgs(stored), key: piChatModelKey(stored) }
   }
-  const fallback = readPiAgentDefaultModel()
-  return {
-    args: resumeSession ? piChatCliArgs(fallback) : [],
-    key: `pi-default:${piChatModelKey(fallback)}`,
-  }
+  return { args: [], key: 'pi-default' }
 }
 
 function buildExplainPrompt(

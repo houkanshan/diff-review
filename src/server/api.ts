@@ -170,6 +170,7 @@ export class ApiHandler {
     const fileDifftasticMatch = /^\/api\/sessions\/([^/]+)\/difftastic$/.exec(url.pathname)
     const piReviewMatch = /^\/api\/sessions\/([^/]+)\/pi-review$/.exec(url.pathname)
     const piChatMatch = /^\/api\/sessions\/([^/]+)\/pi-chat$/.exec(url.pathname)
+    const piChatModelMatch = /^\/api\/sessions\/([^/]+)\/pi-chat\/model$/.exec(url.pathname)
     const pullRequestMatch = /^\/api\/pull-requests\/(\d+)$/.exec(url.pathname)
     const pullRequestOpenMatch = /^\/api\/pull-requests\/(\d+)\/open$/.exec(url.pathname)
     const pullRequestRevisionsMatch = /^\/api\/pull-requests\/(\d+)\/revisions$/.exec(
@@ -201,16 +202,7 @@ export class ApiHandler {
       sendJson(response, 200, await getDifftasticAvailability())
       return
     }
-    if (method === 'GET' && url.pathname === '/api/pi-chat/model') {
-      sendJson(response, 200, { model: this.piReviews.getModel() } satisfies PiChatModelSettings)
-      return
-    }
-    if (method === 'PUT' && url.pathname === '/api/pi-chat/model') {
-      sendJson(response, 200, {
-        model: this.piReviews.setModel(parsePiChatModelSettings(await readJson(request))),
-      } satisfies PiChatModelSettings)
-      return
-    }
+
 
 
     if (method === 'GET' && url.pathname === '/api/repository') {
@@ -397,6 +389,16 @@ export class ApiHandler {
 
     if (method === 'GET' && piReviewMatch != null) {
       sendJson(response, 200, this.piReviews.getStatus(piReviewMatch[1] ?? ''))
+      return
+    }
+
+    if (method === 'PUT' && piChatModelMatch != null) {
+      sendJson(response, 200, {
+        model: this.piReviews.setChatModel(
+          piChatModelMatch[1] ?? '',
+          parsePiChatModelSettings(await readJson(request)),
+        ),
+      } satisfies PiChatModelSettings)
       return
     }
 

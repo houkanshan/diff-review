@@ -1,4 +1,9 @@
-import type { PiChatTurn, PiChatWork } from './types.js'
+import {
+  findPiChatModel,
+  normalizePiChatModelChoice,
+  parsePiChatThinkingLevel,
+} from './piChatModel.js'
+import type { PiChatModelChoice, PiChatTurn, PiChatWork } from './types.js'
 
 export const PI_CHAT_PAGE_SIZE = 40
 
@@ -77,6 +82,29 @@ export function projectPiChatTurns(entries: readonly unknown[]): PiChatTurn[] {
   return turns
 }
 
+export function projectPiChatModel(entries: readonly unknown[]): PiChatModelChoice | null {
+  let provider = ''
+  let modelId = ''
+  let thinkingLevel: PiChatModelChoice['thinkingLevel'] = null
+  for (const entry of activeTreeBranch(entries)) {
+    if (entry.type === 'model_change') {
+      if (entry.provider) provider = entry.provider
+      if (entry.modelId) modelId = entry.modelId
+    }
+    if (entry.type === 'thinking_level_change' && entry.thinkingLevel != null) {
+      thinkingLevel = parsePiChatThinkingLevel(entry.thinkingLevel) ?? thinkingLevel
+    }
+    if (entry.type === 'message' && entry.message?.role === 'assistant') {
+      if (entry.assistantProvider) provider = entry.assistantProvider
+      if (entry.assistantModel) modelId = entry.assistantModel
+    }
+  }
+  if (!provider || !modelId) return null
+  const option = findPiChatModel(provider, modelId)
+  if (option != null) return normalizePiChatModelChoice(option, thinkingLevel ?? 'medium')
+  return { provider, modelId, thinkingLevel }
+}
+
 export function pagePiChatTurns(
   turns: readonly PiChatTurn[],
   before: string | null,
@@ -109,6 +137,10 @@ export function assistantTextFromContent(content: unknown): string {
 }
 
 function activeMessageBranch(entries: readonly unknown[]): SessionMessageEntry[] {
+  return activeTreeBranch(entries).filter(isMessageEntry)
+}
+
+function activeTreeBranch(entries: readonly unknown[]): SessionTreeEntry[] {
   const nodes: SessionTreeEntry[] = []
   for (const entry of entries) {
     const parsed = parseTreeEntry(entry)
@@ -128,7 +160,7 @@ function activeMessageBranch(entries: readonly unknown[]): SessionMessageEntry[]
     branch.push(leaf)
     leaf = leaf.parentId == null ? undefined : byId.get(leaf.parentId)
   }
-  return branch.reverse().filter(isMessageEntry)
+  return branch.reverse()
 }
 
 function isMessageEntry(entry: SessionTreeEntry): entry is SessionMessageEntry {
@@ -141,6 +173,11 @@ interface SessionTreeEntry {
   parentId: string | null
   timestamp: string
   message?: SessionMessageEntry['message']
+  provider?: string
+  modelId?: string
+  thinkingLevel?: string
+  assistantProvider?: string
+  assistantModel?: string
 }
 
 function parseTreeEntry(value: unknown): SessionTreeEntry | null {
@@ -149,6 +186,9 @@ function parseTreeEntry(value: unknown): SessionTreeEntry | null {
   if (typeof entry.id !== 'string') return null
   const parentId = typeof entry.parentId === 'string' ? entry.parentId : null
   const timestamp = typeof entry.timestamp === 'string' ? entry.timestamp : ''
+  const provider = typeof entry.provider === 'string' ? entry.provider : undefined
+  const modelId = typeof entry.modelId === 'string' ? entry.modelId : undefined
+  const thinkingLevel = typeof entry.thinkingLevel === 'string' ? entry.thinkingLevel : undefined
   if (entry.type === 'message') {
     if (typeof entry.message !== 'object' || entry.message == null) return null
     const message = entry.message as Record<string, unknown>
@@ -158,6 +198,11 @@ function parseTreeEntry(value: unknown): SessionTreeEntry | null {
       id: entry.id,
       parentId,
       timestamp,
+      provider,
+      modelId,
+      thinkingLevel,
+      assistantProvider: typeof message.provider === 'string' ? message.provider : undefined,
+      assistantModel: typeof message.model === 'string' ? message.model : undefined,
       message: {
         role: message.role,
         content: message.content,
@@ -172,6 +217,9 @@ function parseTreeEntry(value: unknown): SessionTreeEntry | null {
     id: entry.id,
     parentId,
     timestamp,
+    provider,
+    modelId,
+    thinkingLevel,
   }
 }
 

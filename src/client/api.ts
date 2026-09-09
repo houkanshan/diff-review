@@ -202,14 +202,11 @@ export function sendPiChat(
   })
 }
 
-export function getPiChatModel(): Promise<PiChatModelSettings> {
-  return request('/api/pi-chat/model')
-}
-
 export function setPiChatModel(
+  id: string,
   model: PiChatModelChoice | null,
 ): Promise<PiChatModelSettings> {
-  return request('/api/pi-chat/model', {
+  return request(`/api/sessions/${encodeURIComponent(id)}/pi-chat/model`, {
     method: 'PUT',
     body: JSON.stringify({ model }),
   })

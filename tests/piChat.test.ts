@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
-import { formatWorkDuration, pagePiChatTurns, projectPiChatTurns } from '../src/shared/piChat'
+import { formatWorkDuration, pagePiChatTurns, projectPiChatModel, projectPiChatTurns } from '../src/shared/piChat'
 import {
   normalizePiChatModelChoice,
   parsePiChatModelChoice,
@@ -185,6 +185,57 @@ describe('projectPiChatTurns', () => {
       nextBefore: 'u2',
     })
     expect(pagePiChatTurns(turns, 'u2', 2).nextBefore).toBeNull()
+  })
+})
+
+describe('projectPiChatModel', () => {
+  test('uses the latest model and thinking events on the active branch', () => {
+    expect(
+      projectPiChatModel([
+        { type: 'session', id: 's1' },
+        {
+          type: 'model_change',
+          id: 'm1',
+          parentId: null,
+          provider: 'openai-codex',
+          modelId: 'gpt-5.5',
+        },
+        {
+          type: 'thinking_level_change',
+          id: 't1',
+          parentId: 'm1',
+          thinkingLevel: 'medium',
+        },
+        {
+          type: 'model_change',
+          id: 'm2',
+          parentId: 't1',
+          provider: 'xai',
+          modelId: 'grok-4.6',
+        },
+        {
+          type: 'message',
+          id: 'u1',
+          parentId: 'm2',
+          message: { role: 'user', content: 'hi' },
+        },
+        {
+          type: 'message',
+          id: 'a1',
+          parentId: 'u1',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'ok' }],
+            provider: 'xai',
+            model: 'grok-4.6',
+          },
+        },
+      ]),
+    ).toEqual({
+      provider: 'xai',
+      modelId: 'grok-4.6',
+      thinkingLevel: 'medium',
+    })
   })
 })
 

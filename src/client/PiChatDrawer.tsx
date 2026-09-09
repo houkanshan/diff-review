@@ -169,8 +169,10 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
   const scrollerRef = useRef<HTMLDivElement>(null)
   const prependHeightRef = useRef<number | null>(null)
   const loadingOlderRef = useRef(false)
+  const modelEpochRef = useRef(0)
 
   const loadTail = useCallback(async () => {
+    const epoch = modelEpochRef.current
     const page = await getPiChat(sessionId, { limit: PI_CHAT_PAGE_SIZE })
     revisionRef.current = page.transcriptRevision
     setTurns(page.turns)
@@ -178,7 +180,7 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
     setOverlay((current) => reconcilePiOverlay(current, page.overlay))
     setPiInstalled(page.piInstalled)
     setError(page.piInstalled ? page.error : null)
-    setModel(page.model)
+    if (modelEpochRef.current === epoch) setModel(page.model)
   }, [sessionId])
 
   useEffect(() => {
@@ -379,10 +381,11 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
             disabled={working || !piInstalled}
             onChange={async (next) => {
               const previous = model
+              modelEpochRef.current += 1
               setModel(next)
               setModelSaving(true)
               try {
-                const saved = await setPiChatModel(next)
+                const saved = await setPiChatModel(sessionId, next)
                 setModel(saved.model)
               } catch (caught) {
                 setModel(previous)
@@ -449,7 +452,7 @@ function PiChatModelControls({
             void onChange(normalizePiChatModelChoice(selected, model?.thinkingLevel))
           }}
         >
-          <Menu.RadioItem value="pi-default" className="diff-option">
+          <Menu.RadioItem value="pi-default" closeOnClick className="diff-option">
             <Menu.RadioItemIndicator keepMounted className="diff-option-check">
               <CheckIcon />
             </Menu.RadioItemIndicator>
@@ -459,6 +462,7 @@ function PiChatModelControls({
             <Menu.RadioItem
               key={`${candidate.provider}/${candidate.id}`}
               value={`${candidate.provider}/${candidate.id}`}
+              closeOnClick
               className="diff-option"
             >
               <Menu.RadioItemIndicator keepMounted className="diff-option-check">
@@ -486,7 +490,7 @@ function PiChatModelControls({
             }}
           >
             {PI_CHAT_THINKING_LEVELS.map((level) => (
-              <Menu.RadioItem key={level} value={level} className="diff-option">
+              <Menu.RadioItem key={level} value={level} closeOnClick className="diff-option">
                 <Menu.RadioItemIndicator keepMounted className="diff-option-check">
                   <CheckIcon />
                 </Menu.RadioItemIndicator>
@@ -522,7 +526,7 @@ function PiChatChoiceMenu({
         <span>{value}</span>
         <ChevronIcon />
       </Menu.Trigger>
-      <Menu.Portal>
+      <Menu.Portal container={document.body}>
         <Menu.Positioner className="popup-positioner" sideOffset={6} align="start">
           <Menu.Popup className="diff-options-menu pi-chat-model-menu">
             <Menu.Group>

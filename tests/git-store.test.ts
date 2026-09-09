@@ -896,23 +896,45 @@ describe('local review storage', () => {
     try {
       const sent = await runner.send(session.id, 'Use sol', false, choice)
       expect(sent.model).toEqual(choice)
-      await waitFor(() => runner.getChat(session.id).busy === false)
+      await waitFor(() => {
+        const chat = runner.getChat(session.id)
+        return chat.turns.length === 1 && chat.busy === false
+      })
       const spawned = readFileSync(output, 'utf8')
       expect(spawned).toContain('--model')
       expect(spawned).toContain('openai-codex/gpt-5.6-sol')
       expect(spawned).toContain('--thinking')
       expect(spawned).toContain('high')
+      const run = store.latestPiReviewRunForChat(session.id)
+      if (run == null) throw new Error('Expected a Pi run')
+      expect(JSON.parse(readFileSync(piChatModelPath(run.piSessionDir), 'utf8'))).toEqual(choice)
       expect(JSON.parse(readFileSync(piChatModelPath(store.dataDirectory), 'utf8'))).toEqual(choice)
       expect(existsSync(path.join(store.dataDirectory, 'settings.json'))).toBe(false)
-      runner.setModel(null)
-      await runner.send(session.id, 'Back to Pi default')
-      await waitFor(() => runner.getChat(session.id).turns.length === 2)
-      expect(runner.getChat(session.id).model).toBeNull()
-      const restored = readFileSync(output, 'utf8')
-      expect(restored).toContain('--session')
-      expect(restored).toContain('--append-system-prompt')
-      expect(restored).toContain('xai/grok-4.6')
-      expect(restored).not.toContain('openai-codex/gpt-5.6-sol')
+      expect(runner.getChat(session.id).model).toEqual(choice)
+      await runner.send(session.id, 'Keep sol')
+      await waitFor(() => {
+        const chat = runner.getChat(session.id)
+        return chat.turns.length === 2 && chat.busy === false
+      })
+      expect(runner.getChat(session.id).model).toEqual(choice)
+      const continued = readFileSync(output, 'utf8')
+      expect(continued).toContain('--session')
+      expect(continued).toContain('openai-codex/gpt-5.6-sol')
+      const next = {
+        provider: 'openai-codex',
+        modelId: 'gpt-5.6-luna',
+        thinkingLevel: 'low' as const,
+      }
+      runner.setChatModel(session.id, next)
+      await runner.send(session.id, 'Switch to luna', false, next)
+      await waitFor(() => {
+        const chat = runner.getChat(session.id)
+        return chat.turns.length === 3 && chat.busy === false
+      })
+      expect(runner.getChat(session.id).model).toEqual(next)
+      const switched = readFileSync(output, 'utf8')
+      expect(switched).toContain('openai-codex/gpt-5.6-luna')
+      expect(switched).not.toContain('openai-codex/gpt-5.6-sol')
       expect(JSON.parse(readFileSync(piSettings, 'utf8')).defaultModel).toBe('grok-4.6')
     } finally {
       runner.close()
