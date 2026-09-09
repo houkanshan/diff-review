@@ -465,6 +465,13 @@ export interface PiChatModelChoice {
   thinkingLevel: PiChatThinkingLevel | null
 }
 
+export interface PiChatModelOption {
+  provider: string
+  id: string
+  name: string
+  thinking: boolean
+}
+
 export interface PiChatPage {
   turns: PiChatTurn[]
   nextBefore: string | null
@@ -474,6 +481,7 @@ export interface PiChatPage {
   error: string | null
   piInstalled: boolean
   model: PiChatModelChoice | null
+  models: PiChatModelOption[]
 }
 
 export interface SendPiChatInput {

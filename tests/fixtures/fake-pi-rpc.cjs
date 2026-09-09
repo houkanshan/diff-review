@@ -4,6 +4,15 @@ const path = require('path')
 const { execSync } = require('child_process')
 
 const args = process.argv.slice(2)
+if (args.includes('--list-models')) {
+  process.stdout.write(`provider        model                                                     context  max-out  thinking  images
+openai-codex    gpt-5.6-luna                                              272K     128K     yes       yes   
+openai-codex    gpt-5.6-sol                                               272K     128K     yes       yes   
+openai-codex    gpt-5.6-terra                                             272K     128K     yes       yes   
+openai-codex    gpt-6-astra                                               272K     128K     yes       yes   
+`)
+  process.exit(0)
+}
 let sessionDir = ''
 let sessionId = ''
 let sessionFile = ''

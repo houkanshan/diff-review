@@ -1,4 +1,4 @@
-import type { PiChatModelChoice, PiChatThinkingLevel } from './types.js'
+import type { PiChatModelChoice, PiChatModelOption, PiChatThinkingLevel } from './types.js'
 
 export const PI_CHAT_THINKING_LEVELS = [
   'off',
@@ -10,31 +10,36 @@ export const PI_CHAT_THINKING_LEVELS = [
   'max',
 ] as const satisfies readonly PiChatThinkingLevel[]
 
-export const PI_CHAT_MODELS = [
-  { provider: 'xai', id: 'grok-4.6', name: 'Grok 4.6', thinking: true },
-  { provider: 'openai-codex', id: 'gpt-5.6-sol', name: 'GPT-5.6 sol', thinking: true },
-  { provider: 'openai-codex', id: 'gpt-5.6-luna', name: 'GPT-5.6 luna', thinking: true },
-  { provider: 'cursor', id: 'composer-2.5', name: 'Composer 2.5', thinking: false },
-] as const
-
-export type PiChatModelOption = (typeof PI_CHAT_MODELS)[number]
+export const PI_CHAT_MODEL_ID_FILTERS = ['gpt-5.6', 'gpt-6'] as const
 
 const THINKING_LEVELS = new Set<string>(PI_CHAT_THINKING_LEVELS)
 
 export function findPiChatModel(
+  models: readonly PiChatModelOption[],
   provider: string,
   modelId: string,
 ): PiChatModelOption | undefined {
-  return PI_CHAT_MODELS.find((model) => model.provider === provider && model.id === modelId)
+  return models.find((model) => model.provider === provider && model.id === modelId)
 }
 
-export function defaultPiChatModel(): PiChatModelChoice {
-  return normalizePiChatModelChoice(PI_CHAT_MODELS[0])
+export function defaultPiChatModel(
+  models: readonly PiChatModelOption[] = [],
+): PiChatModelChoice {
+  const first = models[0]
+  if (first != null) return normalizePiChatModelChoice(first)
+  return {
+    provider: 'openai-codex',
+    modelId: 'gpt-5.6-luna',
+    thinkingLevel: 'medium',
+  }
 }
 
-export function piChatModelLabel(choice: PiChatModelChoice | null): string {
-  const resolved = choice ?? defaultPiChatModel()
-  return findPiChatModel(resolved.provider, resolved.modelId)?.name ?? resolved.modelId
+export function piChatModelLabel(
+  choice: PiChatModelChoice | null,
+  models: readonly PiChatModelOption[] = [],
+): string {
+  const resolved = choice ?? defaultPiChatModel(models)
+  return findPiChatModel(models, resolved.provider, resolved.modelId)?.name ?? resolved.modelId
 }
 
 export function piChatModelKey(choice: PiChatModelChoice | null): string {
@@ -65,9 +70,12 @@ export function parsePiChatModelChoice(value: unknown): PiChatModelChoice | null
     : typeof record.id === 'string'
       ? record.id.trim()
       : ''
-  const option = findPiChatModel(provider, modelId)
-  if (option == null) return null
-  return normalizePiChatModelChoice(option, record.thinkingLevel)
+  if (!provider || !modelId) return null
+  return {
+    provider,
+    modelId,
+    thinkingLevel: parsePiChatThinkingLevel(record.thinkingLevel) ?? 'medium',
+  }
 }
 
 export function normalizePiChatModelChoice(
@@ -82,4 +90,53 @@ export function normalizePiChatModelChoice(
     modelId: option.id,
     thinkingLevel: parsePiChatThinkingLevel(thinkingLevel) ?? 'medium',
   }
+}
+
+export function parsePiListModelsTable(stdout: string): PiChatModelOption[] {
+  const rows: PiChatModelOption[] = []
+  for (const line of stdout.split('\n')) {
+    const parts = line.trim().split(/\s+/)
+    if (parts.length < 6) continue
+    const provider = parts[0] ?? ''
+    const id = parts[1] ?? ''
+    const thinking = parts.at(-2)
+    if (provider === 'provider' || !provider || !id) continue
+    rows.push({
+      provider,
+      id,
+      name: piListModelName(id),
+      thinking: thinking === 'yes',
+    })
+  }
+  return rows
+}
+
+export function filterPiChatModels(rows: readonly PiChatModelOption[]): PiChatModelOption[] {
+  const matched = rows.filter((row) => {
+    if (row.id.includes('@') || row.id.includes(':')) return false
+    return PI_CHAT_MODEL_ID_FILTERS.some(
+      (filter) => row.id === filter || row.id.startsWith(`${filter}-`),
+    )
+  })
+  const ranked = [...matched].sort(
+    (left, right) => providerRank(left.provider) - providerRank(right.provider),
+  )
+  const seen = new Set<string>()
+  const models: PiChatModelOption[] = []
+  for (const row of ranked) {
+    if (seen.has(row.id)) continue
+    seen.add(row.id)
+    models.push(row)
+  }
+  return models
+}
+
+function piListModelName(id: string): string {
+  return id.replace(/^gpt-/, 'GPT-').replace(/-([a-z])/g, ' $1')
+}
+
+function providerRank(provider: string): number {
+  if (provider === 'openai-codex') return 0
+  if (provider === 'openai-codex-2') return 1
+  return 2
 }

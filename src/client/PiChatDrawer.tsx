@@ -27,13 +27,13 @@ import {
   defaultPiChatModel,
   findPiChatModel,
   normalizePiChatModelChoice,
-  PI_CHAT_MODELS,
   PI_CHAT_THINKING_LEVELS,
   piChatModelLabel,
 } from '../shared/piChatModel'
 import { reconcilePiOverlay } from '../shared/piOverlay'
 import type {
   PiChatModelChoice,
+  PiChatModelOption,
   PiChatOverlay,
   PiChatThinkingLevel,
   PiChatTurn,
@@ -162,6 +162,7 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
   const [error, setError] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
   const [model, setModel] = useState<PiChatModelChoice | null>(null)
+  const [models, setModels] = useState<PiChatModelOption[]>([])
   const [modelSaving, setModelSaving] = useState(false)
   const [explain, setExplain] = useState(false)
   const [pinned, setPinned] = useState(true)
@@ -181,6 +182,7 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
     setOverlay((current) => reconcilePiOverlay(current, page.overlay))
     setPiInstalled(page.piInstalled)
     setError(page.piInstalled ? page.error : null)
+    setModels(page.models)
     if (modelEpochRef.current === epoch) setModel(page.model)
   }, [sessionId])
 
@@ -379,6 +381,7 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
         <div className="pi-chat-composer-actions">
           <PiChatModelControls
             model={model}
+            models={models}
             disabled={working || !piInstalled}
             onChange={async (next) => {
               const previous = model
@@ -424,34 +427,36 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
 
 function PiChatModelControls({
   model,
+  models,
   disabled,
   onChange,
 }: {
   model: PiChatModelChoice | null
+  models: PiChatModelOption[]
   disabled: boolean
   onChange(model: PiChatModelChoice | null): void | Promise<void>
 }) {
-  const resolved = model ?? defaultPiChatModel()
-  const option = findPiChatModel(resolved.provider, resolved.modelId)
+  const resolved = model ?? defaultPiChatModel(models)
+  const option = findPiChatModel(models, resolved.provider, resolved.modelId)
   return (
     <div className="pi-chat-model-controls">
       <PiChatChoiceMenu
         label="Model"
-        value={piChatModelLabel(resolved)}
-        disabled={disabled}
+        value={piChatModelLabel(resolved, models)}
+        disabled={disabled || models.length === 0}
       >
         <Menu.RadioGroup
           value={`${resolved.provider}/${resolved.modelId}`}
           onValueChange={(value) => {
             if (value == null) return
-            const selected = PI_CHAT_MODELS.find(
+            const selected = models.find(
               (candidate) => `${candidate.provider}/${candidate.id}` === value,
             )
             if (selected == null) return
             void onChange(normalizePiChatModelChoice(selected, resolved.thinkingLevel))
           }}
         >
-          {PI_CHAT_MODELS.map((candidate) => (
+          {models.map((candidate) => (
             <Menu.RadioItem
               key={`${candidate.provider}/${candidate.id}`}
               value={`${candidate.provider}/${candidate.id}`}

@@ -818,7 +818,7 @@ describe('local review storage', () => {
       expect(lines.join('\n')).toContain('action(domain):')
       expect(lines).toContain('--append-system-prompt')
       expect(lines).toContain('--model')
-      expect(lines).toContain('xai/grok-4.6')
+      expect(lines).toContain('openai-codex/gpt-5.6-luna')
       expect(lines).toContain('--thinking')
       expect(lines).toContain('--mode')
       expect(lines).toContain('rpc')

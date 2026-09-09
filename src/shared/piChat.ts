@@ -1,8 +1,4 @@
-import {
-  findPiChatModel,
-  normalizePiChatModelChoice,
-  parsePiChatThinkingLevel,
-} from './piChatModel.js'
+import { parsePiChatThinkingLevel } from './piChatModel.js'
 import type { PiChatModelChoice, PiChatTurn, PiChatWork } from './types.js'
 
 export const PI_CHAT_PAGE_SIZE = 40
@@ -100,9 +96,11 @@ export function projectPiChatModel(entries: readonly unknown[]): PiChatModelChoi
     }
   }
   if (!provider || !modelId) return null
-  const option = findPiChatModel(provider, modelId)
-  if (option != null) return normalizePiChatModelChoice(option, thinkingLevel ?? 'medium')
-  return { provider, modelId, thinkingLevel }
+  return {
+    provider,
+    modelId,
+    thinkingLevel: thinkingLevel ?? 'medium',
+  }
 }
 
 export function pagePiChatTurns(

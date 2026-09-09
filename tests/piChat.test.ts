@@ -7,10 +7,11 @@ import path from 'node:path'
 import { formatWorkDuration, pagePiChatTurns, projectPiChatModel, projectPiChatTurns } from '../src/shared/piChat'
 import {
   defaultPiChatModel,
+  filterPiChatModels,
   normalizePiChatModelChoice,
   parsePiChatModelChoice,
+  parsePiListModelsTable,
   piChatCliArgs,
-  PI_CHAT_MODELS,
 } from '../src/shared/piChatModel'
 import {
   readChatModelSelection,
@@ -246,11 +247,15 @@ describe('projectPiChatModel', () => {
 })
 
 describe('pi chat model', () => {
-  test('maps a catalog choice to Pi CLI flags without a default-model write', () => {
-    const sol = PI_CHAT_MODELS.find((model) => model.id === 'gpt-5.6-sol')
-    if (sol == null) throw new Error('expected sol')
+  test('maps a listed choice to Pi CLI flags', () => {
+    const sol = {
+      provider: 'openai-codex',
+      id: 'gpt-5.6-sol',
+      name: 'GPT-5.6 sol',
+      thinking: true,
+    }
     const choice = normalizePiChatModelChoice(sol, 'high')
-    expect(parsePiChatModelChoice({ provider: 'unknown', modelId: 'nope' })).toBeNull()
+    expect(parsePiChatModelChoice({ provider: 'unknown', modelId: '' })).toBeNull()
     expect(piChatCliArgs(null)).toEqual([])
     expect(piChatCliArgs(choice)).toEqual([
       '--model',
@@ -259,9 +264,25 @@ describe('pi chat model', () => {
       'high',
     ])
     expect(normalizePiChatModelChoice(
-      PI_CHAT_MODELS.find((model) => model.id === 'composer-2.5')!,
+      { provider: 'cursor', id: 'composer-2.5', name: 'Composer 2.5', thinking: false },
       'high',
     ).thinkingLevel).toBeNull()
+  })
+
+  test('filters pi --list-models to gpt-5.6 and gpt-6 without context variants', () => {
+    const listed = parsePiListModelsTable(`provider        model                                                     context  max-out  thinking  images
+cursor          gpt-5.6-luna@1m                                           1M       16.4K    yes       yes
+openai-codex    gpt-5.6-luna                                              272K     128K     yes       yes
+openai-codex    gpt-5.6-sol                                               272K     128K     yes       yes
+openai-codex    gpt-6-astra                                               272K     128K     yes       yes
+openai-codex-2  gpt-5.6-sol                                               272K     128K     yes       yes
+xai             grok-4.6                                                  500K     500K     yes       yes
+`)
+    expect(filterPiChatModels(listed)).toEqual([
+      { provider: 'openai-codex', id: 'gpt-5.6-luna', name: 'GPT-5.6 luna', thinking: true },
+      { provider: 'openai-codex', id: 'gpt-5.6-sol', name: 'GPT-5.6 sol', thinking: true },
+      { provider: 'openai-codex', id: 'gpt-6-astra', name: 'GPT-6 astra', thinking: true },
+    ])
   })
 
   test('stores a chat selection and treats a missing entry as unset', () => {

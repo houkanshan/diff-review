@@ -30,6 +30,7 @@ import type {
 import { AppError } from './errors.js'
 import {
   type ChatModelSelection,
+  listPiChatModels,
   readChatModelSelection,
   readPiChatModel,
   writeChatModelSelection,
@@ -135,6 +136,7 @@ export class PiReviewRunner {
       error: run?.error ?? (isPiInstalled() ? null : PI_INSTALL_HINT),
       piInstalled: isPiInstalled(),
       model: this.chatModel(sessionId),
+      models: listPiChatModels(),
     }
   }
 
@@ -143,7 +145,7 @@ export class PiReviewRunner {
     return writeChatModelSelection(
       this.store.dataDirectory,
       chatModelKey(session),
-      choice ?? defaultPiChatModel(),
+      choice ?? defaultPiChatModel(listPiChatModels()),
     )
   }
 
@@ -151,7 +153,7 @@ export class PiReviewRunner {
     const selection = this.chatModelSelection(sessionId)
     return selection.status === 'set' && selection.model != null
       ? selection.model
-      : defaultPiChatModel()
+      : defaultPiChatModel(listPiChatModels())
   }
 
   private chatModelSelection(sessionId: string) {
@@ -755,7 +757,7 @@ function chatModelKey(session: ReviewSession): string {
 function spawnPiChatModel(selection: ChatModelSelection): { args: string[]; key: string } {
   const stored = selection.status === 'set' && selection.model != null
     ? selection.model
-    : defaultPiChatModel()
+    : defaultPiChatModel(listPiChatModels())
   return { args: piChatCliArgs(stored), key: piChatModelKey(stored) }
 }
 

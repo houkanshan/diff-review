@@ -1,8 +1,14 @@
+import { spawnSync } from 'node:child_process'
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
-import { defaultPiChatModel, parsePiChatModelChoice } from '../shared/piChatModel.js'
-import type { PiChatModelChoice } from '../shared/types.js'
+import {
+  defaultPiChatModel,
+  filterPiChatModels,
+  parsePiChatModelChoice,
+  parsePiListModelsTable,
+} from '../shared/piChatModel.js'
+import type { PiChatModelChoice, PiChatModelOption } from '../shared/types.js'
 
 export const PI_CHAT_MODEL_FILE = 'pi-chat-model.json'
 export const PI_CHAT_MODELS_FILE = 'pi-chat-models.json'
@@ -17,6 +23,25 @@ export function piChatModelPath(dataDirectory: string): string {
 
 export function piChatModelsPath(dataDirectory: string): string {
   return path.join(dataDirectory, PI_CHAT_MODELS_FILE)
+}
+
+let listedModels: { key: string; models: PiChatModelOption[] } | null = null
+
+export function listPiChatModels(): PiChatModelOption[] {
+  const key = process.env.PATH ?? ''
+  if (listedModels?.key === key) return listedModels.models
+  const env = { ...process.env }
+  delete env.PI_TEST_OUTPUT
+  const result = spawnSync('pi', ['--list-models'], {
+    encoding: 'utf8',
+    timeout: 20_000,
+    env,
+  })
+  const models = result.status === 0
+    ? filterPiChatModels(parsePiListModelsTable(result.stdout ?? ''))
+    : []
+  listedModels = { key, models }
+  return models
 }
 
 export function readChatModelSelection(
