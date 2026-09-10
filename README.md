@@ -69,7 +69,7 @@ diff-review annotate drs_abc123 \
   --importance 1
 ```
 
-Omit `--file` and line flags to add a session global comment. You can add more than one. For a line annotation, use exactly one of `--new-line` or `--old-line`. `--comment` and `--importance` are independently optional on line annotations, but at least one is required.
+Omit `--file` and line flags to add a session global comment. You can add more than one. For a line annotation, use exactly one of `--new-line` or `--old-line` (`42` or `42-48`, inclusive). `--comment` and `--importance` are independently optional on line annotations, but at least one is required.
 
 Importance controls only the changed-line background:
 
