@@ -985,7 +985,7 @@ describe('local review storage', () => {
     }
   })
 
-  test('rejects a send on another pull request while Pi is working', async () => {
+  test('runs Pi independently on another pull request while one chat is working', async () => {
     const review = await resolveTarget(fixture.repository, {
       kind: 'range',
       expression: 'origin/main...HEAD',
@@ -1017,10 +1017,15 @@ describe('local review storage', () => {
     try {
       const sent = await runner.send(first.id, 'Still working')
       expect(sent.overlay?.working).toBe(true)
-      await expect(runner.send(other.id, 'Other PR')).rejects.toMatchObject({
+      await expect(runner.send(first.id, 'Same PR')).rejects.toMatchObject({
         code: 'PI_CHAT_BUSY',
       })
+      const otherSent = await runner.send(other.id, 'Other PR')
+      expect(otherSent.overlay?.working).toBe(true)
       expect(runner.getChat(first.id).overlay?.working).toBe(true)
+      expect(runner.getChat(other.id).overlay?.working).toBe(true)
+      expect(runner.getChat(first.id).busy).toBe(true)
+      expect(runner.getChat(other.id).busy).toBe(true)
     } finally {
       runner.close()
       process.env.PATH = originalPath

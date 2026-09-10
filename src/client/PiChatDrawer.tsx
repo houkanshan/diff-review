@@ -145,7 +145,7 @@ function PiChatDrawer({
               </Drawer.Close>
             </div>
             {status.state !== 'idle' ? <PiChatRunInfo run={status} /> : null}
-            {open ? <PiChatConversation sessionId={sessionId} /> : null}
+            {open ? <PiChatConversation key={sessionId} sessionId={sessionId} /> : null}
           </Drawer.Popup>
         </Drawer.Viewport>
       </Drawer.Portal>

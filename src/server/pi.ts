@@ -44,6 +44,7 @@ const CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000
 const RPC_COMMAND_TIMEOUT_MS = 30_000
 
 interface RpcHandle {
+  chatKey: string
   sessionId: string
   runId: string
   baseOid: string
@@ -71,9 +72,9 @@ interface RpcResponse {
 export class PiReviewRunner {
   private readonly activeRuns = new Set<string>()
   private cleanupTimer: NodeJS.Timeout | null = null
-  private rpc: RpcHandle | null = null
-  private startingSessionId: string | null = null
-  private chatEmitTimer: NodeJS.Timeout | null = null
+  private readonly rpcs = new Map<string, RpcHandle>()
+  private readonly startingChats = new Set<string>()
+  private readonly chatEmitTimers = new Map<string, NodeJS.Timeout>()
 
   constructor(
     private readonly store: ReviewStore,
@@ -95,9 +96,9 @@ export class PiReviewRunner {
   close(): void {
     if (this.cleanupTimer != null) clearInterval(this.cleanupTimer)
     this.cleanupTimer = null
-    if (this.chatEmitTimer != null) clearTimeout(this.chatEmitTimer)
-    this.chatEmitTimer = null
-    this.stopRpc()
+    for (const timer of this.chatEmitTimers.values()) clearTimeout(timer)
+    this.chatEmitTimers.clear()
+    for (const handle of [...this.rpcs.values()]) this.stopRpc(handle)
   }
 
   getStatus(sessionId: string): PiReviewStatus {
@@ -106,7 +107,7 @@ export class PiReviewRunner {
     if (run == null) return { state: 'idle' }
     if (
       (run.state === 'creating' || run.state === 'running') &&
-      this.rpc?.runId !== run.id &&
+      this.rpcFor(sessionId)?.runId !== run.id &&
       !this.activeRuns.has(run.id) &&
       !isProcessAlive(run.activePid)
     ) {
@@ -128,14 +129,13 @@ export class PiReviewRunner {
     const revision = transcriptRevision(file)
     const turns = projectPiChatTurns(readSessionEntries(file))
     const page = pagePiChatTurns(turns, before, limit)
-    const overlay = this.rpc != null && this.sameChat(sessionId) && this.rpc.overlay != null
-      ? publicPiOverlay(this.rpc.overlay)
-      : null
+    const handle = this.rpcFor(sessionId)
+    const overlay = handle?.overlay == null ? null : publicPiOverlay(handle.overlay)
     return {
       ...page,
       transcriptRevision: revision,
       overlay,
-      busy: this.isBusy(),
+      busy: this.isBusy(sessionId),
       error: run?.error ?? (isPiInstalled() ? null : PI_INSTALL_HINT),
       piInstalled: isPiInstalled(),
       model: this.chatModel(sessionId),
@@ -184,7 +184,7 @@ export class PiReviewRunner {
     if (!isPiInstalled()) {
       throw new AppError('COMMAND_NOT_FOUND', PI_INSTALL_HINT, 503)
     }
-    if (this.isBusy()) {
+    if (this.isBusy(sessionId)) {
       throw new AppError('PI_CHAT_BUSY', 'Pi is already working', 409)
     }
 
@@ -197,7 +197,8 @@ export class PiReviewRunner {
       throw new AppError('INVALID_REVIEW_TARGET', 'Pi chat requires a pull request revision')
     }
 
-    this.startingSessionId = sessionId
+    const chatKey = chatModelKey(session)
+    this.startingChats.add(chatKey)
     this.emitChat(sessionId)
     try {
       const run = await this.ensureRun(
@@ -206,7 +207,8 @@ export class PiReviewRunner {
         session.revisionHeadOid,
       )
       if (model !== undefined) this.setChatModel(sessionId, model)
-      if (this.rpc != null && this.rpc.runId !== run.id) this.stopRpc()
+      const existing = this.rpcs.get(chatKey)
+      if (existing != null && existing.runId !== run.id) this.stopRpc(existing)
       const afterTurnId = this.getChat(sessionId).turns.at(-1)?.id ?? null
       const handle = await this.ensureRpc(
         run,
@@ -251,13 +253,14 @@ export class PiReviewRunner {
         throw new AppError('PI_CHAT_REJECTED', response.error ?? 'Pi rejected the prompt')
       }
     } catch (error) {
-      if (this.rpc != null && this.sameChat(sessionId) && this.rpc.overlay?.working) {
-        this.rpc.overlay.working = false
-        this.rpc.overlay.seq += 1
+      const handle = this.rpcs.get(chatKey)
+      if (handle?.overlay?.working) {
+        handle.overlay.working = false
+        handle.overlay.seq += 1
       }
       throw error
     } finally {
-      if (this.startingSessionId === sessionId) this.startingSessionId = null
+      this.startingChats.delete(chatKey)
       this.emitChat(sessionId, true)
     }
     return this.getChat(sessionId)
@@ -265,7 +268,7 @@ export class PiReviewRunner {
 
   async reconcileAndCleanup(): Promise<void> {
     for (const run of this.store.listActivePiReviewRuns()) {
-      if (this.rpc?.runId === run.id || this.activeRuns.has(run.id) || isProcessAlive(run.activePid)) {
+      if (this.rpcFor(run.sessionId)?.runId === run.id || this.activeRuns.has(run.id) || isProcessAlive(run.activePid)) {
         continue
       }
       this.store.updatePiReviewRun(run.id, {
@@ -282,19 +285,17 @@ export class PiReviewRunner {
     }
   }
 
-  private isBusy(): boolean {
-    return this.startingSessionId != null || this.rpc?.overlay?.working === true
+  private isBusy(sessionId: string): boolean {
+    const chatKey = this.chatKey(sessionId)
+    return this.startingChats.has(chatKey) || this.rpcs.get(chatKey)?.overlay?.working === true
   }
 
-  private sameChat(sessionId: string, otherSessionId = this.rpc?.sessionId): boolean {
-    if (otherSessionId == null) return false
-    if (sessionId === otherSessionId) return true
-    const left = this.store.getSession(sessionId)
-    const right = this.store.getSession(otherSessionId)
-    return left.target.kind === 'pr'
-      && right.target.kind === 'pr'
-      && left.repositoryRoot === right.repositoryRoot
-      && left.target.number === right.target.number
+  private chatKey(sessionId: string): string {
+    return chatModelKey(this.store.getSession(sessionId))
+  }
+
+  private rpcFor(sessionId: string): RpcHandle | null {
+    return this.rpcs.get(this.chatKey(sessionId)) ?? null
   }
 
   private async ensureRun(
@@ -313,8 +314,11 @@ export class PiReviewRunner {
         await runProcess('git', ['worktree', 'add', '--detach', '--force', current.worktreePath, headOid], {
           cwd: repositoryRoot,
         })
-      } else if (this.rpc?.runId !== current.id || this.rpc.overlay?.working !== true) {
-        await syncWorktreeHead(current.worktreePath, headOid)
+      } else {
+        const handle = this.rpcFor(sessionId)
+        if (handle?.runId !== current.id || handle.overlay?.working !== true) {
+          await syncWorktreeHead(current.worktreePath, headOid)
+        }
       }
       return current
     }
@@ -357,22 +361,23 @@ export class PiReviewRunner {
     headOid: string,
   ): Promise<RpcHandle> {
     const sessionPath = run.piSessionPath ?? findPiSessionPath(run)
-    const resumeSession = sessionPath != null && pathExists(sessionPath)
+    const chatKey = this.chatKey(sessionId)
     const model = spawnPiChatModel(this.chatModelSelection(sessionId), await listPiChatModels())
     const modelKey = model.key
+    const existing = this.rpcs.get(chatKey)
     if (
-      this.rpc != null
-      && this.rpc.runId === run.id
-      && this.rpc.sessionId === sessionId
-      && this.rpc.baseOid === baseOid
-      && this.rpc.headOid === headOid
-      && this.rpc.modelKey === modelKey
-      && this.rpc.child.exitCode == null
-      && !this.rpc.closed
+      existing != null
+      && existing.runId === run.id
+      && existing.baseOid === baseOid
+      && existing.headOid === headOid
+      && existing.modelKey === modelKey
+      && existing.child.exitCode == null
+      && !existing.closed
     ) {
-      return this.rpc
+      existing.sessionId = sessionId
+      return existing
     }
-    this.stopRpc()
+    if (existing != null) this.stopRpc(existing)
 
     const args = [
       '--mode',
@@ -398,6 +403,7 @@ export class PiReviewRunner {
     }
 
     const handle: RpcHandle = {
+      chatKey,
       sessionId,
       runId: run.id,
       baseOid,
@@ -413,7 +419,7 @@ export class PiReviewRunner {
       overlay: null,
       closed: false,
     }
-    this.rpc = handle
+    this.rpcs.set(chatKey, handle)
     this.activeRuns.add(run.id)
     this.store.updatePiReviewRun(run.id, {
       state: 'running',
@@ -438,7 +444,7 @@ export class PiReviewRunner {
       this.failRpc(handle, error)
     })
     child.on('close', (code) => {
-      if (this.rpc !== handle) return
+      if (this.rpcs.get(handle.chatKey) !== handle) return
       const failure = code === 0 ? null : handle.stderr.trim() || `pi exited with ${code ?? 1}`
       this.settleRpc(handle, failure)
     })
@@ -578,9 +584,10 @@ export class PiReviewRunner {
   }
 
   private emitChat(sessionId: string, immediate = false): void {
+    const chatKey = this.chatKey(sessionId)
     const emit = () => {
-      this.chatEmitTimer = null
-      const handle = this.rpc != null && this.sameChat(sessionId) ? this.rpc : null
+      this.chatEmitTimers.delete(chatKey)
+      const handle = this.rpcs.get(chatKey) ?? null
       const run = handle == null ? this.store.latestPiReviewRunForChat(sessionId) : this.store.getPiReviewRun(handle.runId)
       const file = handle?.watchPath
         ?? run?.piSessionPath
@@ -592,14 +599,16 @@ export class PiReviewRunner {
       }
     }
     if (immediate) {
-      if (this.chatEmitTimer != null) clearTimeout(this.chatEmitTimer)
-      this.chatEmitTimer = null
+      const timer = this.chatEmitTimers.get(chatKey)
+      if (timer != null) clearTimeout(timer)
+      this.chatEmitTimers.delete(chatKey)
       emit()
       return
     }
-    if (this.chatEmitTimer != null) return
-    this.chatEmitTimer = setTimeout(emit, 16)
-    this.chatEmitTimer.unref()
+    if (this.chatEmitTimers.has(chatKey)) return
+    const timer = setTimeout(emit, 16)
+    timer.unref()
+    this.chatEmitTimers.set(chatKey, timer)
   }
 
   private failRpc(handle: RpcHandle, error: unknown): void {
@@ -636,13 +645,11 @@ export class PiReviewRunner {
       this.onUpdate(run.sessionId)
       this.emitChat(run.sessionId, true)
     }
-    if (this.rpc === handle) this.rpc = null
+    if (this.rpcs.get(handle.chatKey) === handle) this.rpcs.delete(handle.chatKey)
   }
 
-  private stopRpc(): void {
-    const handle = this.rpc
-    if (handle == null) return
-    this.rpc = null
+  private stopRpc(handle: RpcHandle): void {
+    if (this.rpcs.get(handle.chatKey) === handle) this.rpcs.delete(handle.chatKey)
     handle.watcher?.close()
     handle.watcher = null
     handle.dirWatcher?.close()
@@ -671,7 +678,7 @@ export class PiReviewRunner {
   }
 
   private async cleanup(run: PiReviewRun): Promise<void> {
-    if (this.rpc?.runId === run.id) return
+    if ([...this.rpcs.values()].some((handle) => handle.runId === run.id)) return
     let current = this.store.getPiReviewRun(run.id)
     if (current == null || current.keep) return
     if (current.activePid != null) {
