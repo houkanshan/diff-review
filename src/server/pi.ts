@@ -18,7 +18,12 @@ import {
   publicPiOverlay,
   type LivePiOverlay,
 } from '../shared/piOverlay.js'
-import { defaultPiChatModel, piChatCliArgs, piChatModelKey } from '../shared/piChatModel.js'
+import {
+  defaultPiChatModel,
+  isAllowedPiChatModel,
+  piChatCliArgs,
+  piChatModelKey,
+} from '../shared/piChatModel.js'
 import type {
   PiChatModelChoice,
   PiChatModelOption,
@@ -161,15 +166,17 @@ export class PiReviewRunner {
 
   private chatModelSelection(sessionId: string) {
     const session = this.store.getSession(sessionId)
-    const stored = readChatModelSelection(this.store.dataDirectory, chatModelKey(session))
+    const stored = allowedChatModelSelection(
+      readChatModelSelection(this.store.dataDirectory, chatModelKey(session)),
+    )
     if (stored.status === 'set') return stored
     const run = this.store.latestPiReviewRunForChat(sessionId)
     if (run == null) return stored
     const sidecar = readPiChatModel(run.piSessionDir)
-    if (sidecar != null) return { status: 'set' as const, model: sidecar }
+    if (isAllowedPiChatModel(sidecar)) return { status: 'set' as const, model: sidecar }
     const file = run.piSessionPath ?? findPiSessionPath(run)
     const transcript = projectPiChatModel(readSessionEntries(file))
-    if (transcript != null) return { status: 'set' as const, model: transcript }
+    if (isAllowedPiChatModel(transcript)) return { status: 'set' as const, model: transcript }
     return stored
   }
 
@@ -234,6 +241,7 @@ export class PiReviewRunner {
       })
       handle.overlay = overlay
       this.emitChat(sessionId, true)
+      await this.applyChatModel(handle, this.chatModel(sessionId))
       const response = await this.sendCommand(handle, {
         id: overlay.requestId,
         type: 'prompt',
@@ -540,6 +548,25 @@ export class PiReviewRunner {
     if (changed) this.emitChat(handle.sessionId)
   }
 
+  private async applyChatModel(handle: RpcHandle, choice: PiChatModelChoice): Promise<void> {
+    const model = await this.sendCommand(handle, {
+      type: 'set_model',
+      provider: choice.provider,
+      modelId: choice.modelId,
+    })
+    if (!model.success) {
+      throw new AppError('PI_CHAT_REJECTED', model.error ?? 'Pi rejected the model')
+    }
+    if (choice.thinkingLevel == null) return
+    const thinking = await this.sendCommand(handle, {
+      type: 'set_thinking_level',
+      level: choice.thinkingLevel,
+    })
+    if (!thinking.success) {
+      throw new AppError('PI_CHAT_REJECTED', thinking.error ?? 'Pi rejected the thinking level')
+    }
+  }
+
   private sendCommand(handle: RpcHandle, command: Record<string, unknown>): Promise<RpcResponse> {
     const id = typeof command.id === 'string' ? command.id : randomUUID()
     const payload = { ...command, id }
@@ -760,11 +787,17 @@ function chatModelKey(session: ReviewSession): string {
   return `session:${session.id}`
 }
 
+function allowedChatModelSelection(selection: ChatModelSelection): ChatModelSelection {
+  if (selection.status === 'set' && !isAllowedPiChatModel(selection.model))
+    return { status: 'unset' }
+  return selection
+}
+
 function spawnPiChatModel(
   selection: ChatModelSelection,
   models: readonly PiChatModelOption[],
 ): { args: string[]; key: string } {
-  const stored = selection.status === 'set' && selection.model != null
+  const stored = selection.status === 'set' && isAllowedPiChatModel(selection.model)
     ? selection.model
     : defaultPiChatModel(models)
   return { args: piChatCliArgs(stored), key: piChatModelKey(stored) }

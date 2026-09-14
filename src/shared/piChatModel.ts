@@ -14,6 +14,20 @@ export const PI_CHAT_MODEL_ID_FILTERS = ['gpt-5.6', 'gpt-6'] as const
 
 const THINKING_LEVELS = new Set<string>(PI_CHAT_THINKING_LEVELS)
 
+export function isAllowedPiChatModelId(modelId: string): boolean {
+  return PI_CHAT_MODEL_ID_FILTERS.some(
+    (filter) => modelId === filter || modelId.startsWith(`${filter}-`),
+  )
+}
+
+export function isAllowedPiChatModel(
+  choice: PiChatModelChoice | null | undefined,
+): choice is PiChatModelChoice {
+  if (choice == null) return false
+  if (choice.modelId.includes('@') || choice.modelId.includes(':')) return false
+  return isAllowedPiChatModelId(choice.modelId)
+}
+
 export function findPiChatModel(
   models: readonly PiChatModelOption[],
   provider: string,
@@ -114,9 +128,7 @@ export function parsePiListModelsTable(stdout: string): PiChatModelOption[] {
 export function filterPiChatModels(rows: readonly PiChatModelOption[]): PiChatModelOption[] {
   const matched = rows.filter((row) => {
     if (row.id.includes('@') || row.id.includes(':')) return false
-    return PI_CHAT_MODEL_ID_FILTERS.some(
-      (filter) => row.id === filter || row.id.startsWith(`${filter}-`),
-    )
+    return isAllowedPiChatModelId(row.id)
   })
   const ranked = [...matched].sort(
     (left, right) => providerRank(left.provider) - providerRank(right.provider),

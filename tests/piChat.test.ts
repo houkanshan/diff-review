@@ -8,6 +8,7 @@ import { formatWorkDuration, pagePiChatTurns, projectPiChatModel, projectPiChatT
 import {
   defaultPiChatModel,
   filterPiChatModels,
+  isAllowedPiChatModel,
   normalizePiChatModelChoice,
   parsePiChatModelChoice,
   parsePiListModelsTable,
@@ -283,6 +284,16 @@ xai             grok-4.6                                                  500K  
       { provider: 'openai-codex', id: 'gpt-5.6-sol', name: 'GPT-5.6 sol', thinking: true },
       { provider: 'openai-codex', id: 'gpt-6-astra', name: 'GPT-6 astra', thinking: true },
     ])
+    expect(isAllowedPiChatModel({
+      provider: 'openai-codex',
+      modelId: 'gpt-5.6-sol',
+      thinkingLevel: 'medium',
+    })).toBe(true)
+    expect(isAllowedPiChatModel({
+      provider: 'xai',
+      modelId: 'grok-4.6',
+      thinkingLevel: 'medium',
+    })).toBe(false)
   })
 
   test('stores a chat selection and treats a missing entry as unset', () => {

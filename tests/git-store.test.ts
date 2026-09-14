@@ -895,6 +895,8 @@ describe('local review storage', () => {
       expect(spawned).toContain('openai-codex/gpt-5.6-sol')
       expect(spawned).toContain('--thinking')
       expect(spawned).toContain('high')
+      expect(spawned).toContain('RPC set_model openai-codex gpt-5.6-sol')
+      expect(spawned).toContain('RPC set_thinking_level  high')
       expect(JSON.parse(readFileSync(piChatModelsPath(store.dataDirectory), 'utf8'))).toEqual({
         [`pr:${session.repositoryRoot}:44`]: choice,
       })

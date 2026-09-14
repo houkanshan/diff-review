@@ -68,6 +68,21 @@ process.stdin.on('data', (chunk) => {
     if (line.endsWith('\r')) line = line.slice(0, -1)
     if (!line) continue
     const command = JSON.parse(line)
+    if (process.env.PI_TEST_OUTPUT && command.type) {
+      fs.appendFileSync(
+        process.env.PI_TEST_OUTPUT,
+        `\nRPC ${command.type} ${command.provider ?? ''} ${command.modelId ?? command.level ?? ''}`.trimEnd(),
+      )
+    }
+    if (command.type === 'set_model' || command.type === 'set_thinking_level') {
+      process.stdout.write(`${JSON.stringify({
+        type: 'response',
+        id: command.id,
+        command: command.type,
+        success: true,
+      })}\n`)
+      continue
+    }
     if (command.type !== 'prompt') continue
     if (process.env.PI_TEST_HOLD === '1') {
       process.stdout.write(`${JSON.stringify({ type: 'response', id: command.id, command: 'prompt', success: true })}\n`)
