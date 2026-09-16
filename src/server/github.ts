@@ -66,6 +66,7 @@ const DETAILS_FIELDS = [
   'comments',
   'reviews',
   'mergeable',
+  'mergeCommit',
   'mergedBy',
 ].join(',')
 
@@ -350,11 +351,16 @@ const pullRequestDetailsCache = new Map<string, { details: PullRequestDetails; f
 export async function getPullRequestDetails(
   root: string,
   number: number,
+  options?: { fresh?: boolean },
 ): Promise<PullRequestDetails> {
   validatePullRequestNumber(number)
   const key = `${root}:${number}`
   const cached = pullRequestDetailsCache.get(key)
-  if (cached != null && Date.now() - cached.fetchedAt < PULL_REQUEST_DETAILS_TTL_MS) {
+  if (
+    options?.fresh !== true &&
+    cached != null &&
+    Date.now() - cached.fetchedAt < PULL_REQUEST_DETAILS_TTL_MS
+  ) {
     return cached.details
   }
   const existing = pullRequestDetailsInflight.get(key)
@@ -448,6 +454,7 @@ async function loadPullRequestDetails(
     ...summary,
     body,
     mergedBy: parseOptionalUser(raw.mergedBy),
+    mergeCommitOid: parseMergeCommitOid(raw.mergeCommit),
     mergeable: parsePullRequestMergeable(raw.mergeable),
     conflictFiles: [],
     reviewers: parsePullRequestReviewers(raw.reviewRequests, raw.latestReviews ?? raw.reviews),
@@ -784,6 +791,15 @@ export async function getPullRequestRevisionDetails(
     baseRefOid: expectString(raw.baseRefOid, 'baseRefOid'),
     headRefOid: expectString(raw.headRefOid, 'headRefOid'),
   }
+}
+
+export function parseMergeCommitOid(value: unknown): string | null {
+  if (value == null) return null
+  const commit = optionalObject(value)
+  if (commit == null) throw invalidGitHubResponse('mergeCommit must be an object')
+  const oid = optionalString(commit.oid)
+  if (oid == null) throw invalidGitHubResponse('mergeCommit.oid must be a string')
+  return oid
 }
 
 export function parsePullRequestMergeable(value: unknown): PullRequestMergeable {

@@ -2155,7 +2155,7 @@ svg {
 .pr-state-icon.open { color: var(--green); }
 .pr-state-icon.merged { color: #8c69d8; }
 .pr-state-icon.closed { color: var(--red); }
-.pr-state-icon.draft { color: var(--muted); }
+.pr-state-icon.draft { color: light-dark(#a8aaa1, #b8bbaf); }
 .check-state-icon.pass { color: var(--green); }
 .check-state-icon.fail { color: var(--red); }
 .check-state-icon.pending { color: var(--accent); }
@@ -3002,6 +3002,17 @@ body.resizing-panels * {
 .pr-sidebar-status.state-open svg { color: var(--green); }
 .pr-sidebar-status.state-closed svg { color: var(--red); }
 .pr-sidebar-status.state-merged svg { color: #8c69d8; }
+.pr-sidebar-merge-commit {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.pr-sidebar-merge-commit code {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
 .pr-sidebar-status-person { margin-top: 10px; }
 .pr-sidebar-conflict {
   margin: 10px 0 0;

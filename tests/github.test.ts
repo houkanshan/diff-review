@@ -17,11 +17,14 @@ import {
   aggregateCheckStatus,
   addPullRequestComment,
   expirePullRequestListCache,
+  getPullRequestDetails,
+  invalidatePullRequestDetailsCache,
   invalidatePullRequestListCache,
   listPullRequests,
   resetPullRequestListCache,
   parseCheckRollupState,
   parsePullRequestChecks,
+  parseMergeCommitOid,
   parsePullRequestMergeable,
   parsePullRequestReviewers,
   parsePullRequestReviewStatus,
@@ -545,6 +548,13 @@ describe('GitHub issue references in Markdown', () => {
 })
 
 describe('GitHub pull request sidebar data', () => {
+  test('reads the merge commit oid from gh pr view', () => {
+    expect(parseMergeCommitOid(null)).toBeNull()
+    expect(parseMergeCommitOid({ oid: 'abc123def456' })).toBe('abc123def456')
+    expect(() => parseMergeCommitOid('abc123def456')).toThrow(/mergeCommit must be an object/)
+    expect(() => parseMergeCommitOid({ oid: '' })).toThrow(/mergeCommit.oid must be a string/)
+  })
+
   test('validates mergeability states', () => {
     expect(parsePullRequestMergeable('MERGEABLE')).toBe('MERGEABLE')
     expect(parsePullRequestMergeable('conflicting')).toBe('CONFLICTING')
@@ -1085,6 +1095,97 @@ describe('GitHub pull request list', () => {
       process.env.PATH = originalPath
       if (originalGraphql == null) delete process.env.GH_TEST_GRAPHQL_JSON
       else process.env.GH_TEST_GRAPHQL_JSON = originalGraphql
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('GitHub pull request details cache', () => {
+  beforeEach(() => {
+    invalidatePullRequestDetailsCache()
+  })
+
+  test('reuses cached details until a fresh load is requested', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-github-details-cache-'))
+    const bin = path.join(directory, 'bin')
+    const countFile = path.join(directory, 'details-count')
+    mkdirSync(bin)
+    writeFileSync(countFile, '0')
+    writeFileSync(path.join(bin, 'gh'), [
+      '#!/usr/bin/env node',
+      'const fs = require("node:fs")',
+      'const args = process.argv.slice(2)',
+      `const countFile = ${JSON.stringify(countFile)}`,
+      "if (args[0] === 'pr' && args[1] === 'view') {",
+      '  fs.writeFileSync(countFile, String(Number(fs.readFileSync(countFile, "utf8")) + 1))',
+      '  process.stdout.write(process.env.GH_TEST_PR_VIEW_JSON)',
+      '  process.exit(0)',
+      '}',
+      "if (args[0] === 'api') {",
+      "  process.stdout.write('[]')",
+      '  process.exit(0)',
+      '}',
+      'process.exit(1)',
+    ].join('\n'))
+    chmodSync(path.join(bin, 'gh'), 0o755)
+    const originalPath = process.env.PATH
+    const originalView = process.env.GH_TEST_PR_VIEW_JSON
+    const viewJson = (conclusion: string) => JSON.stringify({
+      number: 12,
+      title: 'Cached details',
+      url: 'https://github.com/acme/cache-repo/pull/12',
+      state: 'OPEN',
+      isDraft: false,
+      baseRefName: 'main',
+      headRefName: 'feature',
+      additions: 1,
+      deletions: 0,
+      createdAt: '2026-03-01T10:00:00Z',
+      updatedAt: '2026-03-01T11:00:00Z',
+      author: { login: 'octocat' },
+      assignees: [],
+      reviewRequests: [],
+      latestReviews: [],
+      labels: [],
+      comments: [],
+      reviews: [],
+      body: '',
+      mergedBy: null,
+      mergeCommit: null,
+      mergeable: 'MERGEABLE',
+      baseRefOid: 'aaa111',
+      headRefOid: 'bbb222',
+      statusCheckRollup: [{
+        name: 'CI',
+        status: 'COMPLETED',
+        conclusion,
+      }],
+    })
+    process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`
+    process.env.GH_TEST_PR_VIEW_JSON = viewJson('SUCCESS')
+    try {
+      await expect(getPullRequestDetails(directory, 12)).resolves.toMatchObject({
+        number: 12,
+        checkStatus: 'pass',
+        checks: [{ name: 'CI', status: 'pass' }],
+      })
+      process.env.GH_TEST_PR_VIEW_JSON = viewJson('FAILURE')
+      await expect(getPullRequestDetails(directory, 12)).resolves.toMatchObject({
+        checkStatus: 'pass',
+        checks: [{ name: 'CI', status: 'pass' }],
+      })
+      expect(readFileSync(countFile, 'utf8')).toBe('1')
+
+      await expect(getPullRequestDetails(directory, 12, { fresh: true })).resolves.toMatchObject({
+        checkStatus: 'fail',
+        checks: [{ name: 'CI', status: 'fail' }],
+      })
+      expect(readFileSync(countFile, 'utf8')).toBe('2')
+    } finally {
+      process.env.PATH = originalPath
+      if (originalView == null) delete process.env.GH_TEST_PR_VIEW_JSON
+      else process.env.GH_TEST_PR_VIEW_JSON = originalView
+      invalidatePullRequestDetailsCache()
       rmSync(directory, { recursive: true, force: true })
     }
   })

@@ -76,9 +76,11 @@ export function getPullRequests(
 export function getPullRequest(
   number: number,
   repositoryPath: string,
+  options?: { fresh?: boolean },
 ): Promise<PullRequestDetails> {
+  const fresh = options?.fresh === true ? '&fresh=1' : ''
   return request(
-    `/api/pull-requests/${number}?repositoryPath=${encodeURIComponent(repositoryPath)}`,
+    `/api/pull-requests/${number}?repositoryPath=${encodeURIComponent(repositoryPath)}${fresh}`,
     { timeoutMs: GITHUB_READ_TIMEOUT_MS },
   )
 }

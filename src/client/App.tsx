@@ -233,6 +233,7 @@ interface PullRequestWorkspaceContext {
   onSubmitReview(event: PullRequestReviewEvent, body: string): Promise<void>
   onSetDraft(isDraft: boolean): Promise<void>
   onSquashMerge(): Promise<void>
+  onRefreshDetails(): Promise<void>
 }
 
 interface FileChangeStats {
@@ -568,6 +569,27 @@ function PullRequestsPage({
       }),
       queryClient.invalidateQueries({ queryKey: ['pull-requests', route.repositoryPath] }),
     ])
+  }, [queryClient, route.repositoryPath])
+
+  const refreshPullRequestDetails = useCallback(async (pullRequestNumber: number): Promise<void> => {
+    const details = await getPullRequest(pullRequestNumber, route.repositoryPath, { fresh: true })
+    queryClient.setQueryData(
+      ['pull-request-details', route.repositoryPath, pullRequestNumber],
+      details,
+    )
+    queryClient.setQueriesData<PullRequestWorkspace>(
+      { queryKey: ['pull-request-workspace', route.repositoryPath, pullRequestNumber] },
+      (current) => current == null ? undefined : { ...current, details },
+    )
+    queryClient.setQueriesData<PullRequestListResponse>(
+      { queryKey: ['pull-requests', route.repositoryPath] },
+      (current) => current == null ? undefined : {
+        ...current,
+        items: current.items.map((item) => item.number === pullRequestNumber
+          ? { ...item, checkStatus: details.checkStatus }
+          : item),
+      },
+    )
   }, [queryClient, route.repositoryPath])
 
   const compactLayout = useCompactReviewLayout()
@@ -967,6 +989,7 @@ function PullRequestsPage({
               })
               await refreshPullRequestData(details.number)
             },
+            onRefreshDetails: () => refreshPullRequestDetails(details.number),
           }}
         />
       </ReviewWorkspaceStore>
@@ -1567,17 +1590,21 @@ function ReviewWorkspace({
     }
   }, [session.id])
 
+  const onRefreshDetails = pullRequest?.onRefreshDetails
   const refresh = useCallback(async () => {
     setBusy(true)
     try {
-      const updated = await refreshSession(session.id)
+      const [updated] = await Promise.all([
+        refreshSession(session.id),
+        onRefreshDetails?.() ?? Promise.resolve(),
+      ])
       setRefreshAvailable(false)
       if (updated.id === session.id) onSessionChange(updated)
       else onOpenSession(updated.id)
     } finally {
       setBusy(false)
     }
-  }, [onOpenSession, onSessionChange, session.id])
+  }, [onOpenSession, onRefreshDetails, onSessionChange, session.id])
 
   const updateIgnoreWhitespace = useCallback(async (ignoreWhitespace: boolean) => {
     setBusy(true)
@@ -3190,6 +3217,14 @@ function PullRequestSidebar({ details }: { details: PullRequestDetails }) {
           <BranchIcon />
           <strong>{details.isDraft ? 'Draft' : titleCase(details.state)}</strong>
         </div>
+        {details.mergeCommitOid != null && (
+          <div className="pr-sidebar-merge-commit">
+            <CopyableMetaText value={details.mergeCommitOid}>
+              <code>{details.mergeCommitOid.slice(0, 7)}</code>
+            </CopyableMetaText>
+            {' on '}{details.baseRefName}
+          </div>
+        )}
         {details.state === 'OPEN' && details.mergeable === 'CONFLICTING' && (
           <div className="pr-sidebar-conflict">
             <strong>Has conflicts</strong>

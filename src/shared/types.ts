@@ -369,6 +369,7 @@ export interface GitHubTimelineSource {
 export interface PullRequestDetails extends PullRequestSummary {
   body: string
   mergedBy: GitHubUser | null
+  mergeCommitOid: string | null
   mergeable: PullRequestMergeable
   conflictFiles: string[]
   issueReferences: GitHubIssueReference[]

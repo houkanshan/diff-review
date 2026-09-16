@@ -87,8 +87,9 @@ interface CachedMedia {
 async function getPullRequestDetailsWithConflicts(
   root: string,
   number: number,
+  options?: { fresh?: boolean },
 ): Promise<PullRequestDetails> {
-  const details = await getPullRequestDetails(root, number)
+  const details = await getPullRequestDetails(root, number, options)
   const conflictFiles = details.mergeable === 'CONFLICTING'
     ? await listMergeConflictFiles(root, details.baseRefOid, details.headRefOid)
     : []
@@ -227,7 +228,8 @@ export class ApiHandler {
     if (method === 'GET' && pullRequestMatch != null) {
       const number = Number(pullRequestMatch[1])
       const root = await resolveRepository(requiredQuery(url, 'repositoryPath'))
-      sendJson(response, 200, await getPullRequestDetailsWithConflicts(root, number))
+      const fresh = url.searchParams.get('fresh') === '1'
+      sendJson(response, 200, await getPullRequestDetailsWithConflicts(root, number, { fresh }))
       return
     }
 
