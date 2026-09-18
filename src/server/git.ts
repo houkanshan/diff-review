@@ -745,6 +745,18 @@ async function indexTreeId(root: string): Promise<string> {
   return result.exitCode === 0 ? result.stdout.trim() : contentId('index')
 }
 
+export function currentFilePathsFromPatch(patch: string): string[] {
+  const paths: string[] = []
+  const seen = new Set<string>()
+  for (const file of filePathsFromPatch(patch).values()) {
+    const filePath = file.new ?? file.old
+    if (filePath == null || seen.has(filePath)) continue
+    seen.add(filePath)
+    paths.push(filePath)
+  }
+  return paths
+}
+
 function filePathsFromPatch(
   patch: string,
 ): Map<string, { old: string | null; new: string | null }> {

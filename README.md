@@ -46,7 +46,7 @@ diff-review service restart
 diff-review service stop
 ```
 
-It listens on `http://127.0.0.1:47658` by default (`DIFF_REVIEW_PORT`).
+It listens on `http://127.0.0.1:47658` by default (`DIFF_REVIEW_PORT`). On startup it loads `.env` from the current working directory, then `~/.diff-review/.env` (or `$DIFF_REVIEW_DATA_DIR/.env`). Variables already set in the environment are left unchanged.
 
 ## Agent annotations
 

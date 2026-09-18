@@ -106,6 +106,7 @@ import {
   reviewTargetsEqual,
   sessionUsesFullCommitRange,
   targetSupportsStaging,
+  JEV_FILE_ORDER_FAILED_HINT,
   type DiffRenderer,
 } from '../shared/types'
 import type {
@@ -128,6 +129,7 @@ import type {
   PullRequestSummary,
   PullRequestWorkspace,
   RepositoryInfo,
+  JevFileOrder,
   ReviewSession,
   ReviewTarget,
   SessionAnnotation,
@@ -157,6 +159,7 @@ import {
   openPullRequest,
   removePullRequestLabel,
   refreshSession,
+  requestJevFileOrder,
   selectCommits,
   setAnnotationArchived,
   setAnnotationViewed,
@@ -191,7 +194,7 @@ import {
   areCodeViewSelectionsEqual,
   buildCodeViewItems,
   fileIdForAnnotation,
-  orderFilesByAgentAnnotations,
+  orderReviewFiles,
   composerDraftAtom,
   composerSelectionAtom,
   composerSessionIdAtom,
@@ -1084,6 +1087,8 @@ function ReviewWorkspace({
   const [layout, setLayout] = useState<DiffLayout>('unified')
   const [renderer, setRenderer] = useState<DiffRenderer>(() => storedDiffRenderer())
   const [orderByAnnotation, setOrderByAnnotation] = useState(() => storedOrderByAnnotation())
+  const [jevFileOrder, setJevFileOrder] = useState<JevFileOrder | null>(session.jevFileOrder)
+  const [jevFileOrderHint, setJevFileOrderHint] = useState<string | null>(null)
   const [editor, setEditor] = useState<EditorId>(() => storedEditor())
   const [overflow, setOverflow] = useState<DiffOverflow>('wrap')
   const [diffStage, setDiffStage] = useState<HTMLElement | null>(null)
@@ -1241,11 +1246,50 @@ function ReviewWorkspace({
     })
   }, [store])
 
+  useEffect(() => {
+    setJevFileOrder(session.jevFileOrder)
+  }, [session.id])
+
+  useEffect(() => {
+    if (session.jevFileOrder != null) setJevFileOrder(session.jevFileOrder)
+  }, [session.jevFileOrder])
+
+  useEffect(() => {
+    if (!orderByAnnotation) {
+      setJevFileOrderHint(null)
+      return
+    }
+    let cancelled = false
+    setJevFileOrderHint('Sorting files…')
+    void requestJevFileOrder(session.id)
+      .then((result) => {
+        if (cancelled) return
+        if (result.status === 'ready') {
+          setJevFileOrder(result.order)
+          setJevFileOrderHint('Sorted files without annotations.')
+          return
+        }
+        setJevFileOrderHint(result.message)
+      })
+      .catch(() => {
+        if (!cancelled) setJevFileOrderHint(JEV_FILE_ORDER_FAILED_HINT)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [
+    orderByAnnotation,
+    session.id,
+    session.patch,
+    session.selectedCommitStart,
+    session.selectedCommitEnd,
+  ])
+
   const displayFiles = useMemo(
     () => orderByAnnotation
-      ? orderFilesByAgentAnnotations(parsedFiles, session.annotations)
+      ? orderReviewFiles(parsedFiles, session.annotations, jevFileOrder?.paths ?? null)
       : parsedFiles,
-    [orderByAnnotation, parsedFiles, session.annotations],
+    [jevFileOrder, orderByAnnotation, parsedFiles, session.annotations],
   )
 
   const items = useMemo<CodeViewItem<ReviewLineAnnotation>[]>(() => {
@@ -1792,6 +1836,7 @@ function ReviewWorkspace({
       session={session}
       files={parsedFiles}
       orderByAnnotation={orderByAnnotation}
+      fileOrderHint={orderByAnnotation ? jevFileOrderHint : null}
       commentsCopied={commentsCopied}
       hasHumanComments={hasHumanComments}
       onCopyComments={copyHumanComments}
@@ -2110,7 +2155,7 @@ function isTestFilePath(filePath: string): boolean {
   const normalized = filePath.replaceAll('\\', '/')
   if (normalized.includes('/__tests__/') || normalized.startsWith('__tests__/')) return true
   if (normalized.includes('/.e2e-pilot/') || normalized.startsWith('.e2e-pilot/')) return true
-  return /(?:\.test\.tsx?|\.spec\.ts|\.spec\.js)$/.test(normalized)
+  return /(?:\.test\.tsx?|\.spec\.ts|\.spec\.js|_test\.[^/]+)$/.test(normalized)
 }
 
 function FoldFilesMenu({
@@ -4982,6 +5027,7 @@ function Inspector({
   session,
   files,
   orderByAnnotation,
+  fileOrderHint,
   commentsCopied,
   hasHumanComments,
   onCopyComments,
@@ -5001,6 +5047,7 @@ function Inspector({
   session: ReviewSession
   files: FileDiffMetadata[]
   orderByAnnotation: boolean
+  fileOrderHint: string | null
   commentsCopied: boolean
   hasHumanComments: boolean
   onCopyComments(): Promise<void>
@@ -5179,6 +5226,7 @@ function Inspector({
             <em>{activeCount}</em>
           </div>
         </div>
+        {fileOrderHint != null ? <p className="notes-order-hint">{fileOrderHint}</p> : null}
         <ToggleGroup
           className="annotation-filter"
           aria-label="Annotation view"

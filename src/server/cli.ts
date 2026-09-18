@@ -14,6 +14,7 @@ import type {
   SessionGlobalComment,
 } from '../shared/types.js'
 import { daemonClientUrl, serveDaemon } from './daemon.js'
+import { loadEnvFiles } from './env.js'
 import { AppError, errorMessage } from './errors.js'
 import { findPackageRoot } from './packageRoot.js'
 import {
@@ -22,6 +23,8 @@ import {
   runService,
   startService,
 } from './service.js'
+
+loadEnvFiles()
 
 const BASE_URL = daemonClientUrl()
 

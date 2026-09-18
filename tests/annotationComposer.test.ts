@@ -9,7 +9,7 @@ import {
   annotationsForFile,
   buildCodeViewItems,
   fileIdForAnnotation,
-  orderFilesByAgentAnnotations,
+  orderReviewFiles,
   placeDifftasticAnnotations,
 } from '../src/client/annotationComposer.js'
 import type { DifftasticHunk, SessionAnnotation } from '../src/shared/types.js'
@@ -302,18 +302,18 @@ describe('annotationCoversLine', () => {
     )).toBe('same.ts')
   })
 
-  test('orders files by first agent annotation and keeps later repeats from reshuffling', () => {
+  test('orders agent-annotated files by importance before remaining files', () => {
     const files = [fileDiff('a.ts'), fileDiff('b.ts'), fileDiff('c.ts'), fileDiff('d.ts')]
     const notes = [
-      { ...annotation('c.ts', 'agent-1'), source: 'agent' as const },
-      { ...annotation('a.ts', 'user-1'), source: 'user' as const },
-      { ...annotation('b.ts', 'agent-2'), source: 'agent' as const },
-      { ...annotation('c.ts', 'agent-3'), source: 'agent' as const },
-      { ...annotation('missing.ts', 'agent-4'), source: 'agent' as const },
+      { ...annotation('c.ts', 'agent-1'), source: 'agent' as const, importance: 0.2 },
+      { ...annotation('a.ts', 'user-1'), source: 'user' as const, importance: 1 },
+      { ...annotation('b.ts', 'agent-2'), source: 'agent' as const, importance: 0.9 },
+      { ...annotation('c.ts', 'agent-3'), source: 'agent' as const, importance: 0.4 },
+      { ...annotation('missing.ts', 'agent-4'), source: 'agent' as const, importance: 1 },
     ]
-    expect(orderFilesByAgentAnnotations(files, notes).map((file) => file.name)).toEqual([
-      'c.ts',
+    expect(orderReviewFiles(files, notes, null).map((file) => file.name)).toEqual([
       'b.ts',
+      'c.ts',
       'a.ts',
       'd.ts',
     ])
@@ -322,7 +322,7 @@ describe('annotationCoversLine', () => {
   test('maps renamed agent annotations onto the current file before unannotated files', () => {
     const files = [fileDiff('keep.ts'), fileDiff('new.ts', 'old.ts')]
     const notes = [{ ...annotation('old.ts', 'agent-1'), source: 'agent' as const }]
-    expect(orderFilesByAgentAnnotations(files, notes).map((file) => file.name)).toEqual([
+    expect(orderReviewFiles(files, notes, null).map((file) => file.name)).toEqual([
       'new.ts',
       'keep.ts',
     ])
@@ -330,7 +330,31 @@ describe('annotationCoversLine', () => {
 
   test('keeps path order when no agent annotations match', () => {
     const files = [fileDiff('a.ts'), fileDiff('b.ts')]
-    expect(orderFilesByAgentAnnotations(files, [annotation('a.ts')]).map((file) => file.name)).toEqual([
+    expect(orderReviewFiles(files, [annotation('a.ts')], null).map((file) => file.name)).toEqual([
+      'a.ts',
+      'b.ts',
+    ])
+  })
+
+  test('orders remaining files by jev ranking and treats missing importance as 0.5', () => {
+    const files = [fileDiff('a.ts'), fileDiff('b.ts'), fileDiff('c.ts'), fileDiff('d.ts')]
+    const notes = [
+      { ...annotation('a.ts', 'agent-1'), source: 'agent' as const, importance: 1 },
+      { ...annotation('b.ts', 'agent-2'), source: 'agent' as const, importance: null },
+      { ...annotation('c.ts', 'agent-3'), source: 'agent' as const, importance: 0 },
+    ]
+    expect(orderReviewFiles(files, notes, ['d.ts', 'c.ts', 'b.ts', 'a.ts']).map((file) => file.name)).toEqual([
+      'a.ts',
+      'b.ts',
+      'c.ts',
+      'd.ts',
+    ])
+  })
+
+  test('appends unannotated files missing from jev ranking in path order', () => {
+    const files = [fileDiff('a.ts'), fileDiff('b.ts'), fileDiff('c.ts')]
+    expect(orderReviewFiles(files, [], ['c.ts']).map((file) => file.name)).toEqual([
+      'c.ts',
       'a.ts',
       'b.ts',
     ])

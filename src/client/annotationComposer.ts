@@ -8,8 +8,9 @@ import type {
 } from '@pierre/diffs'
 
 import { annotationThreads, isAnnotationThreadRoot } from '../shared/annotationThreads'
-import { nearestVisibleLine, snapPierreLineNumber } from './annotationPlacement'
 import type { AnnotationIntent, DifftasticHunk, SessionAnnotation } from '../shared/types'
+import { nearestVisibleLine, snapPierreLineNumber } from './annotationPlacement'
+import { compareReviewFilePaths } from './reviewFileOrder'
 
 export type ReviewLineAnnotation =
   | { kind: 'saved'; annotation: SessionAnnotation }
@@ -88,25 +89,52 @@ export function fileIdForAnnotation(
   return renamed?.name ?? annotation.filePath
 }
 
-export function orderFilesByAgentAnnotations<T extends { name: string; prevName?: string | null }>(
+const MISSING_AGENT_IMPORTANCE = 0.5
+
+export function orderReviewFiles<T extends { name: string; prevName?: string | null }>(
   files: readonly T[],
-  annotations: readonly Pick<SessionAnnotation, 'filePath' | 'source'>[],
+  annotations: readonly Pick<SessionAnnotation, 'filePath' | 'source' | 'importance'>[],
+  jevPaths: readonly string[] | null,
 ): T[] {
   if (files.length === 0) return []
   const filesByName = new Map(files.map((file) => [file.name, file]))
-  const ranked: T[] = []
-  const seen = new Set<string>()
+  const agentImportance = new Map<string, number>()
   for (const annotation of annotations) {
     if (annotation.source !== 'agent') continue
     const fileId = fileIdForAnnotation(annotation, files)
-    if (seen.has(fileId)) continue
-    const file = filesByName.get(fileId)
-    if (file == null) continue
-    seen.add(fileId)
-    ranked.push(file)
+    if (!filesByName.has(fileId)) continue
+    const importance = annotation.importance ?? MISSING_AGENT_IMPORTANCE
+    agentImportance.set(fileId, Math.max(agentImportance.get(fileId) ?? -1, importance))
   }
-  if (ranked.length === 0) return [...files]
-  return [...ranked, ...files.filter((file) => !seen.has(file.name))]
+
+  const annotated: T[] = []
+  const rest: T[] = []
+  for (const file of files) {
+    if (agentImportance.has(file.name)) annotated.push(file)
+    else rest.push(file)
+  }
+  annotated.sort((left, right) => {
+    const delta = (agentImportance.get(right.name) ?? 0) - (agentImportance.get(left.name) ?? 0)
+    if (delta !== 0) return delta
+    return compareReviewFilePaths(left.name, right.name)
+  })
+
+  const restByName = new Map(rest.map((file) => [file.name, file]))
+  const orderedRest: T[] = []
+  const seen = new Set<string>()
+  if (jevPaths != null) {
+    for (const filePath of jevPaths) {
+      const file = restByName.get(filePath)
+      if (file == null || seen.has(file.name)) continue
+      seen.add(file.name)
+      orderedRest.push(file)
+    }
+  }
+  for (const file of rest) {
+    if (seen.has(file.name)) continue
+    orderedRest.push(file)
+  }
+  return [...annotated, ...orderedRest]
 }
 
 export function annotationsForFile(

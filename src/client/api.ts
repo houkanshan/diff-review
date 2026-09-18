@@ -21,6 +21,7 @@ import type {
   SubmitPullRequestReviewInput,
   UpdatePullRequestDraftInput,
   UpdatePullRequestLabelInput,
+  JevFileOrderResponse,
   RepositoryInfo,
   ReviewSession,
   SessionFreshness,
@@ -166,6 +167,13 @@ export function createSession(input: CreateSessionInput): Promise<ReviewSession>
 
 export function refreshSession(id: string): Promise<ReviewSession> {
   return request(`/api/sessions/${encodeURIComponent(id)}/refresh`, { method: 'POST' })
+}
+
+export function requestJevFileOrder(id: string): Promise<JevFileOrderResponse> {
+  return request(`/api/sessions/${encodeURIComponent(id)}/file-order`, {
+    method: 'POST',
+    timeoutMs: 60_000,
+  })
 }
 
 export function getSessionFreshness(id: string): Promise<SessionFreshness> {

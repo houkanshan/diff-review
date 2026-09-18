@@ -18,6 +18,8 @@ import type {
   PullRequestDetails,
   PullRequestListView,
   PullRequestWorkspace,
+  JevFileOrder,
+  JevFileOrderResponse,
   ReviewSession,
   ReviewTarget,
   SessionFreshness,
@@ -27,9 +29,14 @@ import type {
   PiChatModelSettings,
   SendPiChatInput,
 } from '../shared/types.js'
+import {
+  JEV_FILE_ORDER_API_KEY_HINT,
+  JEV_FILE_ORDER_FAILED_HINT,
+  sessionUsesFullCommitRange,
+  targetSupportsStaging,
+} from '../shared/types.js'
 import { parsePiChatModelChoice } from '../shared/piChatModel.js'
 import { listPiChatModels } from './piChatModel.js'
-import { sessionUsesFullCommitRange, targetSupportsStaging } from '../shared/types.js'
 import { pullRequestAllowsReviewEvent } from '../shared/pull-request.js'
 import {
   reusablePullRequestSession,
@@ -40,6 +47,7 @@ import { AppError, errorMessage } from './errors.js'
 import { getDifftasticAvailability, renderDifftasticFile } from './difftastic.js'
 import { openFileInEditor } from './editor.js'
 import {
+  currentFilePathsFromPatch,
   getRepositoryInfo,
   readSnapshotFile,
   resolveCommitSpan,
@@ -72,6 +80,12 @@ import {
   pendingReviewComments,
   toGitHubReviewComment,
 } from './github.js'
+import {
+  jevFileOrderFingerprint,
+  rankFilesForReview,
+  reviewCommitMessages,
+  typesafeApiKey,
+} from './jev.js'
 import { PiReviewRunner } from './pi.js'
 import { ReviewStore } from './store.js'
 
@@ -100,6 +114,7 @@ export class ApiHandler {
   private readonly events = new EventEmitter()
   private readonly avatars = new Map<string, Promise<CachedMedia>>()
   private readonly githubAttachments = new Map<string, Promise<CachedMedia>>()
+  private readonly jevFileOrderRequests = new Map<string, Promise<JevFileOrderResponse>>()
   private readonly piReviews: PiReviewRunner
 
   constructor(
@@ -167,6 +182,7 @@ export class ApiHandler {
       /^\/api\/sessions\/([^/]+)\/annotations\/archive$/.exec(url.pathname)
     const fileStageMatch = /^\/api\/sessions\/([^/]+)\/files\/stage$/.exec(url.pathname)
     const fileViewedMatch = /^\/api\/sessions\/([^/]+)\/files\/viewed$/.exec(url.pathname)
+    const fileOrderMatch = /^\/api\/sessions\/([^/]+)\/file-order$/.exec(url.pathname)
     const openEditorMatch = /^\/api\/sessions\/([^/]+)\/open-editor$/.exec(url.pathname)
     const fileMatch = /^\/api\/sessions\/([^/]+)\/file$/.exec(url.pathname)
     const fileDifftasticMatch = /^\/api\/sessions\/([^/]+)\/difftastic$/.exec(url.pathname)
@@ -711,6 +727,11 @@ export class ApiHandler {
       return
     }
 
+    if (method === 'POST' && fileOrderMatch != null) {
+      sendJson(response, 200, await this.ensureJevFileOrder(fileOrderMatch[1] ?? ''))
+      return
+    }
+
     if (method === 'POST' && fileViewedMatch != null) {
       const sessionId = fileViewedMatch[1] ?? ''
       const input = parseViewedFileInput(await readJson(request))
@@ -839,6 +860,80 @@ export class ApiHandler {
 
   private emitSessionUpdate(sessionId: string): void {
     this.events.emit('session-updated', sessionId)
+  }
+
+  private async ensureJevFileOrder(sessionId: string): Promise<JevFileOrderResponse> {
+    const session = this.store.getSession(sessionId)
+    const files = currentFilePathsFromPatch(session.patch)
+    const branch = await repositoryBranch(session.repositoryRoot)
+    const commitMessages = reviewCommitMessages(session)
+    const fingerprint = jevFileOrderFingerprint({ files, branch, commitMessages })
+    const requestKey = `${sessionId}:${fingerprint}`
+    const inflight = this.jevFileOrderRequests.get(requestKey)
+    if (inflight != null) return inflight
+    const pending = this.computeJevFileOrder(
+      session,
+      files,
+      branch,
+      commitMessages,
+      fingerprint,
+    ).finally(() => {
+      this.jevFileOrderRequests.delete(requestKey)
+    })
+    this.jevFileOrderRequests.set(requestKey, pending)
+    return pending
+  }
+
+  private async computeJevFileOrder(
+    session: ReviewSession,
+    files: string[],
+    branch: string | null,
+    commitMessages: string[],
+    fingerprint: string,
+  ): Promise<JevFileOrderResponse> {
+    if (session.jevFileOrder?.fingerprint === fingerprint) {
+      console.log(`diff-review jev cache: ${JSON.stringify({ sessionId: session.id, files })}`)
+      return { status: 'ready', order: session.jevFileOrder }
+    }
+    if (files.length <= 1) {
+      const order: JevFileOrder = {
+        paths: files,
+        fingerprint,
+        createdAt: new Date().toISOString(),
+      }
+      this.store.setJevFileOrder(session.id, order)
+      this.emitSessionUpdate(session.id)
+      return { status: 'ready', order }
+    }
+    if (typesafeApiKey() == null) {
+      console.log(`diff-review jev skipped: ${JSON.stringify({ sessionId: session.id, reason: 'missing-api-key' })}`)
+      return {
+        status: 'unavailable',
+        reason: 'missing-api-key',
+        message: JEV_FILE_ORDER_API_KEY_HINT,
+      }
+    }
+    try {
+      const paths = await rankFilesForReview({ files, branch, commitMessages })
+      const order: JevFileOrder = {
+        paths,
+        fingerprint,
+        createdAt: new Date().toISOString(),
+      }
+      this.store.setJevFileOrder(session.id, order)
+      this.emitSessionUpdate(session.id)
+      return { status: 'ready', order }
+    } catch (error) {
+      console.error(`diff-review jev failed: ${JSON.stringify({
+        sessionId: session.id,
+        message: errorMessage(error),
+      })}`)
+      return {
+        status: 'unavailable',
+        reason: 'failed',
+        message: JEV_FILE_ORDER_FAILED_HINT,
+      }
+    }
   }
 
   private emitPiChat(
@@ -989,6 +1084,15 @@ export class ApiHandler {
       },
     }
     sendJson(response, appError.status, body)
+  }
+}
+
+
+async function repositoryBranch(repositoryRoot: string): Promise<string | null> {
+  try {
+    return (await getRepositoryInfo(repositoryRoot)).branch
+  } catch {
+    return null
   }
 }
 

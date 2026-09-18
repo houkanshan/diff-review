@@ -9,6 +9,7 @@ import type {
   AddGlobalCommentInput,
   AnnotationIntent,
   CommitSummary,
+  JevFileOrder,
   PiReviewRun,
   PullRequestRevision,
   ReviewSession,
@@ -40,6 +41,7 @@ interface SessionRow {
   ignore_whitespace: number
   revision_base_oid: string | null
   revision_head_oid: string | null
+  jev_file_order_json: string | null
   created_at: string
   updated_at: string
 }
@@ -123,6 +125,7 @@ export class ReviewStore {
         ignore_whitespace INTEGER NOT NULL DEFAULT 0,
         revision_base_oid TEXT,
         revision_head_oid TEXT,
+        jev_file_order_json TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -709,6 +712,15 @@ export class ReviewStore {
     return this.getSession(sessionId)
   }
 
+  setJevFileOrder(sessionId: string, order: JevFileOrder): ReviewSession {
+    this.getSession(sessionId)
+    const now = new Date().toISOString()
+    this.database
+      .prepare('UPDATE sessions SET jev_file_order_json = ?, updated_at = ? WHERE id = ?')
+      .run(JSON.stringify(order), now, sessionId)
+    return this.getSession(sessionId)
+  }
+
   addGlobalComment(sessionId: string, input: AddGlobalCommentInput): SessionGlobalComment {
     this.getSession(sessionId)
     const id = createId('glc')
@@ -859,6 +871,9 @@ export class ReviewStore {
     if (!columns.some((column) => column.name === 'revision_head_oid')) {
       this.database.exec('ALTER TABLE sessions ADD COLUMN revision_head_oid TEXT')
     }
+    if (!columns.some((column) => column.name === 'jev_file_order_json')) {
+      this.database.exec('ALTER TABLE sessions ADD COLUMN jev_file_order_json TEXT')
+    }
     const rows = this.database
       .prepare(`
         SELECT id, target_json, resolved_json, revision_base_oid, revision_head_oid
@@ -977,9 +992,29 @@ export class ReviewStore {
       revisionBaseOid: row.revision_base_oid,
       revisionHeadOid: row.revision_head_oid,
       unstagedPaths: Array.isArray(resolved.unstagedPaths) ? resolved.unstagedPaths : null,
+      jevFileOrder: parseJevFileOrder(row.jev_file_order_json),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }
+  }
+}
+
+function parseJevFileOrder(value: string | null | undefined): JevFileOrder | null {
+  if (value == null || value === '') return null
+  try {
+    const parsed = JSON.parse(value) as Partial<JevFileOrder>
+    if (!Array.isArray(parsed.paths) || parsed.paths.some((path) => typeof path !== 'string')) {
+      return null
+    }
+    if (typeof parsed.fingerprint !== 'string' || parsed.fingerprint.length === 0) return null
+    if (typeof parsed.createdAt !== 'string' || parsed.createdAt.length === 0) return null
+    return {
+      paths: parsed.paths,
+      fingerprint: parsed.fingerprint,
+      createdAt: parsed.createdAt,
+    }
+  } catch {
+    return null
   }
 }
 

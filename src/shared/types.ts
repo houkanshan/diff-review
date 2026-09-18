@@ -193,6 +193,24 @@ export interface SessionFreshness {
   stale: boolean
 }
 
+export const JEV_FILE_ORDER_API_KEY_HINT =
+  'Set TYPESAFE_API_KEY to sort files without annotations.'
+export const JEV_FILE_ORDER_FAILED_HINT = 'Could not sort files without annotations.'
+
+export interface JevFileOrder {
+  paths: string[]
+  fingerprint: string
+  createdAt: string
+}
+
+export type JevFileOrderResponse =
+  | { status: 'ready'; order: JevFileOrder }
+  | {
+      status: 'unavailable'
+      reason: 'missing-api-key' | 'failed'
+      message: string
+    }
+
 export interface ReviewSession {
   id: string
   repositoryRoot: string
@@ -211,6 +229,7 @@ export interface ReviewSession {
   revisionBaseOid: string | null
   revisionHeadOid: string | null
   unstagedPaths: string[] | null
+  jevFileOrder: JevFileOrder | null
   createdAt: string
   updatedAt: string
 }
