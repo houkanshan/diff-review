@@ -1655,6 +1655,22 @@ svg {
     var(--right-panel-width, 310px);
 }
 
+.review-workspace-body.file-panel-hidden {
+  grid-template-columns:
+    minmax(360px, 1fr) 5px
+    var(--right-panel-width, 310px);
+}
+
+.review-workspace-body.annotation-panel-hidden {
+  grid-template-columns:
+    var(--left-panel-width, 235px) 5px
+    minmax(360px, 1fr);
+}
+
+.review-workspace-body.file-panel-hidden.annotation-panel-hidden {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .review-workspace-body.is-hidden,
 .pr-overview-stage.is-hidden {
   visibility: hidden;

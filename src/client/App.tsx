@@ -20,7 +20,13 @@ import { Toggle } from '@base-ui/react/toggle'
 import { ToggleGroup } from '@base-ui/react/toggle-group'
 import { Tooltip } from '@base-ui/react/tooltip'
 import { PiChatControl } from './PiChatDrawer'
-import { PanelResizeHandle, storePanelWidth, storedPanelWidth } from './PanelResizeHandle'
+import {
+  PanelResizeHandle,
+  storePanelVisible,
+  storePanelWidth,
+  storedPanelVisible,
+  storedPanelWidth,
+} from './PanelResizeHandle'
 import {
   PullRequestListDrawer,
   ReviewPanelsDrawer,
@@ -74,6 +80,8 @@ import {
   AlignJustify as LineDiffIcon,
   Braces as StructuralDiffIcon,
   ListOrdered as SortIcon,
+  PanelLeft as FilePanelIcon,
+  PanelRight as AnnotationPanelIcon,
   Settings2 as SettingsIcon,
   CircleCheck,
   CircleX as RequestChangesIcon,
@@ -1114,6 +1122,10 @@ function ReviewWorkspace({
   const [rightPanelWidth, setRightPanelWidth] = useState(() =>
     storedPanelWidth('right', 310, 240, 480),
   )
+  const [filePanelVisible, setFilePanelVisible] = useState(() => storedPanelVisible('left'))
+  const [annotationPanelVisible, setAnnotationPanelVisible] = useState(() =>
+    storedPanelVisible('right'),
+  )
   const [busy, setBusy] = useState(false)
   const [repositorySwitchError, setRepositorySwitchError] = useState<string | null>(null)
   const [commentsCopied, setCommentsCopied] = useState(false)
@@ -1861,6 +1873,16 @@ function ReviewWorkspace({
   const content = (
     <>
       <header className="topbar">
+        {compactLayout || (pullRequest != null && pullRequestView !== 'diff') ? null : (
+          <ReviewPanelToggle
+            side="left"
+            visible={filePanelVisible}
+            onVisibleChange={(visible) => {
+              setFilePanelVisible(visible)
+              storePanelVisible('left', visible)
+            }}
+          />
+        )}
         <div className="brand">
           <span className="brand-mark">Δ</span>
           <span>Diff Review</span>
@@ -1998,6 +2020,16 @@ function ReviewWorkspace({
             onOpen={onChatOpen}
           />
         )}
+        {compactLayout || (pullRequest != null && pullRequestView !== 'diff') ? null : (
+          <ReviewPanelToggle
+            side="right"
+            visible={annotationPanelVisible}
+            onVisibleChange={(visible) => {
+              setAnnotationPanelVisible(visible)
+              storePanelVisible('right', visible)
+            }}
+          />
+        )}
       </header>
 
       <div
@@ -2045,25 +2077,30 @@ function ReviewWorkspace({
         <div
           ref={diffWorkspaceRef}
           id={pullRequest == null ? undefined : 'pull-request-diff'}
-          className={`review-workspace-body${
-            pullRequest != null && pullRequestView !== 'diff' ? ' is-hidden' : ''
-          }`}
+          className={[
+            'review-workspace-body',
+            pullRequest != null && pullRequestView !== 'diff' ? 'is-hidden' : '',
+            !compactLayout && !filePanelVisible ? 'file-panel-hidden' : '',
+            !compactLayout && !annotationPanelVisible ? 'annotation-panel-hidden' : '',
+          ].filter(Boolean).join(' ')}
           role={pullRequest == null ? undefined : 'tabpanel'}
           aria-labelledby={pullRequest == null ? undefined : 'pull-request-diff-tab'}
           aria-hidden={pullRequest == null ? undefined : pullRequestView !== 'diff'}
         >
-          {compactLayout ? null : renderFileRail()}
-          <PanelResizeHandle
-            label="Resize file panel"
-            side="left"
-            size={leftPanelWidth}
-            min={160}
-            max={440}
-            onChange={(width) => {
-              setLeftPanelWidth(width)
-              storePanelWidth('left', width)
-            }}
-          />
+          {compactLayout || !filePanelVisible ? null : renderFileRail()}
+          {compactLayout || !filePanelVisible ? null : (
+            <PanelResizeHandle
+              label="Resize file panel"
+              side="left"
+              size={leftPanelWidth}
+              min={160}
+              max={440}
+              onChange={(width) => {
+                setLeftPanelWidth(width)
+                storePanelWidth('left', width)
+              }}
+            />
+          )}
           <section
             ref={setDiffStage}
             className="diff-stage"
@@ -2131,18 +2168,20 @@ function ReviewWorkspace({
             )}
             <OpenInEditorButton sessionId={session.id} editor={editor} stage={diffStage} />
           </section>
-          <PanelResizeHandle
-            label="Resize annotations panel"
-            side="right"
-            size={rightPanelWidth}
-            min={240}
-            max={480}
-            onChange={(width) => {
-              setRightPanelWidth(width)
-              storePanelWidth('right', width)
-            }}
-          />
-          {compactLayout ? null : renderInspector()}
+          {compactLayout || !annotationPanelVisible ? null : (
+            <PanelResizeHandle
+              label="Resize annotations panel"
+              side="right"
+              size={rightPanelWidth}
+              min={240}
+              max={480}
+              onChange={(width) => {
+                setRightPanelWidth(width)
+                storePanelWidth('right', width)
+              }}
+            />
+          )}
+          {compactLayout || !annotationPanelVisible ? null : renderInspector()}
         </div>
       </div>
     </>
@@ -2156,6 +2195,41 @@ function isTestFilePath(filePath: string): boolean {
   if (normalized.includes('/__tests__/') || normalized.startsWith('__tests__/')) return true
   if (normalized.includes('/.e2e-pilot/') || normalized.startsWith('.e2e-pilot/')) return true
   return /(?:\.test\.tsx?|\.spec\.ts|\.spec\.js|_test\.[^/]+)$/.test(normalized)
+}
+
+function ReviewPanelToggle({
+  side,
+  visible,
+  onVisibleChange,
+}: {
+  side: 'left' | 'right'
+  visible: boolean
+  onVisibleChange(visible: boolean): void
+}) {
+  const label = side === 'left'
+    ? (visible ? 'Hide file panel' : 'Show file panel')
+    : (visible ? 'Hide annotations panel' : 'Show annotations panel')
+  const trigger = (
+    <button
+      type="button"
+      className={`icon-button${visible ? ' is-active' : ''}`}
+      aria-pressed={visible}
+      aria-label={label}
+      onClick={() => onVisibleChange(!visible)}
+    >
+      {side === 'left' ? <FilePanelIcon /> : <AnnotationPanelIcon />}
+    </button>
+  )
+  return (
+    <Tooltip.Root>
+      <Tooltip.Trigger render={trigger} />
+      <Tooltip.Portal>
+        <Tooltip.Positioner className="tooltip-positioner" sideOffset={6}>
+          <Tooltip.Popup className="tooltip-popup">{label}</Tooltip.Popup>
+        </Tooltip.Positioner>
+      </Tooltip.Portal>
+    </Tooltip.Root>
+  )
 }
 
 function FoldFilesMenu({

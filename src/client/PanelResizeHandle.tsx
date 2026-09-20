@@ -16,6 +16,15 @@ export function storePanelWidth(side: PanelWidthSide, width: number): void {
   window.localStorage.setItem(`diff-review-${side}-panel-width`, String(width))
 }
 
+export function storedPanelVisible(side: 'left' | 'right'): boolean {
+  return window.localStorage.getItem(`diff-review-${side}-panel-visible`) !== '0'
+}
+
+export function storePanelVisible(side: 'left' | 'right', visible: boolean): void {
+  if (visible) window.localStorage.removeItem(`diff-review-${side}-panel-visible`)
+  else window.localStorage.setItem(`diff-review-${side}-panel-visible`, '0')
+}
+
 export function PanelResizeHandle({
   label,
   side,
