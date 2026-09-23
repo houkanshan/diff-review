@@ -1091,7 +1091,7 @@ function ReviewWorkspace({
   onChatOpen?(): void
   onOpenPullRequestList?(): void
 }) {
-  const viewerRef = useRef<CodeViewHandle<ReviewLineAnnotation>>(null)
+  const viewerRef = useRef<CodeViewHandle<ReviewLineAnnotation, undefined>>(null)
   const [layout, setLayout] = useState<DiffLayout>('unified')
   const [renderer, setRenderer] = useState<DiffRenderer>(() => storedDiffRenderer())
   const [orderByAnnotation, setOrderByAnnotation] = useState(() => storedOrderByAnnotation())
@@ -1330,7 +1330,7 @@ function ReviewWorkspace({
     setComposerDraft(EMPTY_COMPOSER_DRAFT)
   }, [setComposerDraft, setComposerSelection])
 
-  const diffOptions = useMemo<CodeViewReactOptions<ReviewLineAnnotation>>(
+  const diffOptions = useMemo<CodeViewReactOptions<ReviewLineAnnotation, undefined>>(
     () => ({
       theme: { dark: 'pierre-dark', light: 'pierre-light' },
       themeType: resolvedTheme,
