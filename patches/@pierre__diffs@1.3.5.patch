@@ -1,0 +1,17 @@
+diff --git a/dist/components/CodeView.js b/dist/components/CodeView.js
+index 051e7d0a211c0cdf32badbd4ff836f04df1ff511..7f16af2c78e4888ed1646bf9dfff3b4a0b1d12a6 100644
+--- a/dist/components/CodeView.js
++++ b/dist/components/CodeView.js
+@@ -1148,6 +1148,12 @@ var CodeView = class CodeView {
+ 			firstDirtyIndex = Math.max(nextItems.length - 1, 0);
+ 		}
+ 		this.capturePendingLayoutAnchor(nextIdToItem);
++		// The rendered range belongs to the old order. Release it before replacing
++		// the list, or the next render will clean up the wrong records by index.
++		if (previousItems.some((item, index) => nextItems[index] !== item)) {
++			this.cleanAllRenderedItems();
++			this.resetRenderState();
++		}
+ 		for (let index = 0; index < previousItems.length; index++) {
+ 			const removedItem = previousItems[index];
+ 			if (removedItem == null || !removedItems.has(removedItem)) continue;
