@@ -816,7 +816,7 @@ describe('local review storage', () => {
       expect(lines.join('\n')).not.toContain('Help someone review PR #42.')
       expect(lines).not.toContain('--append-system-prompt')
       expect(lines).toContain('--model')
-      expect(lines).toContain('openai-codex/gpt-5.6-luna')
+      expect(lines).toContain('openai-codex/gpt-6-sol')
       expect(lines).toContain('--thinking')
       expect(lines).toContain('--mode')
       expect(lines).toContain('rpc')
@@ -878,10 +878,16 @@ describe('local review storage', () => {
     const runner = new PiReviewRunner(store, () => undefined)
     const choice = {
       provider: 'openai-codex',
-      modelId: 'gpt-5.6-sol',
+      modelId: 'gpt-6-sol',
       thinkingLevel: 'high' as const,
     }
     try {
+      runner.setChatModel(session.id, {
+        provider: 'openai-codex',
+        modelId: 'gpt-5.6-sol',
+        thinkingLevel: 'high',
+      })
+      expect(runner.getChat(session.id).model?.modelId).toMatch(/^gpt-6-/)
       expect(runner.setChatModel(session.id, choice)).toEqual(choice)
       expect(runner.getChat(session.id).model).toEqual(choice)
       const sent = await runner.send(session.id, 'Use sol')
@@ -892,10 +898,10 @@ describe('local review storage', () => {
       })
       const spawned = readFileSync(output, 'utf8')
       expect(spawned).toContain('--model')
-      expect(spawned).toContain('openai-codex/gpt-5.6-sol')
+      expect(spawned).toContain('openai-codex/gpt-6-sol')
       expect(spawned).toContain('--thinking')
       expect(spawned).toContain('high')
-      expect(spawned).toContain('RPC set_model openai-codex gpt-5.6-sol')
+      expect(spawned).toContain('RPC set_model openai-codex gpt-6-sol')
       expect(spawned).toContain('RPC set_thinking_level  high')
       expect(JSON.parse(readFileSync(piChatModelsPath(store.dataDirectory), 'utf8'))).toEqual({
         [`pr:${session.repositoryRoot}:44`]: choice,
@@ -909,7 +915,7 @@ describe('local review storage', () => {
       expect(runner.getChat(session.id).model).toEqual(choice)
       const continued = readFileSync(output, 'utf8')
       expect(continued).toContain('--session')
-      expect(continued).toContain('openai-codex/gpt-5.6-sol')
+      expect(continued).toContain('openai-codex/gpt-6-sol')
     } finally {
       runner.close()
       process.env.PATH = originalPath
