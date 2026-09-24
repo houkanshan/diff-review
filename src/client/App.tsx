@@ -1392,7 +1392,7 @@ function ReviewWorkspace({
       unsafeCSS: [
         '[data-diffs-header="default"] { cursor: pointer; }',
         '[data-code] { scrollbar-gutter: auto; }',
-        '[data-review-hover] { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 50%, transparent); background-image: linear-gradient(color-mix(in srgb, var(--accent) 8%, transparent), color-mix(in srgb, var(--accent) 8%, transparent)); }',
+        '[data-review-hover] { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--blue) 50%, transparent); background-image: linear-gradient(color-mix(in srgb, var(--blue) 8%, transparent), color-mix(in srgb, var(--blue) 8%, transparent)); }',
       ].join(' '),
     }),
     [layout, openComposer, overflow, resolvedTheme],
@@ -5072,9 +5072,14 @@ function SessionHistoryMenu({
                     {item.target.kind === 'pr' ? `PR #${item.target.number}` : 'Local'}
                   </span>
                   <code>{revision ?? item.targetLabel}</code>
-                  <time dateTime={item.updatedAt} title={formatTimestamp(item.updatedAt)}>
-                    {relativeTimeAgo(item.updatedAt)}
-                  </time>
+                  <span className="session-history-meta">
+                    <time dateTime={item.updatedAt} title={formatTimestamp(item.updatedAt)}>
+                      {relativeTimeAgo(item.updatedAt)}
+                    </time>
+                    {item.annotations.length > 0 && (
+                      <EditIcon size={12} aria-label="Has annotations" />
+                    )}
+                  </span>
                   <small>{item.targetLabel}</small>
                 </button>
               )

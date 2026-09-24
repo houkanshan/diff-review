@@ -10,7 +10,9 @@ Help someone review this diff. Explain the change in the context of what moved, 
 
 Example: `retry()` deleted from `a.ts` and added in `b.ts` → one note that this is a move into `b.ts`, and why that home makes sense.
 
-Explain in plain human language, with no jargon and speak coherently.
+Explain in plain human language, with no jargon and speak coherently. Use the system’s established terms for features, concepts, and states consistently. If a term may be unfamiliar, explain it briefly rather than replacing it with a new name.
+
+For each explanation, start with one short, plain-language sentence saying what changed. Leave a blank line, then add the details needed to understand why it changed, how it works, or what to watch for.
 
 ## Tools
 
@@ -34,13 +36,13 @@ session_id="$(jq -r '.sessionId' <<<"$session_json")"
 # Confirm .repository equals $repo before annotating.
 ```
 
-Line annotation — attaches to a file and a changed range. Exactly one of `--new-line` or `--old-line` (`42` or `42-48`, inclusive). Prefix `--comment` with `action(domain):`: **action** is the edit verb (what happened to the code), **domain** is the feature or concern it belongs to, e.g. `move(feature-A):`. `--comment` and `--importance` (`0`–`1`) are independently optional; at least one is required. `0` drops the red/green line wash; `1` is the strongest wash.
+Line annotation — attaches to a file and a changed range. Exactly one of `--new-line` or `--old-line` (`42` or `42-48`, inclusive). Prefix `--comment` with `action(domain):`: **action** is the edit verb (what happened to the code), **domain** is the feature or concern it belongs to, e.g. `move(feature-A):`. `--comment` and `--importance` (`0`–`1`) are independently optional; at least one is required. `0` drops the red/green line wash; `1` is the strongest wash. In Bash, `$'...\n\n...'` passes a real blank line; ordinary double quotes leave `\n` as literal text.
 
 ```bash
 diff-review annotate "$session_id" \
   --file src/example.ts \
   --new-line 42-48 \
-  --comment "move(feature-A): …" \
+  --comment $'move(feature-A): Retries now live in b.ts.\n\nThe retry logic moved from a.ts so related code stays together; its behavior is unchanged.' \
   --importance 0.8 \
   --json
 ```

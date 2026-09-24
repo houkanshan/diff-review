@@ -2370,6 +2370,14 @@ svg {
 .revision-menu time { color: var(--faint); font-size: 8px; }
 .revision-menu small { grid-column: 2 / -1; color: var(--muted); font-size: 8px; }
 
+.session-history-meta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  color: var(--faint);
+}
+
 .revision-status {
   align-self: center;
   padding: 2px 5px;
@@ -2822,14 +2830,14 @@ body.resizing-panels * {
 
 .difftastic-row.is-range-hover,
 .difftastic-side.is-range-hover {
-  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 50%, transparent);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--blue) 50%, transparent);
 }
 
 .difftastic-row.is-range-hover .difftastic-code,
 .difftastic-side.is-range-hover .difftastic-code {
   background-image: linear-gradient(
-    color-mix(in srgb, var(--accent) 8%, transparent),
-    color-mix(in srgb, var(--accent) 8%, transparent)
+    color-mix(in srgb, var(--blue) 8%, transparent),
+    color-mix(in srgb, var(--blue) 8%, transparent)
   );
 }
 
