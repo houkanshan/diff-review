@@ -34,12 +34,6 @@ session_id="$(jq -r '.sessionId' <<<"$session_json")"
 # Confirm .repository equals $repo before annotating.
 ```
 
-Global comment — session-level text, no `--file` or line flags:
-
-```bash
-diff-review annotate "$session_id" --comment "[summary] …" --json
-```
-
 Line annotation — attaches to a file and a changed range. Exactly one of `--new-line` or `--old-line` (`42` or `42-48`, inclusive). Prefix `--comment` with `action(domain):`: **action** is the edit verb (what happened to the code), **domain** is the feature or concern it belongs to, e.g. `move(feature-A):`. `--comment` and `--importance` (`0`–`1`) are independently optional; at least one is required. `0` drops the red/green line wash; `1` is the strongest wash.
 
 ```bash
