@@ -1342,6 +1342,7 @@ function parseAnnotationInput(value: unknown): AddAnnotationInput {
     throw new AppError('INVALID_INPUT', 'intent must be annotation or review-comment')
   }
   return {
+    shortIdPrefix: object.shortIdPrefix == null ? undefined : expectString(object.shortIdPrefix, 'shortIdPrefix'),
     filePath: expectString(object.filePath, 'filePath'),
     side,
     startLine,

@@ -48,6 +48,7 @@ interface SessionRow {
 
 interface AnnotationRow {
   id: string
+  short_id: string
   session_id: string
   file_path: string
   side: 'old' | 'new'
@@ -132,6 +133,7 @@ export class ReviewStore {
 
       CREATE TABLE IF NOT EXISTS annotations (
         id TEXT PRIMARY KEY,
+        short_id TEXT,
         session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
         file_path TEXT NOT NULL,
         side TEXT NOT NULL CHECK(side IN ('old', 'new')),
@@ -148,6 +150,13 @@ export class ReviewStore {
         viewed_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS annotation_counters (
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        prefix TEXT NOT NULL,
+        number INTEGER NOT NULL,
+        PRIMARY KEY (session_id, prefix)
       );
 
       CREATE TABLE IF NOT EXISTS pi_review_runs (
@@ -575,33 +584,51 @@ export class ReviewStore {
     if (parent != null && (input.comment == null || input.comment.trim() === '')) {
       throw new AppError('INVALID_ANNOTATION_REPLY', 'A reply must include a comment')
     }
+    const prefix = input.shortIdPrefix ?? 'ANNO'
+    if (!/^[A-Z][A-Z0-9]{1,11}$/.test(prefix) || (input.source !== 'agent' && input.shortIdPrefix != null)) {
+      throw new AppError('INVALID_INPUT', 'shortIdPrefix must be 2–12 uppercase letters or digits, start with a letter, and be set only for agent annotations')
+    }
     const id = createId('ann')
     const now = new Date().toISOString()
-    this.database
-      .prepare(`
-        INSERT INTO annotations (
-          id, session_id, file_path, side, start_line, end_side, end_line,
-          comment, importance, source, intent, reply_to_id, archived_at, submitted_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `)
-      .run(
-        id,
-        sessionId,
-        parent?.filePath ?? input.filePath,
-        parent?.side ?? input.side,
-        parent?.startLine ?? input.startLine,
-        parent?.endSide ?? input.endSide ?? null,
-        parent?.endLine ?? input.endLine,
-        input.comment ?? null,
-        parent == null ? input.importance ?? null : null,
-        input.source,
-        parent == null && input.source === 'user' ? input.intent ?? 'annotation' : 'annotation',
-        parent?.id ?? null,
-        null,
-        null,
-        now,
-        now,
-      )
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      const counter = this.database.prepare(`
+        INSERT INTO annotation_counters (session_id, prefix, number) VALUES (?, ?, 1)
+        ON CONFLICT(session_id, prefix) DO UPDATE SET number = number + 1
+        RETURNING number
+      `).get(sessionId, prefix) as { number: number }
+      const shortId = `${prefix}-${String(counter.number).padStart(2, '0')}`
+      this.database
+        .prepare(`
+          INSERT INTO annotations (
+            id, short_id, session_id, file_path, side, start_line, end_side, end_line,
+            comment, importance, source, intent, reply_to_id, archived_at, submitted_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          id,
+          shortId,
+          sessionId,
+          parent?.filePath ?? input.filePath,
+          parent?.side ?? input.side,
+          parent?.startLine ?? input.startLine,
+          parent?.endSide ?? input.endSide ?? null,
+          parent?.endLine ?? input.endLine,
+          input.comment ?? null,
+          parent == null ? input.importance ?? null : null,
+          input.source,
+          parent == null && input.source === 'user' ? input.intent ?? 'annotation' : 'annotation',
+          parent?.id ?? null,
+          null,
+          null,
+          now,
+          now,
+        )
+      this.database.exec('COMMIT')
+    } catch (error) {
+      this.database.exec('ROLLBACK')
+      throw error
+    }
     return this.getAnnotation(id)
   }
 
@@ -921,6 +948,31 @@ export class ReviewStore {
         'ALTER TABLE annotations ADD COLUMN reply_to_id TEXT REFERENCES annotations(id) ON DELETE CASCADE',
       )
     }
+    if (!columns.some((column) => column.name === 'short_id')) {
+      this.database.exec('ALTER TABLE annotations ADD COLUMN short_id TEXT')
+    }
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      const missing = this.database.prepare(`
+        SELECT id, session_id FROM annotations WHERE short_id IS NULL ORDER BY session_id, created_at, rowid
+      `).all() as Array<{ id: string; session_id: string }>
+      const next = this.database.prepare(`
+        INSERT INTO annotation_counters (session_id, prefix, number) VALUES (?, 'ANNO', 1)
+        ON CONFLICT(session_id, prefix) DO UPDATE SET number = number + 1
+        RETURNING number
+      `)
+      const update = this.database.prepare('UPDATE annotations SET short_id = ? WHERE id = ?')
+      for (const row of missing) {
+        const counter = next.get(row.session_id) as { number: number }
+        update.run(`ANNO-${String(counter.number).padStart(2, '0')}`, row.id)
+      }
+      this.database.exec(`CREATE UNIQUE INDEX IF NOT EXISTS annotations_session_short_id
+        ON annotations(session_id, short_id)`)
+      this.database.exec('COMMIT')
+    } catch (error) {
+      this.database.exec('ROLLBACK')
+      throw error
+    }
   }
 
   private migrateGlobalCommentsTable(): void {
@@ -1045,6 +1097,7 @@ function piReviewRunNotFound(runId: string): AppError {
 function annotationFromRow(row: AnnotationRow): SessionAnnotation {
   return {
     id: row.id,
+    shortId: row.short_id,
     sessionId: row.session_id,
     filePath: row.file_path,
     side: row.side,

@@ -5443,6 +5443,7 @@ function Inspector({
                       <span className={`note-position ${annotation.side}`}>
                         {annotationPosition(annotation)}
                       </span>
+                      <code>{annotation.shortId}</code>
                     </button>
                   </div>
                   {editing ? (
@@ -5594,6 +5595,7 @@ function Inspector({
                         <footer>
                           <div className="note-source">
                             <span className={`source ${reply.source}`}>{reply.source}</span>
+                            <code>{reply.shortId}</code>
                             <time className="note-time" title={formatTimestamp(reply.createdAt)}>
                               {relativeTimeAgo(reply.createdAt)}
                             </time>
@@ -6003,6 +6005,7 @@ function InlineAnnotation({
             {relativeTimeAgo(annotation.createdAt)}
           </time>
           <code>{lineLabel(annotation)}</code>
+          <code>{annotation.shortId}</code>
         </div>
         <div>
           {onReply != null && editingId !== 'reply' && (
@@ -6083,6 +6086,7 @@ function InlineAnnotation({
             <div className="inline-source">
               <div>
                 <span>Reply</span>
+                <code>{reply.shortId}</code>
                 <time className="note-time" title={formatTimestamp(reply.createdAt)}>
                   {relativeTimeAgo(reply.createdAt)}
                 </time>
@@ -6309,10 +6313,8 @@ async function formatAnnotationForAgent(
   const parent = annotation.replyToId == null
     ? null
     : allAnnotations.find((candidate) => candidate.id === annotation.replyToId)
-  const quotedParent = parent?.comment?.trim()
-  if (quotedParent) {
-    const quoted = quotedParent.split('\n').map((line) => `> ${line}`).join('\n')
-    return `${header}\n\n${quoted}\n\n${annotation.comment!.trim()}`
+  if (parent != null) {
+    return `${header}\n\n> ${parent.shortId}\n\n${annotation.comment!.trim()}`
   }
   return `${header}\n\n${annotation.comment!.trim()}`
 }

@@ -414,6 +414,25 @@ describe('GitHub review comments', () => {
         endLine: 2,
         intent: 'review-comment',
       })
+      const agentCreated = await fetch(annotationsUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filePath: 'example.ts', side: 'new', startLine: 20, endLine: 20,
+          comment: 'Check this', source: 'agent', shortIdPrefix: 'CHECK',
+        }),
+      })
+      expect(agentCreated.status).toBe(201)
+      await expect(agentCreated.json()).resolves.toMatchObject({ shortId: 'CHECK-01' })
+      const invalidPrefix = await fetch(annotationsUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filePath: 'example.ts', side: 'new', startLine: 20, endLine: 20,
+          comment: 'Check this', source: 'agent', shortIdPrefix: 'CHECK-01',
+        }),
+      })
+      expect(invalidPrefix.status).toBe(400)
       const updated = await fetch(`${annotationsUrl}/${annotation.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -1878,6 +1897,7 @@ describe('local review storage', () => {
       comment: 'The second feature change',
       source: 'agent',
     })
+    expect(annotation.shortId).toBe('ANNO-01')
     expect(annotation.importance).toBeNull()
     expect(annotation.endSide).toBeNull()
     expect(annotation.archivedAt).toBeNull()
@@ -1983,6 +2003,43 @@ describe('local review storage', () => {
       archiveAll.annotations.find((item) => item.id === annotation.id)?.updatedAt,
     ).toBe(individuallyArchived.updatedAt)
     expect(store.archiveAllAnnotations(session.id).annotations).toEqual(archiveAll.annotations)
+  })
+
+  test('assigns stable, session-scoped short IDs for agent prefixes and user replies', async () => {
+    const review = await resolveTarget(fixture.repository, {
+      kind: 'range', expression: 'origin/main...HEAD',
+    })
+    const databasePath = path.join(fixture.directory, 'short-ids.db')
+    const store = new ReviewStore(databasePath)
+    const session = store.createSession(fixture.repository, 'repo',
+      { kind: 'range', expression: 'origin/main...HEAD' }, review, false)
+    const add = (shortIdPrefix?: string) => store.addAnnotation(session.id, {
+      filePath: 'tracked.txt', side: 'new', startLine: 5, endLine: 5,
+      comment: 'Review this', source: 'agent', shortIdPrefix,
+    })
+    const first = add('RETRY')
+    expect(first.shortId).toBe('RETRY-01')
+    expect(add('RETRY').shortId).toBe('RETRY-02')
+    expect(add('CACHE').shortId).toBe('CACHE-01')
+    expect(add().shortId).toBe('ANNO-01')
+    const reply = store.addAnnotation(session.id, {
+      filePath: 'tracked.txt', side: 'new', startLine: 5, endLine: 5,
+      comment: 'I will fix it', source: 'user', replyToId: first.id,
+    })
+    expect(reply.shortId).toBe('ANNO-02')
+    expect(() => add('bad-prefix')).toThrow('shortIdPrefix')
+    expect(add('RETRY').shortId).toBe('RETRY-03')
+    store.deleteAnnotation(session.id, first.id)
+    expect(new ReviewStore(databasePath).addAnnotation(session.id, {
+      filePath: 'tracked.txt', side: 'new', startLine: 5, endLine: 5,
+      comment: 'Again', source: 'agent', shortIdPrefix: 'RETRY',
+    }).shortId).toBe('RETRY-04')
+    const another = store.createSession(fixture.repository, 'repo',
+      { kind: 'range', expression: 'origin/main...HEAD' }, review, false)
+    expect(store.addAnnotation(another.id, {
+      filePath: 'tracked.txt', side: 'new', startLine: 5, endLine: 5,
+      comment: 'Separate session', source: 'agent', shortIdPrefix: 'RETRY',
+    }).shortId).toBe('RETRY-01')
   })
 
   test('stores a user reply on a top-level agent annotation', async () => {
@@ -2161,6 +2218,7 @@ describe('local review storage', () => {
     expect(store.getSession('drs_legacy').annotations).toMatchObject([
       {
         id: 'ann_legacy',
+        shortId: 'ANNO-01',
         endSide: null,
         intent: 'annotation',
         replyToId: null,
@@ -2169,6 +2227,11 @@ describe('local review storage', () => {
         viewedAt: null,
       },
     ])
+    expect(new ReviewStore(databasePath).getSession('drs_legacy').annotations[0]?.shortId).toBe('ANNO-01')
+    expect(store.addAnnotation('drs_legacy', {
+      filePath: 'tracked.txt', side: 'new', startLine: 5, endLine: 5,
+      comment: 'After migration', source: 'agent',
+    }).shortId).toBe('ANNO-02')
     expect(store.getSession('drs_legacy_pr').revisionBaseOid).toBe('b'.repeat(40))
     expect(store.getSession('drs_legacy_pr').revisionHeadOid).toBe(commit.oid)
   })

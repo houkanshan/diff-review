@@ -76,7 +76,7 @@ async function main(): Promise<void> {
     const result = await addAnnotation(args.slice(1))
     if (result.json) console.log(JSON.stringify(result.payload, null, 2))
     else if (result.kind === 'global') console.log(`Added global comment ${result.payload.id}`)
-    else console.log(`Added annotation ${result.payload.id}`)
+    else console.log(`Added annotation ${result.payload.shortId} (${result.payload.id})`)
     return
   }
 
@@ -132,6 +132,7 @@ async function addAnnotation(
   const newLine = stringFlag(parsed, 'new-line')
   const comment = stringFlag(parsed, 'comment')
   const importanceValue = stringFlag(parsed, 'importance')
+  const shortIdPrefix = stringFlag(parsed, 'id-prefix')
   const importance = importanceValue == null ? undefined : Number(importanceValue)
   if (importance != null && (!Number.isFinite(importance) || importance < 0 || importance > 1)) {
     throw new AppError('INVALID_ARGUMENTS', '--importance must be a number between 0 and 1')
@@ -143,8 +144,8 @@ async function addAnnotation(
     if (comment == null || comment.trim() === '') {
       throw new AppError('INVALID_ARGUMENTS', 'global annotate requires --comment <text>')
     }
-    if (importance != null) {
-      throw new AppError('INVALID_ARGUMENTS', 'global annotate does not accept --importance')
+    if (importance != null || shortIdPrefix != null) {
+      throw new AppError('INVALID_ARGUMENTS', 'global annotate does not accept --importance or --id-prefix')
     }
     const globalComment = await requestJson<SessionGlobalComment>(
       `/api/sessions/${encodeURIComponent(sessionId)}/global-comments`,
@@ -176,6 +177,7 @@ async function addAnnotation(
         endLine: range.end,
         comment,
         importance,
+        shortIdPrefix,
         source: 'agent',
       }),
     },
@@ -330,7 +332,7 @@ function printHelp(): void {
   diff-review annotate <session-id> --comment <text> [--json]
   diff-review annotate <session-id> --file <path> \\
     (--old-line <line[-end]> | --new-line <line[-end]>) \\
-    [--comment <text>] [--importance <0..1>] [--json]
+    [--comment <text>] [--importance <0..1>] [--id-prefix <PREFIX>] [--json]
 
 Examples:
   diff-review

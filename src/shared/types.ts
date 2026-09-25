@@ -156,6 +156,7 @@ export function localChangesCommit(): CommitSummary {
 
 export interface SessionAnnotation {
   id: string
+  shortId: string
   sessionId: string
   filePath: string
   side: DiffSide
@@ -554,6 +555,7 @@ export interface UpdatePullRequestDraftInput {
 }
 
 export interface AddAnnotationInput {
+  shortIdPrefix?: string
   filePath: string
   side: DiffSide
   startLine: number
