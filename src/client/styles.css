@@ -2912,6 +2912,7 @@ body.resizing-panels * {
 .pr-overview-grid {
   display: grid;
   grid-template-columns: minmax(0, 760px) minmax(220px, 260px);
+  grid-template-rows: auto 1fr;
   grid-template-areas:
     "header sidebar"
     "main sidebar";
@@ -3025,6 +3026,50 @@ body.resizing-panels * {
   font-size: 11px;
   font-weight: 700;
 }
+.pr-sidebar-commits-section h2 > span { margin-left: 4px; color: var(--faint); }
+.pr-sidebar-commit-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.pr-sidebar-commit { min-width: 0; }
+.pr-sidebar-commit-message {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  margin: 0 0 4px;
+  color: var(--text-soft);
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.pr-sidebar-commit-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.pr-sidebar-commit-meta a { flex-shrink: 0; color: var(--blue); text-decoration: none; }
+.pr-sidebar-commit-meta a:hover { text-decoration: underline; }
+.pr-sidebar-commit-meta code { font-family: var(--font-mono); font-size: inherit; }
+.pr-sidebar-commit-author { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr-sidebar-commit-meta time { flex-shrink: 0; margin-left: auto; color: var(--faint); }
+.pr-sidebar-commit-middle > summary {
+  color: var(--blue);
+  font-size: 11px;
+  cursor: pointer;
+}
+.pr-sidebar-commit-middle > summary:hover { text-decoration: underline; }
+.pr-sidebar-commit-middle > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.pr-sidebar-commit-middle[open] > .pr-sidebar-commit-list { margin-top: 12px; }
+.pr-sidebar-commit-middle:not([open]) .pr-commits-collapse,
+.pr-sidebar-commit-middle[open] .pr-commits-expand { display: none; }
+
 .pr-sidebar-status {
   display: flex;
   align-items: center;
@@ -4776,6 +4821,7 @@ body.resizing-panels * {
   .pr-conversation { padding-inline: 36px; }
   .pr-overview-grid {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto;
     grid-template-areas:
       "header"
       "sidebar"
@@ -4788,7 +4834,8 @@ body.resizing-panels * {
     grid-template-columns: repeat(12, minmax(0, 1fr));
     grid-template-areas:
       "status status status status reviewers reviewers reviewers reviewers assignees assignees assignees assignees"
-      "checks checks checks checks checks checks labels labels labels labels labels labels";
+      "checks checks checks checks checks checks labels labels labels labels labels labels"
+      "commits commits commits commits commits commits commits commits commits commits commits commits";
     gap: 18px 20px;
     margin: 0;
     padding: 18px 0;
@@ -4798,7 +4845,8 @@ body.resizing-panels * {
   .pr-overview-sidebar:has(.pr-sidebar-merger-section) {
     grid-template-areas:
       "status status status merger merger merger reviewers reviewers reviewers assignees assignees assignees"
-      "checks checks checks checks checks checks labels labels labels labels labels labels";
+      "checks checks checks checks checks checks labels labels labels labels labels labels"
+      "commits commits commits commits commits commits commits commits commits commits commits commits";
   }
   .pr-sidebar-section {
     padding: 0;
@@ -4813,6 +4861,7 @@ body.resizing-panels * {
   .pr-sidebar-assignees-section { grid-area: assignees; }
   .pr-sidebar-checks { grid-area: checks; }
   .pr-sidebar-labels-section { grid-area: labels; }
+  .pr-sidebar-commits-section { grid-area: commits; }
   .pr-sidebar-merger-section h2 { display: block; }
   .pr-sidebar-status-person { margin-top: 0; }
 }

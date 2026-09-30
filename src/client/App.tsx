@@ -119,6 +119,7 @@ import {
 } from '../shared/types'
 import type {
   AnnotationIntent,
+  CommitSummary,
   DiffSide,
   GitHubIssueReference,
   GitHubReviewer,
@@ -215,6 +216,7 @@ import {
 } from './annotationComposer'
 import { PIERRE_COLLAPSED_CONTEXT_THRESHOLD } from './annotationPlacement'
 import { AnnotationStickyOverlay } from './AnnotationStickyOverlay'
+import { PullRequestCommits } from './PullRequestCommits'
 
 type DiffLayout = 'unified' | 'split'
 type DiffOverflow = 'wrap' | 'scroll'
@@ -234,6 +236,7 @@ type AppRoute =
 
 interface PullRequestWorkspaceContext {
   details: PullRequestDetails
+  commits: CommitSummary[]
   revisions: PullRequestRevision[]
   currentSessionId: string
   piStatus: PiReviewStatus
@@ -917,6 +920,7 @@ function PullRequestsPage({
           onThemeChange={onThemeChange}
           pullRequest={{
             details,
+            commits: workspace?.currentSession.commits ?? [],
             revisions,
             currentSessionId,
             piStatus,
@@ -2066,6 +2070,7 @@ function ReviewWorkspace({
               )}
               <PullRequestConversation
                 details={pullRequest.details}
+                commits={pullRequest.commits}
                 oldRevision={session.id !== pullRequest.currentSessionId}
                 resolvedTheme={resolvedTheme}
                 onNavigate={navigateToPullRequestActivity}
@@ -3157,12 +3162,14 @@ function SubmitReviewPopover({
 
 function PullRequestConversation({
   details,
+  commits = [],
   oldRevision,
   resolvedTheme,
   onNavigate,
   onAddComment,
 }: {
   details: PullRequestDetails
+  commits?: CommitSummary[]
   oldRevision: boolean
   resolvedTheme: ResolvedTheme
   onNavigate(activity: PullRequestActivity): void
@@ -3195,6 +3202,7 @@ function PullRequestConversation({
         <PullRequestSidebar
           key={`${details.number}:${details.checkStatus}`}
           details={details}
+          commits={commits}
         />
         <div className="pr-overview-main">
           <section className="pr-description" aria-label="Pull request description">
@@ -3321,7 +3329,7 @@ function PullRequestCommentComposer({
   )
 }
 
-function PullRequestSidebar({ details }: { details: PullRequestDetails }) {
+function PullRequestSidebar({ details, commits }: { details: PullRequestDetails; commits: CommitSummary[] }) {
   const checksShouldOpen = details.checkStatus === 'fail' || details.checkStatus === 'pending'
   const [checksOpen, setChecksOpen] = useState(checksShouldOpen)
   const visibleChecks = details.checkStatus === 'fail'
@@ -3438,6 +3446,7 @@ function PullRequestSidebar({ details }: { details: PullRequestDetails }) {
               </div>
             )}
       </section>
+      <PullRequestCommits commits={commits} pullRequestUrl={details.url} />
     </aside>
   )
 }
