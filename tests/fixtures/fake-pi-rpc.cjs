@@ -11,6 +11,7 @@ openai-codex    gpt-5.6-sol                                               272K  
 openai-codex    gpt-5.6-terra                                             272K     128K     yes       yes   
 openai-codex    gpt-6-astra                                               272K     128K     yes       yes   
 openai-codex    gpt-6-sol                                                 272K     128K     yes       yes
+openai-codex    gpt-6.1-sol                                               272K     128K     yes       yes
 `)
   process.exit(0)
 }

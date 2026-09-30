@@ -821,6 +821,12 @@ describe('local review storage', () => {
       const explained = await runner.send(session.id, 'focus on auth', true)
       expect(explained.overlay?.userText).toContain('Help someone review PR #42.')
       expect(explained.overlay?.userText).toContain(`diff-review annotate ${session.id}`)
+      expect(explained.overlay?.userText).toContain('The user has not read the code')
+      expect(explained.overlay?.userText).toContain('start with one short, plain-language sentence')
+      expect(explained.overlay?.userText).toContain('When annotating part of a larger function')
+      expect(explained.overlay?.userText).toContain('--id-prefix RETRY')
+      expect(explained.overlay?.userText).toContain('do not add a global summary comment')
+      expect(explained.overlay?.userText).not.toContain('--comment "[summary]')
       expect(explained.overlay?.userText).toContain(
         'Additional instructions from the user:\nfocus on auth',
       )
@@ -835,7 +841,7 @@ describe('local review storage', () => {
       expect(lines.join('\n')).not.toContain('Help someone review PR #42.')
       expect(lines).not.toContain('--append-system-prompt')
       expect(lines).toContain('--model')
-      expect(lines).toContain('openai-codex/gpt-6-sol')
+      expect(lines).toContain('openai-codex/gpt-6.1-sol')
       expect(lines).toContain('--thinking')
       expect(lines).toContain('--mode')
       expect(lines).toContain('rpc')
@@ -906,7 +912,7 @@ describe('local review storage', () => {
         modelId: 'gpt-5.6-sol',
         thinkingLevel: 'high',
       })
-      expect(runner.getChat(session.id).model?.modelId).toMatch(/^gpt-6-/)
+      expect(runner.getChat(session.id).model?.modelId).toBe('gpt-6.1-sol')
       expect(runner.setChatModel(session.id, choice)).toEqual(choice)
       expect(runner.getChat(session.id).model).toEqual(choice)
       const sent = await runner.send(session.id, 'Use sol')

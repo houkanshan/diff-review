@@ -827,16 +827,15 @@ function buildReviewPrompt(
 
 Example: retry() deleted from a.ts and added in b.ts → one note that this is a move into b.ts, and why that home makes sense.
 
+Explain in plain human language, without jargon. Use the system's established terms for features, concepts, and states consistently; briefly explain unfamiliar terms rather than replacing them. The user has not read the code, so give enough context to understand each explanation. For each explanation, start with one short, plain-language sentence saying what changed. Leave a blank line, then add the details needed to understand why it changed, how it works, or what to watch for. When annotating part of a larger function, first briefly say what the function does; for connected annotations in that function, say this once rather than repeating it.
+
 This detached worktree is the exact PR head ${headOid}. Explain only the immutable change shown by:
   git diff ${baseOid} ${headOid} --
 
-Do not edit files, commit, push, or publish anything to GitHub. Add concise findings directly to Diff Review.
+Do not edit files, commit, push, or publish anything to GitHub. Add concise line annotations directly to Diff Review; do not add a global summary comment.
 
-Global comment — session-level text, no --file or line flags:
-  diff-review annotate ${sessionId} --comment "[summary] …" --json
-
-Line annotation — attaches to a file and a changed range. Exactly one of --new-line or --old-line (42 or 42-48, inclusive). Prefix --comment with action(domain): action is the edit verb (what happened to the code), domain is the feature or concern it belongs to, e.g. move(feature-A):. --comment and --importance (0–1) are independently optional; at least one is required. 0 drops the red/green line wash; 1 is the strongest wash.
-  diff-review annotate ${sessionId} --file <path> (--new-line <line[-end]> | --old-line <line[-end]>) --comment "action(domain): …" [--importance <0..1>] --json
+Line annotation — attaches to a file and a changed range. Exactly one of --new-line or --old-line (42 or 42-48, inclusive). Give each annotation a short ID with --id-prefix (uppercase letters/digits, starting with a letter, 2–12 characters); choose a meaningful prefix such as RETRY and let the server number it (RETRY-01, RETRY-02). The ID is a separate field, not part of the comment. Prefix --comment with action(domain): action is the edit verb (what happened to the code), domain is the feature or concern it belongs to, e.g. move(feature-A):. --comment and --importance (0–1) are independently optional; at least one is required. 0 drops the red/green line wash; 1 is the strongest wash. In Bash, $'...\\n\\n...' passes a real blank line; ordinary double quotes leave \\n as literal text.
+  diff-review annotate ${sessionId} --file <path> (--new-line <line[-end]> | --old-line <line[-end]>) --id-prefix RETRY --comment $'move(feature-A): Retries now live in b.ts.\\n\\nThe retry logic moved from a.ts so related code stays together; its behavior is unchanged.' [--importance <0..1>] --json
 
 Use new-side line numbers for added/current code and old-side line numbers for deleted code. Add at least one annotation per changed file unless that file's change is obvious. Keep annotations in a reviewable order.`
 }

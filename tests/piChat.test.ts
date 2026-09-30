@@ -270,34 +270,42 @@ describe('pi chat model', () => {
     ).thinkingLevel).toBeNull()
   })
 
-  test('filters pi --list-models to gpt-6-* without context variants or duplicates', () => {
+  test('filters pi --list-models to gpt-6* without context variants or duplicates', () => {
     const listed = parsePiListModelsTable(`provider        model                                                     context  max-out  thinking  images
 cursor          gpt-6-luna@1m                                             1M       16.4K    yes       yes
 openai-codex    gpt-5.6-luna                                              272K     128K     yes       yes
 openai-codex    gpt-6                                                    272K     128K     yes       yes
 openai-codex    gpt-6-astra                                               272K     128K     yes       yes
 openai-codex-2  gpt-6-astra                                               272K     128K     yes       yes
+openai-codex-2  gpt-6.1-sol                                               272K     128K     yes       yes
+openai-codex    gpt-6.1-sol                                               272K     128K     yes       yes
+openai-codex    gpt-6.1-luna                                              272K     128K     yes       yes
+cursor          gpt-6.1-sol@1m                                            1M       16.4K    yes       yes
+cursor          gpt-6.1-sol:high                                          272K     128K     yes       yes
 xai             grok-4.6                                                  500K     500K     yes       yes
 `)
     expect(filterPiChatModels(listed)).toEqual([
+      { provider: 'openai-codex', id: 'gpt-6', name: 'GPT-6', thinking: true },
       { provider: 'openai-codex', id: 'gpt-6-astra', name: 'GPT-6 astra', thinking: true },
+      { provider: 'openai-codex', id: 'gpt-6.1-sol', name: 'GPT-6.1 sol', thinking: true },
+      { provider: 'openai-codex', id: 'gpt-6.1-luna', name: 'GPT-6.1 luna', thinking: true },
     ])
-    expect(isAllowedPiChatModel({
-      provider: 'openai-codex',
-      modelId: 'gpt-6-astra',
-      thinkingLevel: 'medium',
-    })).toBe(true)
-    for (const modelId of ['gpt-5.6-sol', 'gpt-6', 'gpt-6-astra@1m', 'grok-4.6']) {
+    for (const modelId of ['gpt-6', 'gpt-6-astra', 'gpt-6.1-sol', 'gpt-6.1-luna']) {
+      expect(isAllowedPiChatModel({
+        provider: 'openai-codex', modelId, thinkingLevel: 'medium',
+      })).toBe(true)
+    }
+    for (const modelId of ['gpt-5.6-sol', 'gpt-6-astra@1m', 'gpt-6.1-sol@1m', 'gpt-6.1-sol:high', 'grok-4.6']) {
       expect(isAllowedPiChatModel({
         provider: 'openai-codex', modelId, thinkingLevel: 'medium',
       })).toBe(false)
     }
-    expect(defaultPiChatModel().modelId).toBe('gpt-6-sol')
+    expect(defaultPiChatModel().modelId).toBe('gpt-6.1-sol')
+    expect(defaultPiChatModel(filterPiChatModels(listed)).modelId).toBe('gpt-6.1-sol')
     expect(defaultPiChatModel([
       { provider: 'openai-codex', id: 'gpt-6-astra', name: 'GPT-6 astra', thinking: true },
       { provider: 'openai-codex', id: 'gpt-6-sol', name: 'GPT-6 sol', thinking: true },
-    ]).modelId).toBe('gpt-6-sol')
-    expect(defaultPiChatModel(filterPiChatModels(listed)).modelId).toBe('gpt-6-astra')
+    ]).modelId).toBe('gpt-6-astra')
   })
 
   test('stores a chat selection and treats a missing entry as unset', () => {

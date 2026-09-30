@@ -13,7 +13,7 @@ export const PI_CHAT_THINKING_LEVELS = [
 const THINKING_LEVELS = new Set<string>(PI_CHAT_THINKING_LEVELS)
 
 export function isAllowedPiChatModelId(modelId: string): boolean {
-  return modelId.startsWith('gpt-6-')
+  return modelId.startsWith('gpt-6')
 }
 
 export function isAllowedPiChatModel(
@@ -35,11 +35,11 @@ export function findPiChatModel(
 export function defaultPiChatModel(
   models: readonly PiChatModelOption[] = [],
 ): PiChatModelChoice {
-  const selected = models.find((model) => model.id === 'gpt-6-sol') ?? models[0]
+  const selected = models.find((model) => model.id === 'gpt-6.1-sol') ?? models[0]
   if (selected != null) return normalizePiChatModelChoice(selected)
   return {
     provider: 'openai-codex',
-    modelId: 'gpt-6-sol',
+    modelId: 'gpt-6.1-sol',
     thinkingLevel: 'medium',
   }
 }

@@ -8,6 +8,8 @@ Use sentence case for UI labels; do not use all-caps labels.
 
 Minimize GitHub API and `gh` calls to avoid rate limits; cache and deduplicate requests when possible.
 
+When updating explain-diff guidance, keep all three locations in sync: the installed skill at `~/.agents/skills/explain-diff/SKILL.md`, the bundled skill at `skills/explain-diff/SKILL.md`, and the Pi Chat Explain prompt in `src/server/pi.ts` (`buildReviewPrompt`).
+
 Rebuild after making code changes. Restart the Diff Review daemon when a change affects the running server or the client it serves.
 
 Do not `git revert` a commit unless the user explicitly asks to revert that commit.
