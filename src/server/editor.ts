@@ -50,13 +50,14 @@ export function editorLaunchSpecs(
   absolutePath: string,
   line: number,
   options: {
+    repositoryRoot: string
     platform?: NodeJS.Platform
     terminal?: string
-  } = {},
+  },
 ): EditorLaunchSpec[] {
   const platform = options.platform ?? process.platform
   if (editor === 'nvim') return nvimLaunchSpecs(absolutePath, line, platform, options.terminal)
-  const primary = primaryLaunchSpec(editor, absolutePath, line)
+  const primary = primaryLaunchSpec(editor, options.repositoryRoot, absolutePath, line)
   const specs = [primary]
   const macApp = MAC_APPS[editor]
   if (platform === 'darwin' && macApp != null) {
@@ -83,6 +84,7 @@ export async function openFileInEditor(
     )
   }
   const specs = editorLaunchSpecs(input.editor, absolutePath, input.line, {
+    repositoryRoot: input.repositoryRoot,
     terminal: process.env.TERMINAL,
   })
   return spawnFirstAvailable(specs, input.repositoryRoot, input.editor, spawnImpl)
@@ -90,19 +92,20 @@ export async function openFileInEditor(
 
 function primaryLaunchSpec(
   editor: Exclude<EditorId, 'nvim'>,
+  repositoryRoot: string,
   absolutePath: string,
   line: number,
 ): EditorLaunchSpec {
   const location = `${absolutePath}:${line}`
   switch (editor) {
     case 'cursor':
-      return { command: 'cursor', args: ['-g', location] }
+      return { command: 'cursor', args: [repositoryRoot, '-g', location] }
     case 'vscode':
-      return { command: 'code', args: ['-g', location] }
+      return { command: 'code', args: [repositoryRoot, '-g', location] }
     case 'zed':
-      return { command: 'zed', args: [location] }
+      return { command: 'zed', args: [repositoryRoot, location] }
     case 'sublime':
-      return { command: 'subl', args: [location] }
+      return { command: 'subl', args: [repositoryRoot, location] }
     case 'windsurf':
       return { command: 'windsurf', args: ['-g', location] }
   }

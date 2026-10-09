@@ -34,57 +34,71 @@ describe('editor ids', () => {
 })
 
 describe('editor launch specs', () => {
-  test('uses goto-style CLI flags for GUI editors', () => {
-    const file = '/repo/src/app.ts'
-    expect(editorLaunchSpecs('cursor', file, 18, { platform: 'linux' })).toEqual([
-      { command: 'cursor', args: ['-g', '/repo/src/app.ts:18'] },
-    ])
-    expect(editorLaunchSpecs('vscode', file, 18, { platform: 'linux' })).toEqual([
-      { command: 'code', args: ['-g', '/repo/src/app.ts:18'] },
-    ])
-    expect(editorLaunchSpecs('zed', file, 18, { platform: 'linux' })).toEqual([
-      { command: 'zed', args: ['/repo/src/app.ts:18'] },
+  test.each([
+    ['cursor', 'cursor', ['-g']],
+    ['vscode', 'code', ['-g']],
+    ['zed', 'zed', []],
+    ['sublime', 'subl', []],
+  ] as const)('opens the repository folder and file at the requested line with %s', (editor, command, flags) => {
+    const repositoryRoot = '/review project'
+    const file = '/review project/src/app.ts'
+    expect(editorLaunchSpecs(editor, file, 18, { repositoryRoot, platform: 'linux' })).toEqual([
+      { command, args: [repositoryRoot, ...flags, `${file}:18`] },
     ])
   })
 
-  test('falls back to macOS app bundles when the CLI is missing', () => {
-    const specs = editorLaunchSpecs('cursor', '/repo/file.ts', 4, { platform: 'darwin' })
-    expect(specs[0]).toEqual({ command: 'cursor', args: ['-g', '/repo/file.ts:4'] })
+  test.each([
+    ['cursor', 'Cursor', ['-g']],
+    ['vscode', 'Visual Studio Code', ['-g']],
+    ['zed', 'Zed', []],
+    ['sublime', 'Sublime Text', []],
+  ] as const)('includes the folder in the macOS app fallback for %s', (editor, app, flags) => {
+    const repositoryRoot = '/review project'
+    const file = '/review project/file.ts'
+    const specs = editorLaunchSpecs(editor, file, 4, { repositoryRoot, platform: 'darwin' })
+    expect(specs[0]?.args).toEqual([repositoryRoot, ...flags, `${file}:4`])
     expect(specs[1]).toEqual({
       command: 'open',
-      args: ['-a', 'Cursor', '--args', '-g', '/repo/file.ts:4'],
+      args: ['-a', app, '--args', repositoryRoot, ...flags, `${file}:4`],
     })
+  })
+
+  test('keeps the unverified Windsurf launcher unchanged', () => {
+    expect(editorLaunchSpecs('windsurf', '/repo/file.ts', 4, {
+      repositoryRoot: '/repo',
+      platform: 'linux',
+    })).toEqual([{ command: 'windsurf', args: ['-g', '/repo/file.ts:4'] }])
   })
 
   test('uses $TERMINAL first for nvim on macOS and Linux', () => {
     const file = '/tmp/says "hi".ts'
-    expect(editorLaunchSpecs('nvim', file, 9, { platform: 'darwin' })[0]).toEqual({
+    expect(editorLaunchSpecs('nvim', file, 9, { repositoryRoot: '/repo', platform: 'darwin' })[0]).toEqual({
       command: 'open',
       args: ['-na', 'Ghostty.app', '--args', '-e', 'nvim', '+9', file],
     })
-    expect(editorLaunchSpecs('nvim', file, 9, { platform: 'darwin', terminal: 'ghostty' })[0]).toEqual({
+    expect(editorLaunchSpecs('nvim', file, 9, { repositoryRoot: '/repo', platform: 'darwin', terminal: 'ghostty' })[0]).toEqual({
       command: 'open',
       args: ['-na', 'Ghostty.app', '--args', '-e', 'nvim', '+9', file],
     })
-    expect(editorLaunchSpecs('nvim', file, 9, { platform: 'darwin', terminal: 'kitty' })[0]).toEqual({
+    expect(editorLaunchSpecs('nvim', file, 9, { repositoryRoot: '/repo', platform: 'darwin', terminal: 'kitty' })[0]).toEqual({
       command: 'kitty',
       args: ['-e', 'nvim', '+9', file],
     })
-    expect(editorLaunchSpecs('nvim', file, 9, { platform: 'linux', terminal: 'kitty' })[0]).toEqual({
+    expect(editorLaunchSpecs('nvim', file, 9, { repositoryRoot: '/repo', platform: 'linux', terminal: 'kitty' })[0]).toEqual({
       command: 'kitty',
       args: ['-e', 'nvim', '+9', file],
     })
-    expect(editorLaunchSpecs('nvim', "/tmp/o'reilly.ts", 3, { platform: 'darwin', terminal: 'ghostty' })[0]?.args.at(-1))
+    expect(editorLaunchSpecs('nvim', "/tmp/o'reilly.ts", 3, { repositoryRoot: '/repo', platform: 'darwin', terminal: 'ghostty' })[0]?.args.at(-1))
       .toBe("/tmp/o'reilly.ts")
-    expect(editorLaunchSpecs('nvim', '/tmp/new\nline.ts', 1, { platform: 'darwin', terminal: 'ghostty' })[0]?.args.at(-1))
+    expect(editorLaunchSpecs('nvim', '/tmp/new\nline.ts', 1, { repositoryRoot: '/repo', platform: 'darwin', terminal: 'ghostty' })[0]?.args.at(-1))
       .toBe('/tmp/new\nline.ts')
-    expect(editorLaunchSpecs('nvim', '/tmp/foo\\bar.ts', 1, { platform: 'darwin', terminal: 'ghostty' })[0]?.args.at(-1))
+    expect(editorLaunchSpecs('nvim', '/tmp/foo\\bar.ts', 1, { repositoryRoot: '/repo', platform: 'darwin', terminal: 'ghostty' })[0]?.args.at(-1))
       .toBe('/tmp/foo\\bar.ts')
   })
 
   test('tries $TERMINAL then common Unix terminals for nvim', () => {
     const file = '/tmp/app.ts'
-    const specs = editorLaunchSpecs('nvim', file, 9, { platform: 'linux', terminal: 'kitty' })
+    const specs = editorLaunchSpecs('nvim', file, 9, { repositoryRoot: '/repo', platform: 'linux', terminal: 'kitty' })
     expect(specs[0]).toEqual({ command: 'kitty', args: ['-e', 'nvim', '+9', file] })
     expect(specs.map((spec) => spec.command)).toEqual([
       'kitty',
@@ -104,22 +118,25 @@ describe('open file in editor', () => {
     expect(() => absoluteRepositoryFilePath(root, '../secret.txt')).toThrow(AppError)
   })
 
-  test('spawns the selected editor at the requested line', async () => {
+  test.each(['zed', 'cursor', 'vscode', 'sublime'] as const)('spawns %s in the review repository at the requested line', async (editor) => {
     const root = tempDir()
     const filePath = 'src/app.ts'
     writeFileSync(path.join(root, 'src/app.ts'), 'export {}\n')
-    const spawned: Array<{ command: string; args: string[] }> = []
+    const spawned: Array<{ command: string; args: string[]; cwd: string }> = []
 
     const used = await openFileInEditor(
-      { repositoryRoot: root, filePath, line: 12, editor: 'zed' },
-      ((command: string, args: string[]) => {
-        spawned.push({ command, args })
+      { repositoryRoot: root, filePath, line: 12, editor },
+      ((command: string, args: string[], options: { cwd: string }) => {
+        spawned.push({ command, args, cwd: options.cwd })
         return fakeChild('spawn')
       }) as typeof import('node:child_process').spawn,
     )
 
-    expect(used).toEqual({ command: 'zed', args: [`${path.join(root, filePath)}:12`] })
-    expect(spawned).toEqual([used])
+    expect(root).not.toBe(process.cwd())
+    const command = { zed: 'zed', cursor: 'cursor', vscode: 'code', sublime: 'subl' }[editor]
+    const flags = editor === 'cursor' || editor === 'vscode' ? ['-g'] : []
+    expect(used).toEqual({ command, args: [root, ...flags, `${path.join(root, filePath)}:12`] })
+    expect(spawned).toEqual([{ ...used, cwd: root }])
   })
 
   test('falls back when the CLI binary is missing', async () => {
@@ -138,7 +155,11 @@ describe('open file in editor', () => {
     } as const
 
     if (process.platform === 'darwin') {
-      await openFileInEditor(input, spawnMissing)
+      const used = await openFileInEditor(input, spawnMissing)
+      expect(used).toEqual({
+        command: 'open',
+        args: ['-a', 'Cursor', '--args', root, '-g', `${path.join(root, input.filePath)}:3`],
+      })
       expect(commands).toEqual(['cursor', 'open'])
       return
     }

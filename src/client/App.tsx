@@ -1707,6 +1707,7 @@ function ReviewWorkspace({
     (annotation) =>
       annotation.archivedAt == null &&
       annotation.source === 'user' &&
+      annotation.intent === 'annotation' &&
       Boolean(annotation.comment?.trim()),
   ), [session.annotations])
   const humanGlobalComments = useMemo(() => session.globalComments.filter(

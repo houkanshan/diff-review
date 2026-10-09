@@ -1,3 +1,6 @@
 {
-  "projectLevelPersist": true
+  "projectLevelPersist": true,
+  "providerRemap": {
+    "openai-codex": "openai-codex-2"
+  }
 }
