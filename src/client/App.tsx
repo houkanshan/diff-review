@@ -9,10 +9,10 @@ import {
   type CodeViewLineSelection,
   type DiffLineAnnotation,
   type FileDiffMetadata,
-  parsePatchFiles,
 } from '@pierre/diffs'
 import { parseReviewCommentDiff } from '../shared/reviewCommentDiff'
 import { compareReviewFilePaths, compareReviewPathEntries } from './reviewFileOrder'
+import { parseReviewPatch } from './parseReviewPatch'
 import { Checkbox } from '@base-ui/react/checkbox'
 import { Menu } from '@base-ui/react/menu'
 import { Popover } from '@base-ui/react/popover'
@@ -1213,12 +1213,7 @@ function ReviewWorkspace({
     if (!session.patch.trim()) return []
     try {
       const contentKey = patchContentKey(session.patch)
-      const files = parsePatchFiles(session.patch, `${session.id}:${contentKey}`, true).flatMap(
-        (patch) => patch.files,
-      )
-      for (const file of files) {
-        file.cacheKey = `${session.id}:${contentKey}:${file.name}`
-      }
+      const files = parseReviewPatch(session.patch, `${session.id}:${contentKey}`)
       return files.sort((left, right) => compareReviewFilePaths(left.name, right.name))
     } catch (caught) {
       console.error('Could not parse diff', caught)
