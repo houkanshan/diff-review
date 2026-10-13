@@ -11,7 +11,7 @@ import { AppError } from './errors.js'
 const TYPESAFE_URL = 'https://api.typesafe.ai/v1/systemone'
 const READ_FIRST_QUESTION = 'read_first'
 const READ_FIRST_INSTRUCTIONS =
-  'When reviewing this code change, which file should a reviewer look at first so the change is easiest to understand and the important parts are reviewed before the rest?'
+  'When reviewing this code change, which file should a reviewer look at first so the change is easiest to understand and the important parts are reviewed before the rest? Rank test files after non-test files.'
 
 export function typesafeApiKey(): string | null {
   const key = process.env.TYPESAFE_API_KEY?.trim()

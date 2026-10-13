@@ -132,12 +132,13 @@ describe('jev file order', () => {
       String((vi.mocked(fetch).mock.calls[0]?.[1] as RequestInit | undefined)?.body),
     ) as {
       state: { branch: string; commit_messages: string[] }
-      questions: { read_first: { criteria: Record<string, null> } }
+      questions: { read_first: { instructions: string; criteria: Record<string, null> } }
     }
     expect(body.state).toEqual({
       branch: 'fix-auth-redirect',
       commit_messages: ['Fix login redirect after SSO'],
     })
+    expect(body.questions.read_first.instructions).toContain('Rank test files after non-test files.')
     expect(body.questions.read_first.criteria).toEqual({
       'package-lock.json': null,
       'src/auth.test.ts': null,
