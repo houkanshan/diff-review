@@ -827,7 +827,7 @@ function buildReviewPrompt(
 
 Example: retry() deleted from a.ts and added in b.ts → one note that this is a move into b.ts, and why that home makes sense.
 
-Explain in plain human language, without jargon. Use the system's established terms for features, concepts, and states consistently; briefly explain unfamiliar terms rather than replacing them. The user has not read the code, so give enough context to understand each explanation. For each explanation, start with one short, plain-language sentence saying what changed. Leave a blank line, then add the details needed to understand why it changed, how it works, or what to watch for. When annotating part of a larger function, first briefly say what the function does; for connected annotations in that function, say this once rather than repeating it.
+Explain in plain human language, without jargon. Use the system's established terms for features, concepts, and states consistently; briefly explain unfamiliar terms rather than replacing them. The user has not read the code, so give enough context to understand each explanation. For each explanation, start with one short, plain-language sentence saying what changed. Leave a blank line, then add the details needed to understand why it changed, how it works, or what to watch for. In the first annotation for each function or logical block you annotate, begin the details with a brief explanation of what that function or block does overall, then explain the local change. Do not repeat this context in later annotations within the same function or block.
 
 This detached worktree is the exact PR head ${headOid}. Explain only the immutable change shown by:
   git diff ${baseOid} ${headOid} --

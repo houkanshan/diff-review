@@ -823,7 +823,12 @@ describe('local review storage', () => {
       expect(explained.overlay?.userText).toContain(`diff-review annotate ${session.id}`)
       expect(explained.overlay?.userText).toContain('The user has not read the code')
       expect(explained.overlay?.userText).toContain('start with one short, plain-language sentence')
-      expect(explained.overlay?.userText).toContain('When annotating part of a larger function')
+      expect(explained.overlay?.userText).toContain(
+        'In the first annotation for each function or logical block you annotate, begin the details',
+      )
+      expect(explained.overlay?.userText).toContain(
+        'Do not repeat this context in later annotations within the same function or block.',
+      )
       expect(explained.overlay?.userText).toContain('--id-prefix RETRY')
       expect(explained.overlay?.userText).toContain('do not add a global summary comment')
       expect(explained.overlay?.userText).not.toContain('--comment "[summary]')
