@@ -4,15 +4,15 @@ import { AUTH_REQUIRED, authStatus, login } from './auth'
 import { setEmbedOrigins } from './embedBridge'
 
 export function AuthGate({ children }: { children: ReactNode }) {
-  const [authenticated, setAuthenticated] = useState(false)
-  const [checking, setChecking] = useState(true)
+  const [authState, setAuthState] = useState<'checking' | 'authenticated' | 'unauthenticated'>('checking')
+  const [checking, setChecking] = useState(false)
   const [token, setToken] = useState('')
   const [error, setError] = useState('')
   const queryClient = useQueryClient()
   useEffect(() => {
     let active = true
     const expired = () => {
-      setAuthenticated(false)
+      setAuthState('unauthenticated')
       setError('Your session expired. Sign in again.')
       queryClient.clear()
     }
@@ -20,12 +20,16 @@ export function AuthGate({ children }: { children: ReactNode }) {
     void authStatus().then((status) => {
       if (!active) return
       setEmbedOrigins(status.embedOrigins)
-      setAuthenticated(status.authenticated)
-    }).catch(() => { if (active) setError('Unable to connect. Reload to retry.') })
-      .finally(() => { if (active) setChecking(false) })
+      setAuthState(status.authenticated ? 'authenticated' : 'unauthenticated')
+    }).catch(() => {
+      if (!active) return
+      setError('Unable to connect. Reload to retry.')
+      setAuthState('unauthenticated')
+    })
     return () => { active = false; window.removeEventListener(AUTH_REQUIRED, expired) }
   }, [queryClient])
-  if (authenticated) return children
+  if (authState === 'authenticated') return children
+  if (authState === 'checking') return <div className="auth-backdrop"><p role="status">Connecting…</p></div>
   return <div className="auth-backdrop">
     <form className="auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title" onSubmit={(event) => {
       event.preventDefault()
@@ -34,7 +38,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
       void login(token).then((status) => {
         setToken('')
         setEmbedOrigins(status.embedOrigins)
-        setAuthenticated(true)
+        setAuthState('authenticated')
       }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Sign-in failed'))
         .finally(() => setChecking(false))
     }}>
