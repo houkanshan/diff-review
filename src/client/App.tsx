@@ -137,6 +137,7 @@ import type {
   PullRequestRevision,
   PullRequestSummary,
   PullRequestWorkspace,
+  UpdatePullRequestInput,
   RepositoryInfo,
   JevFileOrder,
   ReviewSession,
@@ -179,6 +180,7 @@ import {
   setPullRequestDraft,
   squashMergePullRequest,
   submitPullRequestReview,
+  updatePullRequest,
   updateAnnotationComment,
   updateGlobalComment,
 } from './api'
@@ -217,6 +219,8 @@ import {
 import { PIERRE_COLLAPSED_CONTEXT_THRESHOLD } from './annotationPlacement'
 import { AnnotationStickyOverlay } from './AnnotationStickyOverlay'
 import { PullRequestCommits } from './PullRequestCommits'
+import { PullRequestTextEditor, PullRequestTextEditsProvider } from './PullRequestTextEditor'
+import { isModifiedSubmitEnter } from './textInputSubmit'
 
 type DiffLayout = 'unified' | 'split'
 type DiffOverflow = 'wrap' | 'scroll'
@@ -243,6 +247,7 @@ interface PullRequestWorkspaceContext {
   onSelectRevision(sessionId: string): void
   onOpenCommit(commitId: string): Promise<void>
   onRemoveAdditionalReviewLabel(): Promise<void>
+  onUpdateText(changes: Pick<UpdatePullRequestInput, 'title' | 'body'>): Promise<void>
   onAddComment(body: string, replyToId?: string | null): Promise<void>
   onSubmitReview(event: PullRequestReviewEvent, body: string): Promise<void>
   onSetDraft(isDraft: boolean): Promise<void>
@@ -585,6 +590,34 @@ function PullRequestsPage({
     ])
   }, [queryClient, route.repositoryPath])
 
+  const savePullRequestText = async (
+    pullRequestNumber: number,
+    changes: Pick<UpdatePullRequestInput, 'title' | 'body'>,
+  ): Promise<void> => {
+    await updatePullRequest(pullRequestNumber, { repositoryPath: route.repositoryPath, ...changes })
+    queryClient.setQueryData<PullRequestDetails>(
+      ['pull-request-details', route.repositoryPath, pullRequestNumber],
+      (current) => current == null ? undefined : { ...current, ...changes },
+    )
+    queryClient.setQueriesData<PullRequestWorkspace>(
+      { queryKey: ['pull-request-workspace', route.repositoryPath, pullRequestNumber] },
+      (current) => current == null ? undefined : {
+        ...current, details: { ...current.details, ...changes },
+      },
+    )
+    const title = changes.title
+    queryClient.setQueriesData<PullRequestListResponse>(
+      { queryKey: ['pull-requests', route.repositoryPath] },
+      (current) => current == null || title == null ? current : {
+        ...current,
+        items: current.items.map((item) => item.number === pullRequestNumber
+          ? { ...item, title }
+          : item),
+      },
+    )
+    void refreshPullRequestData(pullRequestNumber)
+  }
+
   const refreshPullRequestDetails = useCallback(async (pullRequestNumber: number): Promise<void> => {
     const details = await getPullRequest(pullRequestNumber, route.repositoryPath, { fresh: true })
     queryClient.setQueryData(
@@ -743,6 +776,7 @@ function PullRequestsPage({
   if (session == null || details == null || currentSessionId == null) {
     return (
       <PullRequestPageShell
+        pullRequestKey={`${route.repositoryPath}:${number}`}
         rail={rail}
         listPresentation={listPresentation}
         prsOpen={leftSurface === 'prs'}
@@ -842,7 +876,9 @@ function PullRequestsPage({
             >
               {detailError != null && <div className="error-banner">{detailError}</div>}
               <PullRequestConversation
+                key={details.number}
                 details={details}
+                onUpdateText={(changes) => savePullRequestText(details.number, changes)}
                 oldRevision={false}
                 resolvedTheme={resolvedTheme}
                 onNavigate={() => undefined}
@@ -881,6 +917,7 @@ function PullRequestsPage({
 
   return (
     <PullRequestPageShell
+      pullRequestKey={`${route.repositoryPath}:${number}`}
       rail={rail}
       listPresentation={listPresentation}
       prsOpen={leftSurface === 'prs'}
@@ -959,6 +996,7 @@ function PullRequestsPage({
                 }),
               ])
             },
+            onUpdateText: (changes) => savePullRequestText(details.number, changes),
             onAddComment: async (body, replyToId) => {
               await addPullRequestComment(details.number, {
                 repositoryPath: route.repositoryPath,
@@ -1013,12 +1051,14 @@ function PullRequestsPage({
 }
 
 function PullRequestPageShell({
+  pullRequestKey,
   rail,
   listPresentation,
   prsOpen,
   onPrsOpenChange,
   children,
 }: {
+  pullRequestKey: string
   rail: ReactNode
   listPresentation: 'column' | 'page' | 'drawer'
   prsOpen: boolean
@@ -1038,7 +1078,9 @@ function PullRequestPageShell({
       ) : (
         rail
       )}
-      {children}
+      <PullRequestTextEditsProvider key={pullRequestKey}>
+        {children}
+      </PullRequestTextEditsProvider>
     </main>
   )
 }
@@ -2065,7 +2107,9 @@ function ReviewWorkspace({
                 <div className="error-banner">{error ?? repositorySwitchError}</div>
               )}
               <PullRequestConversation
+                key={pullRequest.details.number}
                 details={pullRequest.details}
+                onUpdateText={pullRequest.onUpdateText}
                 commits={pullRequest.commits}
                 oldRevision={session.id !== pullRequest.currentSessionId}
                 resolvedTheme={resolvedTheme}
@@ -3058,7 +3102,7 @@ function SubmitReviewPopover({
   const [error, setError] = useState<string | null>(null)
   const canSubmit = event !== 'COMMENT' || Boolean(body.trim()) || comments.length > 0
   const submit = async () => {
-    if (!canSubmit) return
+    if (busy || !canSubmit) return
     setBusy(true)
     setError(null)
     try {
@@ -3117,7 +3161,13 @@ function SubmitReviewPopover({
                 value={body}
                 disabled={busy}
                 placeholder="Add a review summary…"
+                aria-label="Review summary"
                 onChange={(input) => setBody(input.target.value)}
+                onKeyDown={(event) => {
+                  if (!isModifiedSubmitEnter(event.nativeEvent)) return
+                  event.preventDefault()
+                  void submit()
+                }}
               />
             </label>
             <section className="review-comments-preview" aria-label="Review comments to submit">
@@ -3163,6 +3213,7 @@ function PullRequestConversation({
   resolvedTheme,
   onNavigate,
   onAddComment,
+  onUpdateText,
 }: {
   details: PullRequestDetails
   commits?: CommitSummary[]
@@ -3170,6 +3221,7 @@ function PullRequestConversation({
   resolvedTheme: ResolvedTheme
   onNavigate(activity: PullRequestActivity): void
   onAddComment(body: string, replyToId?: string | null): Promise<void>
+  onUpdateText(changes: Pick<UpdatePullRequestInput, 'title' | 'body'>): Promise<void>
 } ) {
   return (
     <section className="pr-conversation">
@@ -3180,7 +3232,13 @@ function PullRequestConversation({
       )}
       <div className="pr-overview-grid">
         <header className="pr-conversation-header">
-          <h1>{details.title}</h1>
+          <PullRequestTextEditor
+            field="title"
+            value={details.title}
+            onSave={(title) => onUpdateText({ title })}
+          >
+            <h1>{details.title}</h1>
+          </PullRequestTextEditor>
           <div className="pr-conversation-meta">
             <span className="pr-author">
               <UserAvatar user={details.author} />
@@ -3202,10 +3260,16 @@ function PullRequestConversation({
         />
         <div className="pr-overview-main">
           <section className="pr-description" aria-label="Pull request description">
-            <MarkdownBody
-              body={details.body || 'No description provided.'}
-              issueReferences={details.issueReferences}
-            />
+            <PullRequestTextEditor
+              field="body"
+              value={details.body}
+              onSave={(body) => onUpdateText({ body })}
+            >
+              <MarkdownBody
+                body={details.body || 'No description provided.'}
+                issueReferences={details.issueReferences}
+              />
+            </PullRequestTextEditor>
           </section>
           <section className="pr-activity-section" aria-labelledby="pr-activity-heading">
             <h2 id="pr-activity-heading">Activity</h2>
@@ -3285,7 +3349,7 @@ function PullRequestCommentComposer({
   const [error, setError] = useState<string | null>(null)
   const submit = async () => {
     const comment = body.trim()
-    if (!comment) return
+    if (busy || !comment) return
     setBusy(true)
     setError(null)
     try {
@@ -3308,11 +3372,17 @@ function PullRequestCommentComposer({
         onChange={(input) => setBody(input.target.value)}
         placeholder={placeholder}
         rows={compact ? 3 : 5}
+        aria-label={ariaLabel}
         disabled={busy}
+        onKeyDown={(event) => {
+          if (!isModifiedSubmitEnter(event.nativeEvent)) return
+          event.preventDefault()
+          void submit()
+        }}
       />
       {error != null && <p className="pr-action-error" role="alert">{error}</p>}
       <footer>
-        <span />
+        <small>⌘/Ctrl+Enter to submit</small>
         <button
           type="button"
           disabled={busy || !body.trim()}

@@ -14,6 +14,7 @@ import type {
   SquashMergePullRequestInput,
   SubmitPullRequestReviewInput,
   UpdatePullRequestDraftInput,
+  UpdatePullRequestInput,
   UpdatePullRequestLabelInput,
   PullRequestDetails,
   PullRequestListView,
@@ -77,6 +78,7 @@ import {
   setPullRequestDraft,
   squashMergePullRequest,
   submitPullRequestReview,
+  updatePullRequest,
   pendingReviewComments,
   toGitHubReviewComment,
 } from './github.js'
@@ -201,6 +203,7 @@ export class ApiHandler {
     const pullRequestReviewMatch = /^\/api\/pull-requests\/(\d+)\/reviews$/.exec(url.pathname)
     const pullRequestDraftMatch = /^\/api\/pull-requests\/(\d+)\/draft$/.exec(url.pathname)
     const pullRequestMergeMatch = /^\/api\/pull-requests\/(\d+)\/merge$/.exec(url.pathname)
+    const pullRequestUpdateMatch = /^\/api\/pull-requests\/(\d+)\/update$/.exec(url.pathname)
 
     if (method === 'GET' && url.pathname === '/api/avatar') {
       await this.serveAvatar(response, requiredQuery(url, 'url'))
@@ -351,6 +354,17 @@ export class ApiHandler {
       const input = parseUpdatePullRequestDraftInput(await readJson(request))
       const root = await resolveRepository(input.repositoryPath)
       await setPullRequestDraft(root, number, input.isDraft)
+      invalidatePullRequestDetailsCache()
+      await invalidatePullRequestListCache(root)
+      response.writeHead(204).end()
+      return
+    }
+
+    if (method === 'POST' && pullRequestUpdateMatch != null) {
+      const number = Number(pullRequestUpdateMatch[1])
+      const input = parseUpdatePullRequestInput(await readJson(request))
+      const root = await resolveRepository(input.repositoryPath)
+      await updatePullRequest(root, number, { title: input.title, body: input.body })
       invalidatePullRequestDetailsCache()
       await invalidatePullRequestListCache(root)
       response.writeHead(204).end()
@@ -1168,6 +1182,24 @@ function parseUpdatePullRequestDraftInput(value: unknown): UpdatePullRequestDraf
     repositoryPath: expectString(object.repositoryPath, 'repositoryPath'),
     isDraft: expectBoolean(object.isDraft, 'isDraft'),
   }
+}
+
+export function parseUpdatePullRequestInput(value: unknown): UpdatePullRequestInput {
+  const object = expectObject(value)
+  const input: UpdatePullRequestInput = {
+    repositoryPath: expectString(object.repositoryPath, 'repositoryPath'),
+  }
+  if (object.title !== undefined) input.title = expectTrimmedString(object.title, 'title')
+  if (object.body !== undefined) {
+    if (typeof object.body !== 'string') {
+      throw new AppError('INVALID_INPUT', 'body must be a string')
+    }
+    input.body = object.body
+  }
+  if (input.title === undefined && input.body === undefined) {
+    throw new AppError('INVALID_INPUT', 'Update must include a title or body')
+  }
+  return input
 }
 
 function parseSendPiChatInput(value: unknown): SendPiChatInput {

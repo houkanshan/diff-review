@@ -20,6 +20,7 @@ import type {
   SquashMergePullRequestInput,
   SubmitPullRequestReviewInput,
   UpdatePullRequestDraftInput,
+  UpdatePullRequestInput,
   UpdatePullRequestLabelInput,
   JevFileOrderResponse,
   RepositoryInfo,
@@ -143,6 +144,16 @@ export function setPullRequestDraft(
   input: UpdatePullRequestDraftInput,
 ): Promise<void> {
   return request(`/api/pull-requests/${number}/draft`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function updatePullRequest(
+  number: number,
+  input: UpdatePullRequestInput,
+): Promise<void> {
+  return request(`/api/pull-requests/${number}/update`, {
     method: 'POST',
     body: JSON.stringify(input),
   })

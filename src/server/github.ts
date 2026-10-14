@@ -721,6 +721,37 @@ export async function setPullRequestDraft(
   }
 }
 
+export async function updatePullRequest(
+  root: string,
+  number: number,
+  changes: { title?: string; body?: string },
+): Promise<void> {
+  validatePullRequestNumber(number)
+  const fields: { title?: string; body?: string } = {}
+  if (changes.title !== undefined) {
+    const title = changes.title.trim()
+    if (!title) throw new AppError('INVALID_PULL_REQUEST_TITLE', 'Title must not be empty')
+    fields.title = title
+  }
+  if (changes.body !== undefined) fields.body = changes.body
+  if (fields.title === undefined && fields.body === undefined) {
+    throw new AppError('INVALID_PULL_REQUEST_UPDATE', 'Update must include a title or body')
+  }
+  await runGitHub(
+    [
+      'api',
+      '--method',
+      'PATCH',
+      `repos/{owner}/{repo}/pulls/${number}`,
+      '--input',
+      '-',
+    ],
+    root,
+    JSON.stringify(fields),
+    'mutate',
+  )
+}
+
 function isAlreadyMatchingDraftState(error: unknown, isDraft: boolean): boolean {
   if (!(error instanceof AppError) || error.code !== 'GITHUB_COMMAND_FAILED') return false
   return isDraft

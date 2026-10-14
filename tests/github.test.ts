@@ -12,7 +12,7 @@ import {
 import { pullRequestAllowsReviewEvent } from '../src/shared/pull-request.js'
 import { parseReviewCommentDiff } from '../src/shared/reviewCommentDiff.js'
 
-import { parseGitHubAttachmentUrl } from '../src/server/api.js'
+import { parseGitHubAttachmentUrl, parseUpdatePullRequestInput } from '../src/server/api.js'
 import {
   aggregateCheckStatus,
   addPullRequestComment,
@@ -39,6 +39,7 @@ import {
   squashMergePullRequest,
   submitPullRequestReview,
   toGitHubReviewComment,
+  updatePullRequest,
 } from '../src/server/github.js'
 
 describe('GitHub pull request actions', () => {
@@ -150,6 +151,104 @@ exit 1
       else process.env.GH_TEST_ERROR = originalError
       rmSync(directory, { recursive: true, force: true })
     }
+  })
+
+  test('patches only the edited pull request title or body', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-github-update-'))
+    const bin = path.join(directory, 'bin')
+    const calls = path.join(directory, 'calls.txt')
+    mkdirSync(bin)
+    const gh = path.join(bin, 'gh')
+    writeFileSync(gh, `#!/bin/sh
+printf '%s\n' '---' >> "$GH_TEST_OUTPUT"
+printf '<%s>\n' "$@" >> "$GH_TEST_OUTPUT"
+cat > "$GH_TEST_INPUT"
+if [ "$GH_TEST_ERROR" != '' ]; then
+  printf '%s\n' "$GH_TEST_ERROR" >&2
+  exit 1
+fi
+printf '%s\n' '{}'
+`)
+    chmodSync(gh, 0o755)
+    const originalPath = process.env.PATH
+    const originalOutput = process.env.GH_TEST_OUTPUT
+    const originalInput = process.env.GH_TEST_INPUT
+    const originalError = process.env.GH_TEST_ERROR
+    process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`
+    process.env.GH_TEST_OUTPUT = calls
+    process.env.GH_TEST_ERROR = ''
+    const readInput = (name: string): unknown =>
+      JSON.parse(readFileSync(path.join(directory, name), 'utf8'))
+    try {
+      process.env.GH_TEST_INPUT = path.join(directory, 'title.json')
+      await updatePullRequest(directory, 42, { title: '  New title  ' })
+      expect(readInput('title.json')).toEqual({ title: 'New title' })
+
+      process.env.GH_TEST_INPUT = path.join(directory, 'body.json')
+      const body = '## Summary\n\n- keep  trailing spaces  \n\n```ts\n  indented\n```\n'
+      await updatePullRequest(directory, 42, { body })
+      expect(readInput('body.json')).toEqual({ body })
+
+      process.env.GH_TEST_INPUT = path.join(directory, 'empty-body.json')
+      await updatePullRequest(directory, 42, { body: '' })
+      expect(readInput('empty-body.json')).toEqual({ body: '' })
+
+      const output = readFileSync(calls, 'utf8')
+      expect(output.match(/<PATCH>/g)).toHaveLength(3)
+      expect(output).toContain('<repos/{owner}/{repo}/pulls/42>')
+      expect(output).toContain('<--input>\n<->')
+
+      process.env.GH_TEST_INPUT = path.join(directory, 'failed.json')
+      process.env.GH_TEST_ERROR = 'gh: Validation Failed (HTTP 422)'
+      await expect(updatePullRequest(directory, 42, { title: 'Rejected' })).rejects.toThrow(
+        /Validation Failed/,
+      )
+    } finally {
+      process.env.PATH = originalPath
+      if (originalOutput == null) delete process.env.GH_TEST_OUTPUT
+      else process.env.GH_TEST_OUTPUT = originalOutput
+      if (originalInput == null) delete process.env.GH_TEST_INPUT
+      else process.env.GH_TEST_INPUT = originalInput
+      if (originalError == null) delete process.env.GH_TEST_ERROR
+      else process.env.GH_TEST_ERROR = originalError
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test('rejects blank titles and empty pull request updates before calling GitHub', async () => {
+    await expect(updatePullRequest('.', 42, { title: '   ' })).rejects.toThrow('Title must not be empty')
+    await expect(updatePullRequest('.', 42, {})).rejects.toThrow('Update must include a title or body')
+    await expect(updatePullRequest('.', 0, { title: 'Title' })).rejects.toThrow(
+      'Invalid pull request number',
+    )
+  })
+
+  test('validates pull request update API input', () => {
+    expect(parseUpdatePullRequestInput({ repositoryPath: '/repo', title: ' Title ' })).toEqual({
+      repositoryPath: '/repo',
+      title: 'Title',
+    })
+    expect(parseUpdatePullRequestInput({ repositoryPath: '/repo', body: '' })).toEqual({
+      repositoryPath: '/repo',
+      body: '',
+    })
+    expect(parseUpdatePullRequestInput({ repositoryPath: '/repo', body: '  text\n' })).toEqual({
+      repositoryPath: '/repo',
+      body: '  text\n',
+    })
+    expect(() => parseUpdatePullRequestInput({ repositoryPath: '/repo' })).toThrow(
+      'Update must include a title or body',
+    )
+    expect(() => parseUpdatePullRequestInput({ repositoryPath: '/repo', title: '  ' })).toThrow(
+      'title must not be empty',
+    )
+    expect(() => parseUpdatePullRequestInput({ repositoryPath: '/repo', title: 5 })).toThrow(
+      'title must be a non-empty string',
+    )
+    expect(() => parseUpdatePullRequestInput({ repositoryPath: '/repo', body: null })).toThrow(
+      'body must be a string',
+    )
+    expect(() => parseUpdatePullRequestInput({ title: 'Title' })).toThrow('repositoryPath')
   })
 
   test('rejects an empty comment review with no summary or comments', async () => {

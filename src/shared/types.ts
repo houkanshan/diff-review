@@ -554,6 +554,12 @@ export interface UpdatePullRequestDraftInput {
   isDraft: boolean
 }
 
+export interface UpdatePullRequestInput {
+  repositoryPath: string
+  title?: string
+  body?: string
+}
+
 export interface AddAnnotationInput {
   shortIdPrefix?: string
   filePath: string
