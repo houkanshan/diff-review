@@ -9,12 +9,23 @@ type EmbedPeer = {
 }
 
 let peer: EmbedPeer | null = null
+let embedOrigins: string[] = []
+let pendingPeer: EmbedPeer | null = null
+
+export function setEmbedOrigins(origins: string[]): void {
+  embedOrigins = origins
+  if (pendingPeer && isAllowedEmbedParentOrigin(pendingPeer.origin)) {
+    peer = pendingPeer
+    publishEmbedLocation()
+  }
+  pendingPeer = null
+}
 
 export function isAllowedEmbedParentOrigin(origin: string): boolean {
   try {
     const url = new URL(origin)
     const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
-    return url.protocol === 'http:' && LOOPBACK_HOSTS.has(hostname)
+    return url.origin === origin && ((url.protocol === 'http:' && LOOPBACK_HOSTS.has(hostname)) || embedOrigins.includes(origin))
   } catch {
     return false
   }
@@ -39,14 +50,14 @@ export function publishEmbedLocation(): void {
 export function installEmbedBridge(): void {
   window.addEventListener('message', (event) => {
     if (window.parent === window || event.source !== window.parent) return
-    if (!isAllowedEmbedParentOrigin(event.origin)) return
     const nonce = connectNonce(event.data)
     if (!nonce) return
-    peer = {
-      source: event.source as WindowProxy,
-      origin: event.origin,
-      nonce,
+    const candidate = { source: event.source as WindowProxy, origin: event.origin, nonce }
+    if (!isAllowedEmbedParentOrigin(event.origin)) {
+      pendingPeer = candidate
+      return
     }
+    peer = candidate
     publishEmbedLocation()
   })
 }

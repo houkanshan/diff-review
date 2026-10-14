@@ -4,9 +4,10 @@ import {
   installEmbedBridge,
   isAllowedEmbedParentOrigin,
   publishEmbedLocation,
+  setEmbedOrigins,
 } from '../src/client/embedBridge'
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => { setEmbedOrigins([]); vi.unstubAllGlobals() })
 
 describe('Diff Review embed bridge', () => {
   it('accepts only HTTP loopback parent origins', () => {
@@ -16,6 +17,27 @@ describe('Diff Review embed bridge', () => {
     expect(isAllowedEmbedParentOrigin('https://127.0.0.1:4899')).toBe(false)
     expect(isAllowedEmbedParentOrigin('http://example.test:4899')).toBe(false)
     expect(isAllowedEmbedParentOrigin('not an origin')).toBe(false)
+  })
+
+  it('allows only configured HTTPS parents', () => {
+    setEmbedOrigins(['https://monitor.example.test'])
+    expect(isAllowedEmbedParentOrigin('https://monitor.example.test')).toBe(true)
+    expect(isAllowedEmbedParentOrigin('https://other.example.test')).toBe(false)
+    expect(isAllowedEmbedParentOrigin('https://monitor.example.test/path')).toBe(false)
+  })
+
+  it('validates an early HTTPS parent handshake once status supplies the allowlist', () => {
+    let receive: ((event: MessageEvent) => void) | undefined
+    const parent = { postMessage: vi.fn() }
+    vi.stubGlobal('window', {
+      parent, location: { href: 'https://review.example.test/s/one' },
+      addEventListener: (_type: string, callback: (event: MessageEvent) => void) => { receive = callback },
+    })
+    installEmbedBridge()
+    receive?.({ source: parent, origin: 'https://monitor.example.test', data: { type: 'pi-monitor:diff-review-connect', nonce: 'early' } } as unknown as MessageEvent)
+    expect(parent.postMessage).not.toHaveBeenCalled()
+    setEmbedOrigins(['https://monitor.example.test'])
+    expect(parent.postMessage).toHaveBeenCalledWith({ type: 'diff-review:location', nonce: 'early', href: 'https://review.example.test/s/one' }, 'https://monitor.example.test')
   })
 
   it('binds replies to the loopback parent source, origin, and nonce', () => {

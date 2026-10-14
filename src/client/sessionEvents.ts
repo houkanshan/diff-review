@@ -1,5 +1,7 @@
 import type { PiChatOverlay, ServerEvent, SessionUpdatedEvent } from '../shared/types'
 
+import { authStatus, requireAuthentication } from './auth'
+
 const SSE_LOCK = 'diff-review:sse'
 const SSE_CHANNEL = 'diff-review:sse'
 
@@ -133,6 +135,14 @@ function openSessionEventSource(
 ): EventSource {
   const next = new EventSource('/api/events')
   next.onopen = () => onOpen()
+  next.onerror = () => {
+    void authStatus().then((status) => {
+      if (!status.authenticated) {
+        next.close()
+        requireAuthentication()
+      }
+    }).catch(() => { /* Network failures retain EventSource's normal retry. */ })
+  }
   next.onmessage = (message) => {
     let parsed: unknown
     try {

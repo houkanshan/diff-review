@@ -13,6 +13,7 @@ import type {
   SessionAnnotation,
   SessionGlobalComment,
 } from '../shared/types.js'
+import { configuredToken } from './auth.js'
 import { daemonClientUrl, serveDaemon } from './daemon.js'
 import { loadEnvFiles } from './env.js'
 import { AppError, errorMessage } from './errors.js'
@@ -220,7 +221,7 @@ async function ensureDaemon(): Promise<void> {
 async function requestJson<T>(pathname: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE_URL}${pathname}`, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    headers: { 'Content-Type': 'application/json', ...(configuredToken() ? { Authorization: `Bearer ${configuredToken()}` } : {}), ...init?.headers },
   })
   const body = (await response.json()) as T | ApiErrorShape
   if (!response.ok) {

@@ -19,6 +19,10 @@ Diff Review is a loopback-only Node daemon plus a React SPA. The daemon resolves
 
 Default bind: `127.0.0.1:47658` (`DIFF_REVIEW_PORT` / `DIFF_REVIEW_HOST`; host must be loopback). Data lives under `~/.diff-review` or `DIFF_REVIEW_DATA_DIR`.
 
+`ApiAuth` is the HTTP authorization boundary, before API dispatch (including SSE/media). `DIFF_REVIEW_TOKEN` falls back to `PI_MONITOR_TOKEN`; configured tokens have no loopback bypass. CLI/Monitor send bearer credentials. Browser AuthGate probes `/api/auth/status` before mounting App, posts a token to `/api/auth/login`, then uses a 30-day signed HttpOnly cookie for fetch, images and EventSource. Public HTTPS cookies use `__Host-`, Secure and SameSite=Strict; direct loopback cookies use a distinct name and are not accepted on public/forwarded requests. Cookie mutations require exact trusted Origin; authentication failures unmount App and reopen the gate. Logout clears the cookie; token rotation revokes all signed cookies.
+
+An independent HTTPS proxy may expose the loopback daemon only with a token and `DIFF_REVIEW_PUBLIC_ORIGIN`. Host validation rejects DNS rebinding; forwarded requests require both settings. Without a token the daemon supports direct loopback only. No permissive CORS is supplied; API responses use CORP same-origin. Frame CSP permits self, HTTP loopback and explicit `DIFF_REVIEW_EMBED_ORIGINS` HTTPS origins. Third-party cookie restrictions fall back to standalone review in a new tab, not weaker token transport.
+
 ## Layers
 
 | Layer | Owns | Depends on |
@@ -30,7 +34,7 @@ Default bind: `127.0.0.1:47658` (`DIFF_REVIEW_PORT` / `DIFF_REVIEW_HOST`; host m
 | Store (`src/server/store.ts`) | SQLite CRUD; IDs `drs_`, `ann_`, `pir_` | shared types |
 | GitHub (`src/server/github.ts`) | `gh` CLI / GraphQL; cache and dedupe | `command.ts` |
 | Pi (`src/server/pi.ts`) | Detached PR worktrees and Pi sessions | store, git |
-| Client (`src/client`) | Routes, `@pierre/diffs` / difftastic UI, annotation composer; loopback-parent embed location bridge | `/api/*`, `src/shared` |
+| Client (`src/client`) | Routes, `@pierre/diffs` / difftastic UI, annotation composer; allowlisted-parent embed location bridge | `/api/*`, `src/shared` |
 | Shared (`src/shared`) | Types and pure helpers | nothing runtime-specific |
 
 Build: Vite → `dist/client`; `tsc` (`tsconfig.server.json`) → `dist/node`. Production daemon serves both API and static client. Dev: Vite `:5173` proxies `/api` to the daemon.
@@ -51,7 +55,7 @@ Annotations: user or agent; optional GitHub `review-comment` intent on PRs. Agen
 
 **Open a review.** CLI `ensureDaemon()` → `POST /api/sessions` → resolve repo + target → create or reuse session → open `/s/{sessionId}`. PR sessions redirect to `/pull-requests`.
 
-**Render diffs.** Client parses `session.patch` with `@pierre/diffs`. File bytes come from `GET /api/sessions/:id/file`. Optional `GET .../difftastic` runs the `difft` CLI. When embedded, the client accepts a nonce handshake only from an HTTP loopback parent and reports route changes back to that exact parent origin with `postMessage`; the daemon remains directly loopback-served rather than reverse-proxied.
+**Render diffs.** Client parses `session.patch` with `@pierre/diffs`. File bytes come from `GET /api/sessions/:id/file`. Optional `GET .../difftastic` runs the `difft` CLI. When embedded, the client accepts a nonce handshake only from its direct parent at an HTTP loopback or explicitly configured HTTPS origin (loaded from authentication status), and reports route changes to that exact source/origin with `postMessage`. A handshake received before configuration loads is validated after loading. The server's frame-ancestors CSP enforces the same embedding boundary.
 
 **Copy comments.** ⌘C copies the reviewer's comments only when nothing is selected. Diff text lives in `@pierre/diffs` open ShadowRoots, so `window.getSelection()` often looks collapsed; use `hasDocumentSelection()` in `src/client/documentSelection.ts`, which also checks inputs, shadow-root selections, and composed ranges.
 

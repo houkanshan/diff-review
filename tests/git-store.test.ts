@@ -15,7 +15,15 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
-import { afterAll, describe, expect, test } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+
+beforeEach(() => {
+  vi.stubEnv('DIFF_REVIEW_TOKEN', '')
+  vi.stubEnv('PI_MONITOR_TOKEN', '')
+  vi.stubEnv('DIFF_REVIEW_PUBLIC_ORIGIN', '')
+  vi.stubEnv('DIFF_REVIEW_EMBED_ORIGINS', '')
+})
+afterEach(() => vi.unstubAllEnvs())
 
 import {
   getRepositoryInfo,

@@ -6,6 +6,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import { ApiHandler } from '../src/server/api.js'
+import { ApiAuth } from '../src/server/auth.js'
 import { currentFilePathsFromPatch } from '../src/server/git.js'
 import {
   jevFileOrderFingerprint,
@@ -163,7 +164,7 @@ describe('jev file order', () => {
       },
       true,
     )
-    const handler = new ApiHandler(store, null)
+    const handler = new ApiHandler(store, null, new ApiAuth({}))
     const server = createServer(handler.handle)
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
     const { port } = server.address() as AddressInfo

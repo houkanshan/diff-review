@@ -6,6 +6,7 @@ class FakeEventSource {
   static instances: FakeEventSource[] = []
   onmessage: ((event: { data: string }) => void) | null = null
   onopen: (() => void) | null = null
+  onerror: (() => void) | null = null
   closed = false
 
   constructor(public url: string) {
@@ -119,6 +120,19 @@ describe('subscribeSessionEvents', () => {
     stopFirst()
     stopSecond()
     expect(FakeEventSource.instances[0]?.closed).toBe(true)
+  })
+
+  it('closes an unauthorized stream and asks the gate to sign in again', async () => {
+    stubBrowser(undefined)
+    const dispatchEvent = vi.fn()
+    vi.stubGlobal('window', { dispatchEvent })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ required: true, authenticated: false, embedOrigins: [] })))
+    const stop = subscribeSessionEvents('session-a', vi.fn())
+    try {
+      FakeEventSource.instances[0]?.onerror?.()
+      await vi.waitFor(() => expect(FakeEventSource.instances[0]?.closed).toBe(true))
+      expect(dispatchEvent.mock.calls[0]?.[0].type).toBe('diff-review:auth-required')
+    } finally { stop() }
   })
 
   it('refetches every subscribed session when the EventSource reconnects', () => {

@@ -4,7 +4,25 @@ A local browser review desk for Git changes. The daemon resolves Git targets, st
 
 ## Security
 
-The daemon has no authentication. It binds only to loopback (`127.0.0.1` / `localhost`) and rejects any other `DIFF_REVIEW_HOST`. Do not expose it on the public internet, reverse-proxy it, publish its port, or otherwise make it reachable beyond this machine. Anyone who can reach the HTTP API can read local Git data, call `gh` with your credentials, and start Pi sessions.
+The daemon always binds to loopback (`127.0.0.1` / `localhost`). Set `DIFF_REVIEW_TOKEN` (fallback: `PI_MONITOR_TOKEN`) to protect **all** API routes, including local CLI requests, images and event streams. Health and authentication status remain public; login validates the token. Without a token, only direct loopback use is supported; unknown Host names and forwarded requests are rejected.
+
+Authenticated users can read local Git data, use your `gh` credentials, and start Pi sessions. Use a long random token (at least 32 random bytes recommended), keep it private, and restrict any remote entry to your trusted Tailscale network. This is not a multi-user permission system.
+
+### Remote browser sign-in and Monitor embedding
+
+Manually copy the Monitor token into Diff Review's `~/.diff-review/.env`, or set the same `PI_MONITOR_TOKEN` in both services. Setup does not read or copy secrets automatically. For an independent Tailscale HTTPS entry forwarding to `127.0.0.1:47658`, configure:
+
+```dotenv
+DIFF_REVIEW_TOKEN=<manually copied Monitor token>
+DIFF_REVIEW_PUBLIC_ORIGIN=https://review-host.example.ts.net
+DIFF_REVIEW_EMBED_ORIGINS=https://monitor-host.example.ts.net
+```
+
+Use your actual HTTPS origins (optional trailing slash, no credentials, paths, queries or fragments). Embed origins accept spaces or commas. Configure Monitor with `PI_MONITOR_DIFF_REVIEW_PUBLIC_ORIGIN` (or `DIFF_REVIEW_PUBLIC_ORIGIN`) pointing at the same review origin. Keep the daemon loopback-bound; the separate HTTPS entry is not created automatically. Restart the daemon explicitly after changing configuration.
+
+The browser shows a token sign-in dialog before loading reviews. Sign-in persists for 30 days in an HMAC-derived, host-only HttpOnly cookie, never localStorage or a URL. Public HTTPS uses a `__Host-` Secure, SameSite=Strict cookie; direct loopback HTTP uses a separate local cookie. Native EventSource and images use that cookie automatically. Public embedding is intended for same-site Tailscale origins. If cross-site/third-party cookie restrictions prevent embedding, **Open in new tab** provides standalone review; signing in there does not bypass the browser's iframe restrictions.
+
+Cookie-authenticated mutations and login/logout require an exact trusted Origin. Monitor embed origins authorize framing only, not cross-origin API calls. The CLI sends a bearer token from the same configuration; other API clients must do likewise. `POST /api/auth/logout` clears the browser cookie; rotating the token and restarting invalidates all existing sessions (logout does not revoke a copied cookie). Failed login attempts are limited to 20 per minute per daemon. Health is `GET /api/health`; `GET /api/auth/status` reports `required` and `authenticated` without exposing credentials.
 
 ## Setup
 

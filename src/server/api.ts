@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events'
 import { createReadStream, existsSync, statSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import path from 'node:path'
+import { ApiAuth } from './auth.js'
 
 import type {
   AddAnnotationInput,
@@ -122,6 +123,7 @@ export class ApiHandler {
   constructor(
     private readonly store: ReviewStore,
     private readonly clientDirectory: string | null,
+    private readonly auth = new ApiAuth(),
   ) {
     this.events.setMaxListeners(100)
     this.piReviews = new PiReviewRunner(
@@ -141,12 +143,13 @@ export class ApiHandler {
   handle = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     try {
       setCommonHeaders(response)
+      const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+      if (await this.auth.handle(request, response, url.pathname)) return
       if (request.method === 'OPTIONS') {
         response.writeHead(204).end()
         return
       }
 
-      const url = new URL(request.url ?? '/', 'http://127.0.0.1')
       if (url.pathname.startsWith('/api/')) {
         await this.handleApi(request, response, url)
         return
@@ -1511,9 +1514,6 @@ function requiredQuery(url: URL, name: string): string {
 }
 
 function setCommonHeaders(response: ServerResponse): void {
-  response.setHeader('Access-Control-Allow-Origin', 'http://localhost:5173')
-  response.setHeader('Access-Control-Allow-Headers', 'Content-Type')
-  response.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS')
   response.setHeader('X-Content-Type-Options', 'nosniff')
 }
 
