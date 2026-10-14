@@ -196,6 +196,7 @@ import { OpenInEditorButton } from './OpenInEditorButton'
 import { ShortcutTooltip } from './ShortcutTooltip'
 import { showCopiedToast } from './Toasts'
 import { publishEmbedLocation } from './embedBridge'
+import { canAutoRefreshReview } from './sessionRefresh'
 import { hasDocumentSelection } from './documentSelection'
 import { subscribeSessionEvents } from './sessionEvents'
 import {
@@ -244,7 +245,7 @@ interface PullRequestWorkspaceContext {
   revisions: PullRequestRevision[]
   currentSessionId: string
   piStatus: PiReviewStatus
-  onSelectRevision(sessionId: string): void
+  onSelectRevision(sessionId: string, replace?: boolean): void
   onOpenCommit(commitId: string): Promise<void>
   onRemoveAdditionalReviewLabel(): Promise<void>
   onUpdateText(changes: Pick<UpdatePullRequestInput, 'title' | 'body'>): Promise<void>
@@ -417,7 +418,7 @@ function SessionPage({
   if (session == null) return null
 
   return (
-    <ReviewWorkspaceStore key={session.id} sessionId={session.id}>
+    <ReviewWorkspaceStore key={session.repositoryRoot} sessionId={session.id}>
       <ReviewWorkspace
         session={session}
         error={error}
@@ -961,7 +962,15 @@ function PullRequestsPage({
             revisions,
             currentSessionId,
             piStatus,
-            onSelectRevision: (id) => onOpenPullRequests(route.repositoryPath, number, id),
+            onSelectRevision: (id, replace) => {
+              if (replace && workspace && id === workspace.currentSession.id) {
+                queryClient.setQueryData(
+                  pullRequestWorkspaceQueryKey(route.repositoryPath, number, id),
+                  { ...workspace, selectedSession: workspace.currentSession },
+                )
+              }
+              onOpenPullRequests(route.repositoryPath, number, id, replace)
+            },
             onOpenCommit: async (commitId) => {
               const next = await createSession({
                 repositoryPath: route.repositoryPath,
@@ -1124,7 +1133,7 @@ function ReviewWorkspace({
   initialPullRequestView?: PullRequestViewMode
   error: string | null
   onSessionChange(session: ReviewSession): void
-  onOpenSession(id: string): void
+  onOpenSession(id: string, replace?: boolean): void
   onOpenPullRequests(repositoryPath: string, pullRequestNumber?: number | null): void
   onReload(): Promise<void>
   themePreference: ThemePreference
@@ -1148,6 +1157,7 @@ function ReviewWorkspace({
   const [diffStage, setDiffStage] = useState<HTMLElement | null>(null)
   const [pullRequestView, setPullRequestView] = useState<PullRequestViewMode>(initialPullRequestView)
   const previousSessionIdRef = useRef(session.id)
+  const automaticNavigationRef = useRef(false)
   const overviewScrollRef = useRef<HTMLElement>(null)
   const diffWorkspaceRef = useRef<HTMLDivElement>(null)
   const [diffScroller, setDiffScroller] = useState<HTMLElement | null>(null)
@@ -1242,6 +1252,10 @@ function ReviewWorkspace({
   useEffect(() => {
     if (previousSessionIdRef.current === session.id) return
     previousSessionIdRef.current = session.id
+    if (automaticNavigationRef.current) {
+      automaticNavigationRef.current = false
+      return
+    }
     setPullRequestView('overview')
     pullRequestScrollPositions.current = { overview: 0, diff: 0 }
     window.requestAnimationFrame(() => {
@@ -1661,23 +1675,90 @@ function ReviewWorkspace({
     },
   })
 
-  const [refreshAvailable, setRefreshAvailable] = useState(false)
+  const [localRefreshAvailable, setRefreshAvailable] = useState(false)
+  const refreshAvailable = localRefreshAvailable || Boolean(
+    pullRequest && pullRequest.currentSessionId !== session.id,
+  )
+  const refreshInFlight = useRef(false)
+  const initialPrOpenChecked = useRef(false)
+  const autoRefreshState = useRef({ session, busy, pullRequest })
+  autoRefreshState.current = { session, busy, pullRequest }
+  const canAutoRefresh = (ignoreBusy = false) => {
+    const current = autoRefreshState.current
+    const draft = store.get(composerDraftAtom)
+    return canAutoRefreshReview(current.session,
+      (!ignoreBusy && current.busy) || store.get(composerSelectionAtom) != null ||
+      draft.busy || draft.comment.length > 0 ||
+      (current.pullRequest != null && current.pullRequest.piStatus.state !== 'idle'),
+    )
+  }
+
+  const canAutoRefreshRef = useRef(canAutoRefresh)
+  canAutoRefreshRef.current = canAutoRefresh
+  const onRefreshDetails = pullRequest?.onRefreshDetails
+  const refresh = useCallback(async (automatic = false) => {
+    if (refreshInFlight.current) return
+    refreshInFlight.current = true
+    setBusy(true)
+    try {
+      const [updated] = await Promise.all([
+        refreshSession(session.id),
+        onRefreshDetails?.() ?? Promise.resolve(),
+      ])
+      // An annotation or draft may have appeared while the request was running.
+      if (automatic && (autoRefreshState.current.session.id !== session.id || !canAutoRefreshRef.current(true))) return
+      setRefreshAvailable(false)
+      if (updated.id === session.id) onSessionChange(updated)
+      else {
+        automaticNavigationRef.current = automatic
+        onOpenSession(updated.id, automatic)
+      }
+    } finally {
+      refreshInFlight.current = false
+      setBusy(false)
+    }
+  }, [onOpenSession, onRefreshDetails, onSessionChange, session.id, store])
+  const refreshRef = useRef(refresh)
+  refreshRef.current = refresh
 
   useEffect(() => {
     let cancelled = false
-    const check = async () => {
-      if (document.visibilityState === 'hidden') return
+    let checking = false
+    setRefreshAvailable(false)
+    const check = async (automatic: boolean) => {
+      if (checking || document.visibilityState === 'hidden') return
+      checking = true
       try {
-        const { stale } = await getSessionFreshness(session.id)
-        if (!cancelled) setRefreshAvailable(stale)
-      } catch {
-        if (!cancelled) setRefreshAvailable(false)
+        const current = autoRefreshState.current
+        // PR open already resolves the latest revision using cached GitHub details.
+        const autoSelectPr = current.pullRequest != null && !initialPrOpenChecked.current
+        if (current.pullRequest != null) initialPrOpenChecked.current = true
+        const stale = current.pullRequest != null
+          ? current.pullRequest.currentSessionId !== session.id
+          : (await getSessionFreshness(session.id)).stale
+        if (cancelled) return
+        setRefreshAvailable(stale)
+        if (!stale || !automatic || refreshInFlight.current || !canAutoRefreshRef.current()) return
+        if (current.pullRequest != null) {
+          // An explicit history selection in this workspace must remain selected.
+          if (autoSelectPr) {
+            automaticNavigationRef.current = true
+            current.pullRequest.onSelectRevision(current.pullRequest.currentSessionId, true)
+          }
+        } else {
+          await refreshRef.current(true)
+        }
+      } catch (caught) {
+        // Keep the update badge available when an automatic refresh fails.
+        console.error('Could not check or refresh diff', caught)
+      } finally {
+        checking = false
       }
     }
-    void check()
-    const timer = window.setInterval(check, 10_000)
+    void check(true)
+    const timer = window.setInterval(() => void check(false), 10_000)
     const onVisibility = () => {
-      if (document.visibilityState === 'visible') void check()
+      if (document.visibilityState === 'visible') void check(true)
     }
     document.addEventListener('visibilitychange', onVisibility)
     return () => {
@@ -1686,22 +1767,6 @@ function ReviewWorkspace({
       document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [session.id])
-
-  const onRefreshDetails = pullRequest?.onRefreshDetails
-  const refresh = useCallback(async () => {
-    setBusy(true)
-    try {
-      const [updated] = await Promise.all([
-        refreshSession(session.id),
-        onRefreshDetails?.() ?? Promise.resolve(),
-      ])
-      setRefreshAvailable(false)
-      if (updated.id === session.id) onSessionChange(updated)
-      else onOpenSession(updated.id)
-    } finally {
-      setBusy(false)
-    }
-  }, [onOpenSession, onRefreshDetails, onSessionChange, session.id])
 
   const updateIgnoreWhitespace = useCallback(async (ignoreWhitespace: boolean) => {
     setBusy(true)
@@ -2035,7 +2100,7 @@ function ReviewWorkspace({
         )}
         <button
           className="icon-button"
-          onClick={refresh}
+          onClick={() => void refresh()}
           aria-label={refreshAvailable ? 'Refresh diff, updates available' : 'Refresh diff'}
           disabled={busy}
         >
@@ -2163,7 +2228,7 @@ function ReviewWorkspace({
               <EmptyDiff
                 session={session}
                 onOpenSession={onOpenSession}
-                onRefresh={refresh}
+                onRefresh={() => refresh()}
               />
             ) : renderer === 'difftastic' ? (
               <DifftasticView
@@ -2186,7 +2251,7 @@ function ReviewWorkspace({
               <div className="diff-view-host">
                 <CodeView<ReviewLineAnnotation>
                   ref={viewerRef}
-                  key={`${session.id}:${layout}:${resolvedTheme}:${patchContentKey(session.patch)}`}
+                  key={`${layout}:${resolvedTheme}`}
                   className="diff-view"
                   items={items}
                   options={diffOptions}
