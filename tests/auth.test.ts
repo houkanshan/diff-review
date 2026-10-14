@@ -1,4 +1,5 @@
 import { createServer, get } from 'node:http'
+import { createHmac } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiAuth, configuredToken } from '../src/server/auth'
@@ -80,6 +81,22 @@ describe('daemon authentication boundary', () => {
       expect(logout.headers.get('set-cookie')).toContain('Max-Age=0')
       vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 31 * 24 * 60 * 60 * 1000)
       expect((await fetch(base + '/api/sessions', { headers: { Cookie: cookie } })).status).toBe(401)
+    })
+  })
+
+  it('closes an already-open cookie stream at its signed expiry', async () => {
+    await withServer(config, async (base) => {
+      const expires = String(Date.now() + 300)
+      const signature = createHmac('sha256', token).update(`diff-review:browser:v1:${expires}`).digest('hex')
+      const cookie = `diff_review_session=${expires}.${signature}`
+      const response = await fetch(base + '/api/events', { headers: { Cookie: cookie }, signal: AbortSignal.timeout(3000) })
+      expect(response.status).toBe(200)
+      const reader = response.body!.getReader()
+      expect((await reader.read()).done).toBe(false)
+      expect((await reader.read()).done).toBe(true)
+      expect(Date.now()).toBeGreaterThanOrEqual(Number(expires))
+      expect((await fetch(base + '/api/sessions', { headers: { Cookie: cookie } })).status).toBe(401)
+      expect((await fetch(base + '/api/sessions', { headers: { Authorization: `Bearer ${token}` } })).status).toBe(200)
     })
   })
 

@@ -47,13 +47,19 @@ export class ApiAuth {
       || (this.publicOrigin !== null && request.headers.origin === this.publicOrigin)
   }
 
-  private cookieValid(request: IncomingMessage): boolean {
+  /** Bearer and tokenless streams have no browser-session deadline. */
+  streamExpiresAt(request: IncomingMessage): number | null {
+    if (!this.token || equal(request.headers.authorization ?? '', `Bearer ${this.token}`)) return null
+    return this.cookieExpiresAt(request)
+  }
+
+  private cookieExpiresAt(request: IncomingMessage): number | null {
     const name = this.publicRequest(request) ? PUBLIC_COOKIE : LOCAL_COOKIE
     const value = request.headers.cookie?.split(';').map((v) => v.trim()).find((v) => v.startsWith(`${name}=`))?.slice(name.length + 1)
-    if (!value) return false
+    if (!value) return null
     const [expires, signature] = value.split('.')
-    return !!expires && !!signature && /^\d+$/.test(expires) && Number(expires) > Date.now()
-      && equal(signature, this.signature(expires))
+    return expires && signature && /^\d+$/.test(expires) && equal(signature, this.signature(expires))
+      ? Number(expires) : null
   }
 
   private allowedOrigin(request: IncomingMessage): boolean {
@@ -93,7 +99,7 @@ export class ApiAuth {
     if (!pathname.startsWith('/api/')) return false
     response.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
     const bearer = !!this.token && equal(request.headers.authorization ?? '', `Bearer ${this.token}`)
-    const authenticated = !this.token || bearer || this.cookieValid(request)
+    const authenticated = !this.token || bearer || (this.cookieExpiresAt(request) ?? 0) > Date.now()
     const method = request.method ?? 'GET'
     if (pathname === '/api/health' && method === 'GET') return false
     if (pathname === '/api/auth/status' && method === 'GET') {

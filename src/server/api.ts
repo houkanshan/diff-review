@@ -868,8 +868,23 @@ export class ApiHandler {
     this.events.on('session-updated', listener)
     this.events.on('pi-chat', chatListener)
     const heartbeat = setInterval(() => response.write(': heartbeat\n\n'), 20_000)
+    const expiresAt = this.auth.streamExpiresAt(request)
+    let expiryTimer: ReturnType<typeof setTimeout> | undefined
+    const expire = () => {
+      if (expiresAt === null) return
+      const remaining = expiresAt - Date.now()
+      if (remaining <= 0) {
+        response.end()
+        return
+      }
+      // Node timers cap at ~24.8 days; browser sessions last 30 days.
+      expiryTimer = setTimeout(expire, Math.min(remaining, 2_147_483_647))
+      expiryTimer.unref()
+    }
+    expire()
     request.on('close', () => {
       clearInterval(heartbeat)
+      clearTimeout(expiryTimer)
       this.events.off('session-updated', listener)
       this.events.off('pi-chat', chatListener)
     })
