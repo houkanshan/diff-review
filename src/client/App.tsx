@@ -244,6 +244,8 @@ interface PullRequestWorkspaceContext {
   commits: CommitSummary[]
   revisions: PullRequestRevision[]
   currentSessionId: string
+  historyRevisionSelected: boolean
+  onCheckCurrentRevision(): Promise<PullRequestWorkspace>
   piStatus: PiReviewStatus
   onSelectRevision(sessionId: string, replace?: boolean): void
   onOpenCommit(commitId: string): Promise<void>
@@ -489,6 +491,9 @@ function PullRequestsPage({
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null)
   const queryClient = useQueryClient()
   const number = route.pullRequestNumber
+  const [historySelection, setHistorySelection] = useState<{
+    repositoryPath: string; number: number; sessionId: string
+  } | null>(null)
   const workspaceKey = useMemo(
     () => pullRequestWorkspaceQueryKey(route.repositoryPath, number, route.revisionId),
     [number, route.repositoryPath, route.revisionId],
@@ -961,12 +966,30 @@ function PullRequestsPage({
             commits: workspace?.currentSession.commits ?? [],
             revisions,
             currentSessionId,
+            historyRevisionSelected: historySelection?.repositoryPath === route.repositoryPath &&
+              historySelection.number === number && historySelection.sessionId === session.id,
+            onCheckCurrentRevision: async () => {
+              await refreshPullRequestDetails(details.number)
+              return queryClient.fetchQuery({
+                queryKey: workspaceKey,
+                staleTime: 0,
+                queryFn: () => openPullRequest(details.number, {
+                  repositoryPath: route.repositoryPath, revisionId: session.id,
+                }),
+              })
+            },
             piStatus,
             onSelectRevision: (id, replace) => {
-              if (replace && workspace && id === workspace.currentSession.id) {
+              if (!replace) {
+                setHistorySelection(id === currentSessionId ? null : {
+                  repositoryPath: route.repositoryPath, number: details.number, sessionId: id,
+                })
+              }
+              const currentWorkspace = queryClient.getQueryData<PullRequestWorkspace>(workspaceKey)
+              if (replace && currentWorkspace && id === currentWorkspace.currentSession.id) {
                 queryClient.setQueryData(
                   pullRequestWorkspaceQueryKey(route.repositoryPath, number, id),
-                  { ...workspace, selectedSession: workspace.currentSession },
+                  { ...currentWorkspace, selectedSession: currentWorkspace.currentSession },
                 )
               }
               onOpenPullRequests(route.repositoryPath, number, id, replace)
@@ -1680,16 +1703,16 @@ function ReviewWorkspace({
     pullRequest && pullRequest.currentSessionId !== session.id,
   )
   const refreshInFlight = useRef(false)
-  const initialPrOpenChecked = useRef(false)
   const autoRefreshState = useRef({ session, busy, pullRequest })
   autoRefreshState.current = { session, busy, pullRequest }
-  const canAutoRefresh = (ignoreBusy = false) => {
+  const canAutoRefresh = (ignoreBusy = false, checkedPiStatus?: PiReviewStatus) => {
     const current = autoRefreshState.current
+    const piStatus = checkedPiStatus ?? current.pullRequest?.piStatus
     const draft = store.get(composerDraftAtom)
     return canAutoRefreshReview(current.session,
       (!ignoreBusy && current.busy) || store.get(composerSelectionAtom) != null ||
       draft.busy || draft.comment.length > 0 ||
-      (current.pullRequest != null && current.pullRequest.piStatus.state !== 'idle'),
+      (piStatus != null && piStatus.state !== 'idle'),
     )
   }
 
@@ -1725,26 +1748,30 @@ function ReviewWorkspace({
     let cancelled = false
     let checking = false
     setRefreshAvailable(false)
-    const check = async (automatic: boolean) => {
+    const check = async (automatic: boolean, revalidatePr = false) => {
       if (checking || document.visibilityState === 'hidden') return
       checking = true
       try {
+        const prior = autoRefreshState.current
+        // Revalidate on tab return, not on every 10-second badge check.
+        const latestPr = revalidatePr && prior.pullRequest
+          ? await prior.pullRequest.onCheckCurrentRevision()
+          : null
+        if (cancelled) return
         const current = autoRefreshState.current
-        // PR open already resolves the latest revision using cached GitHub details.
-        const autoSelectPr = current.pullRequest != null && !initialPrOpenChecked.current
-        if (current.pullRequest != null) initialPrOpenChecked.current = true
+        const currentPrSessionId = latestPr?.currentSession.id ?? current.pullRequest?.currentSessionId
         const stale = current.pullRequest != null
-          ? current.pullRequest.currentSessionId !== session.id
+          ? currentPrSessionId !== session.id
           : (await getSessionFreshness(session.id)).stale
         if (cancelled) return
         setRefreshAvailable(stale)
-        if (!stale || !automatic || refreshInFlight.current || !canAutoRefreshRef.current()) return
-        if (current.pullRequest != null) {
-          // An explicit history selection in this workspace must remain selected.
-          if (autoSelectPr) {
-            automaticNavigationRef.current = true
-            current.pullRequest.onSelectRevision(current.pullRequest.currentSessionId, true)
-          }
+        if (!stale || !automatic || refreshInFlight.current || !canAutoRefreshRef.current(false, latestPr?.piStatus)) return
+        if (current.pullRequest != null && currentPrSessionId) {
+          // Busy checks may retry; only a deliberate history selection blocks following latest.
+          if (current.pullRequest.historyRevisionSelected) return
+          if (latestPr && !canAutoRefreshReview(latestPr.selectedSession, latestPr.piStatus.state !== 'idle')) return
+          automaticNavigationRef.current = true
+          current.pullRequest.onSelectRevision(currentPrSessionId, true)
         } else {
           await refreshRef.current(true)
         }
@@ -1758,7 +1785,7 @@ function ReviewWorkspace({
     void check(true)
     const timer = window.setInterval(() => void check(false), 10_000)
     const onVisibility = () => {
-      if (document.visibilityState === 'visible') void check(true)
+      if (document.visibilityState === 'visible') void check(true, true)
     }
     document.addEventListener('visibilitychange', onVisibility)
     return () => {
