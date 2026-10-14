@@ -1,6 +1,6 @@
 export const AUTH_REQUIRED = 'diff-review:auth-required'
 
-export type AuthStatus = { required: boolean; authenticated: boolean; embedOrigins: string[] }
+export type AuthStatus = { required: boolean; authenticated: boolean; publicOrigin: string | null; embedOrigins: string[] }
 
 export function requireAuthentication(): void {
   window.dispatchEvent(new Event(AUTH_REQUIRED))

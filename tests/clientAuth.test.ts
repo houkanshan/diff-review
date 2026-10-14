@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AUTH_REQUIRED, authStatus, login } from '../src/client/auth'
 import { getSessions } from '../src/client/api'
 
-const status = { required: true, authenticated: true, embedOrigins: [] }
+const status = { required: true, authenticated: true, publicOrigin: null, embedOrigins: [] }
 afterEach(() => vi.unstubAllGlobals())
 
 describe('browser authentication', () => {

@@ -45,7 +45,7 @@ describe('daemon authentication boundary', () => {
       expect((await fetch(base + '/api/health')).status).toBe(200)
       expect((await fetch(base + '/api/sessions', { headers: { Authorization: `Bearer ${token}` } })).status).toBe(200)
       const status = await fetch(base + '/api/auth/status')
-      expect(await status.json()).toMatchObject({ required: true, authenticated: false })
+      expect(await status.json()).toMatchObject({ required: true, authenticated: false, publicOrigin: config.DIFF_REVIEW_PUBLIC_ORIGIN })
       expect(status.headers.get('content-security-policy')).toContain('https://monitor.example.test')
       expect(status.headers.get('content-security-policy')).not.toContain('https:;')
       expect(status.headers.get('access-control-allow-origin')).toBeNull()
@@ -75,6 +75,10 @@ describe('daemon authentication boundary', () => {
       expect(publicLogin.headers.get('set-cookie')).toContain('__Host-diff_review_session=')
       expect(publicLogin.headers.get('set-cookie')).toContain('SameSite=Strict; Secure')
       const publicCookie = publicLogin.headers.get('set-cookie')!.split(';')[0]!
+      const renamedLocalCookie = cookie.replace('diff_review_session=', '__Host-diff_review_session=')
+      expect((await fetch(base + '/api/sessions', { headers: { Cookie: renamedLocalCookie, 'X-Forwarded-Proto': 'https' } })).status).toBe(401)
+      const renamedPublicCookie = publicCookie.replace('__Host-diff_review_session=', 'diff_review_session=')
+      expect((await fetch(base + '/api/sessions', { headers: { Cookie: renamedPublicCookie } })).status).toBe(401)
       expect((await fetch(base + '/api/sessions', { headers: { Cookie: cookie, 'X-Forwarded-Proto': 'https' } })).status).toBe(401)
       expect((await fetch(base + '/api/sessions', { headers: { Cookie: publicCookie, 'X-Forwarded-Proto': 'https' } })).status).toBe(200)
       const logout = await fetch(base + '/api/auth/logout', { method: 'POST', headers: { Origin: base, Cookie: cookie } })
@@ -87,7 +91,7 @@ describe('daemon authentication boundary', () => {
   it('closes an already-open cookie stream at its signed expiry', async () => {
     await withServer(config, async (base) => {
       const expires = String(Date.now() + 300)
-      const signature = createHmac('sha256', token).update(`diff-review:browser:v1:${expires}`).digest('hex')
+      const signature = createHmac('sha256', token).update(`diff-review:browser:v2:diff_review_session:${expires}`).digest('hex')
       const cookie = `diff_review_session=${expires}.${signature}`
       const response = await fetch(base + '/api/events', { headers: { Cookie: cookie }, signal: AbortSignal.timeout(3000) })
       expect(response.status).toBe(200)
@@ -114,6 +118,7 @@ describe('daemon authentication boundary', () => {
 
   it('keeps tokenless loopback usable but rejects DNS rebinding and accidental proxies', async () => {
     await withServer({}, async (base) => {
+      expect(await (await fetch(base + '/api/auth/status')).json()).toMatchObject({ publicOrigin: null })
       expect((await fetch(base + '/api/sessions')).status).toBe(200)
       const reboundStatus = await new Promise<number | undefined>((resolve, reject) => {
         get(base + '/api/sessions', { headers: { Host: 'evil.test' } }, (response) => {

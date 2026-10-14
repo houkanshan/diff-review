@@ -37,8 +37,8 @@ export class ApiAuth {
     if (this.publicOrigin && !this.token) throw new Error('DIFF_REVIEW_PUBLIC_ORIGIN requires a token')
   }
 
-  private signature(expires: string): string {
-    return createHmac('sha256', this.token).update(`diff-review:browser:v1:${expires}`).digest('hex')
+  private signature(expires: string, cookieName: string): string {
+    return createHmac('sha256', this.token).update(`diff-review:browser:v2:${cookieName}:${expires}`).digest('hex')
   }
 
   private publicRequest(request: IncomingMessage): boolean {
@@ -58,7 +58,7 @@ export class ApiAuth {
     const value = request.headers.cookie?.split(';').map((v) => v.trim()).find((v) => v.startsWith(`${name}=`))?.slice(name.length + 1)
     if (!value) return null
     const [expires, signature] = value.split('.')
-    return expires && signature && /^\d+$/.test(expires) && equal(signature, this.signature(expires))
+    return expires && signature && /^\d+$/.test(expires) && equal(signature, this.signature(expires, name))
       ? Number(expires) : null
   }
 
@@ -103,7 +103,7 @@ export class ApiAuth {
     const method = request.method ?? 'GET'
     if (pathname === '/api/health' && method === 'GET') return false
     if (pathname === '/api/auth/status' && method === 'GET') {
-      return send(200, { required: !!this.token, authenticated, embedOrigins: this.embedOrigins })
+      return send(200, { required: !!this.token, authenticated, publicOrigin: this.publicOrigin, embedOrigins: this.embedOrigins })
     }
     if ((pathname === '/api/auth/login' || pathname === '/api/auth/logout') && method === 'POST') {
       if (!this.allowedOrigin(request)) return deny(403, 'Untrusted request origin')
@@ -131,7 +131,8 @@ export class ApiAuth {
         return deny(401, 'Incorrect token')
       }
       const expires = String(Date.now() + MAX_AGE * 1000)
-      response.setHeader('Set-Cookie', this.cookie(request, `${expires}.${this.signature(expires)}`, MAX_AGE))
+      const cookieName = this.publicRequest(request) ? PUBLIC_COOKIE : LOCAL_COOKIE
+      response.setHeader('Set-Cookie', this.cookie(request, `${expires}.${this.signature(expires, cookieName)}`, MAX_AGE))
       return send(200, { ok: true })
     }
     if (!authenticated) return deny(401, 'Sign in to Diff Review')
