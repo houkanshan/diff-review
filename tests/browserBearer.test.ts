@@ -55,6 +55,10 @@ describe('expiring browser bearer credentials', () => {
       expect(session.expiresAt).toBeGreaterThan(Date.now() + maxAge - 5000)
       const headers = { Authorization: `Bearer ${session.credential}` }
       expect((await call('/api/sessions', { headers })).status).toBe(200)
+      expect((await call('/api/auth/token', { method: 'POST', headers: { ...headers, Origin: publicOrigin, 'Content-Type': 'application/json' }, body: JSON.stringify({ token: session.credential }) })).status).toBe(401)
+      const farFuture = String(Date.now() + maxAge + 120_000)
+      const invalidLifetime = createHmac('sha256', token).update(`diff-review:bearer:v1:${publicOrigin}:${farFuture}`).digest('hex')
+      expect((await call('/api/sessions', { headers: { Authorization: `Bearer drb1.${farFuture}.${invalidLifetime}` } })).status).toBe(401)
       expect(JSON.parse((await call('/api/auth/status', { headers })).body).authenticated).toBe(true)
       // Missing upstream URL proves media requests passed auth and reached the route.
       expect((await call('/api/avatar', { headers })).status).toBe(400)
@@ -66,6 +70,21 @@ describe('expiring browser bearer credentials', () => {
       expect(preflight.headers['access-control-allow-origin']).toBeUndefined()
       expect(preflight.headers['access-control-allow-credentials']).toBeUndefined()
     })
+  })
+
+  it('sandboxes proxied SVG/media documents and prevents protected response caching', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => Promise.resolve(new Response('<svg xmlns="http://www.w3.org/2000/svg"><script>throw 1</script></svg>', { headers: { 'Content-Type': 'image/svg+xml' } }))))
+    try {
+      await withEntries(async call => {
+        for (const [endpoint, source] of [['avatar', 'https://avatars.githubusercontent.com/test'], ['github-attachment', 'https://private-user-images.githubusercontent.com/test.svg']]) {
+          const response = await call(`/api/${endpoint}?url=${encodeURIComponent(source!)}`, { headers: { Authorization: `Bearer ${token}` } })
+          expect(response.status).toBe(200)
+          expect(response.headers['content-security-policy']).toBe("sandbox; default-src 'none'")
+          expect(response.headers['cache-control']).toBe('private, no-store')
+          expect(response.headers['access-control-allow-origin']).toBeUndefined()
+        }
+      })
+    } finally { vi.unstubAllGlobals() }
   })
 
   it('requires exact login Origin, JSON, the master token, and shared login throttling', async () => {

@@ -107,6 +107,8 @@ import {
   isValidElement,
 } from 'react'
 
+import { AuthenticatedImage, AuthenticatedVideo } from './AuthenticatedMedia'
+import { readStoredValue, writeStoredValue } from './browserStorage'
 import { remarkIssueReferences } from '../shared/markdown'
 import {
   isLocalChangesOid,
@@ -4165,9 +4167,9 @@ type MermaidRender =
   | { source: string; svg: string }
   | { source: string; error: string }
 
-function MarkdownImage({ src, ...props }: ComponentPropsWithoutRef<'img'> & { node?: unknown }) {
+function MarkdownImage({ src, node: _node, ...props }: ComponentPropsWithoutRef<'img'> & { node?: unknown }) {
   return (
-    <img
+    <AuthenticatedImage
       {...props}
       src={src == null ? undefined : githubAttachmentUrl(src)}
       loading="lazy"
@@ -4186,7 +4188,7 @@ function MarkdownLink({
   issueReferences?: GitHubIssueReference[]
 }) {
   if (href != null && children === href && isGitHubAttachmentUrl(href)) {
-    return <video src={githubAttachmentUrl(href)} controls preload="metadata" />
+    return <AuthenticatedVideo src={githubAttachmentUrl(href)} />
   }
   const reference = issueReferences.find((item) => item.url === href)
   if (reference != null) {
@@ -4340,17 +4342,15 @@ function MermaidDiagram({ source }: { source: string }) {
 }
 
 function UserAvatar({ user }: { user: GitHubUser }) {
-  const [failed, setFailed] = useState(false)
-  if (user.avatarUrl == null || failed || isGitHubActionsLogin(user.login)) {
-    return <span className="user-avatar fallback">{avatarFallback(user.login)}</span>
-  }
+  const fallback = <span className="user-avatar fallback">{avatarFallback(user.login)}</span>
+  if (user.avatarUrl == null || isGitHubActionsLogin(user.login)) return fallback
   return (
-    <img
+    <AuthenticatedImage
       className="user-avatar"
       src={`/api/avatar?url=${encodeURIComponent(user.avatarUrl)}`}
       alt=""
       loading="lazy"
-      onError={() => setFailed(true)}
+      fallback={fallback}
     />
   )
 }
@@ -6653,23 +6653,21 @@ function patchContentKey(patch: string): string {
 }
 
 function storedOrderByAnnotation(): boolean {
-  return window.localStorage.getItem('diff-review-order-by-annotation') === '1'
+  return readStoredValue('diff-review-order-by-annotation') === '1'
 }
 
 function storeOrderByAnnotation(orderByAnnotation: boolean): void {
-  if (!orderByAnnotation) window.localStorage.removeItem('diff-review-order-by-annotation')
-  else window.localStorage.setItem('diff-review-order-by-annotation', '1')
+  writeStoredValue('diff-review-order-by-annotation', orderByAnnotation ? '1' : null)
 }
 
 function storedDiffRenderer(): DiffRenderer {
-  return window.localStorage.getItem('diff-review-renderer') === 'difftastic'
+  return readStoredValue('diff-review-renderer') === 'difftastic'
     ? 'difftastic'
     : 'pierre'
 }
 
 function storeDiffRenderer(renderer: DiffRenderer): void {
-  if (renderer === 'pierre') window.localStorage.removeItem('diff-review-renderer')
-  else window.localStorage.setItem('diff-review-renderer', renderer)
+  writeStoredValue('diff-review-renderer', renderer === 'pierre' ? null : renderer)
 }
 
 function scheduleDifftasticScroll(
@@ -6930,7 +6928,7 @@ function useThemePreference(): {
   setPreference(theme: ThemePreference): void
 } {
   const [preference, setPreference] = useState<ThemePreference>(() => {
-    const stored = window.localStorage.getItem('diff-review-theme')
+    const stored = readStoredValue('diff-review-theme')
     return stored === 'light' || stored === 'dark' ? stored : 'system'
   })
   const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(() =>
@@ -6949,8 +6947,7 @@ function useThemePreference(): {
   useEffect(() => {
     document.documentElement.dataset.theme = resolved
     document.documentElement.style.colorScheme = resolved
-    if (preference === 'system') window.localStorage.removeItem('diff-review-theme')
-    else window.localStorage.setItem('diff-review-theme', preference)
+    writeStoredValue('diff-review-theme', preference === 'system' ? null : preference)
   }, [preference, resolved])
 
   return { preference, resolved, setPreference }

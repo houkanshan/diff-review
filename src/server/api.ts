@@ -999,7 +999,8 @@ export class ApiHandler {
     const cached = await avatar
     response.writeHead(200, {
       'Content-Type': cached.contentType,
-      'Cache-Control': 'public, max-age=604800, immutable',
+      'Content-Security-Policy': "sandbox; default-src 'none'",
+      'Cache-Control': 'private, no-store',
     })
     response.end(cached.body)
   }
@@ -1016,7 +1017,8 @@ export class ApiHandler {
     response.writeHead(200, {
       'Content-Type': cached.contentType,
       'Content-Length': cached.body.byteLength,
-      'Cache-Control': 'private, max-age=604800, immutable',
+      'Content-Security-Policy': "sandbox; default-src 'none'",
+      'Cache-Control': 'private, no-store',
     })
     response.end(cached.body)
   }

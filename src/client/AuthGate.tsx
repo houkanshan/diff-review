@@ -1,11 +1,12 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { AUTH_REQUIRED, authStatus, login } from './auth'
+import { AUTH_REQUIRED, authStatus, isCredentialPersistent, login } from './auth'
 import { setEmbedOrigins } from './embedBridge'
 
 export function AuthGate({ children }: { children: ReactNode }) {
   const [authState, setAuthState] = useState<'checking' | 'authenticated' | 'unauthenticated'>('checking')
   const [checking, setChecking] = useState(false)
+  const [memoryOnly, setMemoryOnly] = useState(false)
   const [token, setToken] = useState('')
   const [error, setError] = useState('')
   const queryClient = useQueryClient()
@@ -20,6 +21,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     void authStatus().then((status) => {
       if (!active) return
       setEmbedOrigins(status.embedOrigins, status.allowAnyEmbedOrigin)
+      setMemoryOnly(status.required && status.authenticated && !isCredentialPersistent())
       setAuthState(status.authenticated ? 'authenticated' : 'unauthenticated')
     }).catch(() => {
       if (!active) return
@@ -28,7 +30,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
     })
     return () => { active = false; window.removeEventListener(AUTH_REQUIRED, expired) }
   }, [queryClient])
-  if (authState === 'authenticated') return children
+  if (authState === 'authenticated') return <>
+    {memoryOnly && <p className="auth-session-notice" role="status">Browser storage is unavailable. You are signed in for this tab; reload requires signing in again.</p>}
+    {children}
+  </>
   if (authState === 'checking') return <div className="auth-backdrop"><p role="status">Connecting…</p></div>
   return <div className="auth-backdrop">
     <form className="auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title" onSubmit={(event) => {
@@ -38,12 +43,13 @@ export function AuthGate({ children }: { children: ReactNode }) {
       void login(token).then((status) => {
         setToken('')
         setEmbedOrigins(status.embedOrigins, status.allowAnyEmbedOrigin)
+        setMemoryOnly(status.required && !isCredentialPersistent())
         setAuthState('authenticated')
       }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Sign-in failed'))
         .finally(() => setChecking(false))
     }}>
       <h2 id="auth-title">Sign in to Diff Review</h2>
-      <p>Enter the daemon token. This browser remembers your sign-in using an HttpOnly cookie.</p>
+      <p>Enter the daemon token. This browser remembers an expiring browser credential in localStorage, not your daemon token. If storage is blocked, sign-in lasts until reload.</p>
       {window.location.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname) && <p>HTTP does not encrypt your token or review data. Use a trusted private connection.</p>}
       <label>Token <input type="password" value={token} onChange={(event) => setToken(event.target.value)} autoComplete="current-password" autoFocus /></label>
       {error && <p role="alert">{error}</p>}

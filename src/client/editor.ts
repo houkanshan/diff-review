@@ -1,4 +1,5 @@
 import { parseEditorId, type EditorId } from '../shared/editor'
+import { readStoredValue, writeStoredValue } from './browserStorage'
 
 const STORAGE_KEY = 'diff-review-editor'
 const DEFAULT_EDITOR: EditorId = 'cursor'
@@ -10,12 +11,11 @@ export interface HoveredDiffLine {
 }
 
 export function storedEditor(): EditorId {
-  return parseEditorId(window.localStorage.getItem(STORAGE_KEY)) ?? DEFAULT_EDITOR
+  return parseEditorId(readStoredValue(STORAGE_KEY)) ?? DEFAULT_EDITOR
 }
 
 export function storeEditor(editor: EditorId): void {
-  if (editor === DEFAULT_EDITOR) window.localStorage.removeItem(STORAGE_KEY)
-  else window.localStorage.setItem(STORAGE_KEY, editor)
+  writeStoredValue(STORAGE_KEY, editor === DEFAULT_EDITOR ? null : editor)
 }
 
 export function pierreOpenLineNumber(input: {

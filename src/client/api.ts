@@ -29,7 +29,7 @@ import type {
   SessionAnnotation,
   SessionGlobalComment,
 } from '../shared/types'
-import { requireAuthentication } from './auth'
+import { authenticatedFetch } from './auth'
 import { limitHeavyRequest } from './limitConcurrency'
 export class ClientError extends Error {
   constructor(
@@ -419,7 +419,7 @@ type RequestOptions = RequestInit & { timeoutMs?: number }
 
 async function request<T>(pathname: string, init?: RequestOptions): Promise<T> {
   const { timeoutMs, ...fetchInit } = init ?? {}
-  const response = await fetch(pathname, {
+  const response = await authenticatedFetch(pathname, {
     ...fetchInit,
     signal: fetchInit.signal ?? (timeoutMs == null ? undefined : AbortSignal.timeout(timeoutMs)),
     headers: { 'Content-Type': 'application/json', ...fetchInit.headers },
@@ -429,7 +429,6 @@ async function request<T>(pathname: string, init?: RequestOptions): Promise<T> {
     }
     throw error
   })
-  if (response.status === 401) requireAuthentication()
   if (response.status === 204) return undefined as T
   const body = (await response.json()) as T | ApiErrorShape
   if (!response.ok) {

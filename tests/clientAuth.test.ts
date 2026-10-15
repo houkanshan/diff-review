@@ -1,36 +1,124 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AUTH_REQUIRED, authStatus, login } from '../src/client/auth'
-import { getSessions } from '../src/client/api'
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 
+const key = 'diff-review-browser-credential:v1'
 const status = { required: true, authenticated: true, publicOrigin: null, embedOrigins: [], allowAnyEmbedOrigin: false }
+const expiresAt = Date.now() + 60_000
+const session = { credential: `drb1.${expiresAt}.${'a'.repeat(64)}`, expiresAt }
+let values: Map<string, string>
+let storage: { getItem: ReturnType<typeof vi.fn>; setItem: ReturnType<typeof vi.fn>; removeItem: ReturnType<typeof vi.fn> }
+let dispatchEvent: ReturnType<typeof vi.fn>
+
+beforeEach(() => {
+  vi.resetModules()
+  values = new Map()
+  storage = {
+    getItem: vi.fn((name: string) => values.get(name) ?? null),
+    setItem: vi.fn((name: string, value: string) => { values.set(name, value) }),
+    removeItem: vi.fn((name: string) => { values.delete(name) }),
+  }
+  dispatchEvent = vi.fn()
+  vi.stubGlobal('window', { localStorage: storage, dispatchEvent, location: new URL('http://review.test:47659') })
+})
 afterEach(() => vi.unstubAllGlobals())
 
-describe('browser authentication', () => {
-  it('probes persisted cookies without storing a token in browser storage', async () => {
-    const fetcher = vi.fn().mockResolvedValue(Response.json(status))
-    vi.stubGlobal('fetch', fetcher)
-    expect(await authStatus()).toEqual(status)
-    expect(fetcher).toHaveBeenCalledWith('/api/auth/status', { cache: 'no-store', credentials: 'same-origin' })
+function loginFetch() {
+  const fetcher = vi.fn().mockResolvedValueOnce(Response.json(session)).mockImplementation(() => Promise.resolve(Response.json(status)))
+  vi.stubGlobal('fetch', fetcher)
+  return fetcher
+}
+
+describe('cookie-independent browser authentication', () => {
+  it('exchanges the master token and persists only the expiring browser credential', async () => {
+    const fetcher = loginFetch()
+    const auth = await import('../src/client/auth')
+    expect(await auth.login('master-secret')).toEqual(status)
+    expect(JSON.parse(values.get(key)!)).toEqual(session)
+    expect(values.get(key)).not.toContain('master-secret')
+    expect(auth.isCredentialPersistent()).toBe(true)
+    expect(fetcher.mock.calls[0]?.[0]).toBe('http://review.test:47659/api/auth/token')
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ method: 'POST', body: '{"token":"master-secret"}', credentials: 'omit', redirect: 'error' })
+    expect((fetcher.mock.calls[1]?.[1]?.headers as Headers).get('authorization')).toBe(`Bearer ${session.credential}`)
+    vi.resetModules()
+    const reloaded = await import('../src/client/auth')
+    await reloaded.authStatus()
+    expect((fetcher.mock.lastCall?.[1]?.headers as Headers).get('authorization')).toBe(`Bearer ${session.credential}`)
   })
-  it('verifies the cookie after login, catching blocked iframe cookies without retries', async () => {
-    const fetcher = vi.fn().mockResolvedValueOnce(Response.json({ ok: true }))
-      .mockResolvedValueOnce(Response.json({ ...status, authenticated: false }))
+
+  it('works in memory when the localStorage getter is denied', async () => {
+    loginFetch()
+    vi.stubGlobal('window', { dispatchEvent, location: new URL('http://review.test:47659'), get localStorage() { throw new DOMException('blocked', 'SecurityError') } })
+    const auth = await import('../src/client/auth')
+    await expect(auth.login('master-secret')).resolves.toEqual(status)
+    expect(auth.isCredentialPersistent()).toBe(false)
+    const fetcher = vi.fn().mockImplementation(() => Promise.resolve(Response.json([])))
     vi.stubGlobal('fetch', fetcher)
-    await expect(login('secret')).rejects.toThrow('Open Diff Review in a new tab')
-    expect(fetcher).toHaveBeenCalledTimes(2)
-    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ method: 'POST', body: '{"token":"secret"}' })
+    const { getSessions } = await import('../src/client/api')
+    expect(await getSessions()).toEqual([])
+    expect((fetcher.mock.calls[0]?.[1]?.headers as Headers).get('authorization')).toBe(`Bearer ${session.credential}`)
+    vi.resetModules()
+    const reloaded = await import('../src/client/auth')
+    await reloaded.authStatus()
+    expect((fetcher.mock.lastCall?.[1]?.headers as Headers).has('authorization')).toBe(false)
   })
-  it('reports a wrong token visibly and does not probe or retry', async () => {
+
+  it('survives quota failure without saving the master token', async () => {
+    loginFetch()
+    storage.setItem.mockImplementation(() => { throw new DOMException('quota', 'QuotaExceededError') })
+    const auth = await import('../src/client/auth')
+    await expect(auth.login('master-secret')).resolves.toEqual(status)
+    expect(auth.isCredentialPersistent()).toBe(false)
+    expect(values.size).toBe(0)
+  })
+
+  it('discards expired or malformed persisted credentials', async () => {
+    values.set(key, JSON.stringify({ ...session, expiresAt: 1 }))
+    const fetcher = vi.fn().mockResolvedValue(Response.json({ ...status, authenticated: false }))
+    vi.stubGlobal('fetch', fetcher)
+    const auth = await import('../src/client/auth')
+    await auth.authStatus()
+    expect(values.has(key)).toBe(false)
+    expect((fetcher.mock.calls[0]?.[1]?.headers as Headers).has('authorization')).toBe(false)
+  })
+
+  it('does not accept an arbitrary or master-shaped credential from the exchange endpoint', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ credential: 'master-secret', expiresAt })))
+    const { login } = await import('../src/client/auth')
+    await expect(login('master-secret')).rejects.toThrow('valid browser credential')
+    expect(values.size).toBe(0)
+  })
+
+  it('reports a wrong token without an auth probe or retry', async () => {
     const fetcher = vi.fn().mockResolvedValue(Response.json({}, { status: 401 }))
     vi.stubGlobal('fetch', fetcher)
+    const { login } = await import('../src/client/auth')
     await expect(login('wrong')).rejects.toThrow('Incorrect token')
     expect(fetcher).toHaveBeenCalledTimes(1)
   })
-  it('notifies the gate when an ordinary API request returns 401', async () => {
-    const dispatchEvent = vi.fn()
-    vi.stubGlobal('window', { dispatchEvent })
+
+  it('clears persisted credentials and asks the gate to sign in on an API401', async () => {
+    loginFetch()
+    const auth = await import('../src/client/auth')
+    await auth.login('master-secret')
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ error: { code: 'UNAUTHORIZED', message: 'Sign in' } }, { status: 401 })))
+    const { getSessions } = await import('../src/client/api')
     await expect(getSessions()).rejects.toThrow('Sign in')
-    expect(dispatchEvent.mock.calls[0]?.[0].type).toBe(AUTH_REQUIRED)
+    expect(values.has(key)).toBe(false)
+    expect(auth.isCredentialPersistent()).toBe(false)
+    expect(dispatchEvent.mock.calls[0]?.[0].type).toBe(auth.AUTH_REQUIRED)
+  })
+
+  it('rejects non-API paths and overrides unsafe credential/redirect settings', async () => {
+    const fetcher = loginFetch()
+    const auth = await import('../src/client/auth')
+    await auth.login('master-secret')
+    fetcher.mockClear()
+    for (const path of ['https://evil.test/api/data', '//evil.test/api/data', '/api/../static', '/api/../../api/../outside', '/api/\\evil', '/api/test#fragment']) {
+      await expect(auth.authenticatedFetch(path)).rejects.toThrow('local /api/ path')
+    }
+    expect(fetcher).not.toHaveBeenCalled()
+    await auth.authenticatedFetch('/api/sessions', { credentials: 'include', redirect: 'follow', headers: { Authorization: 'Bearer wrong' } })
+    expect(fetcher.mock.calls[0]?.[0]).toBe('http://review.test:47659/api/sessions')
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ credentials: 'omit', redirect: 'error' })
+    expect((fetcher.mock.calls[0]?.[1]?.headers as Headers).get('authorization')).toBe(`Bearer ${session.credential}`)
   })
 })

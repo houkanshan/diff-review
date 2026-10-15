@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { readStoredValue, writeStoredValue } from './browserStorage'
 
 export type PanelWidthSide = 'left' | 'right' | 'pr' | 'chat'
 
@@ -8,21 +9,20 @@ export function storedPanelWidth(
   min: number,
   max: number,
 ): number {
-  const value = Number(window.localStorage.getItem(`diff-review-${side}-panel-width`))
+  const value = Number(readStoredValue(`diff-review-${side}-panel-width`))
   return Number.isFinite(value) && value > 0 ? Math.min(max, Math.max(min, value)) : fallback
 }
 
 export function storePanelWidth(side: PanelWidthSide, width: number): void {
-  window.localStorage.setItem(`diff-review-${side}-panel-width`, String(width))
+  writeStoredValue(`diff-review-${side}-panel-width`, String(width))
 }
 
 export function storedPanelVisible(side: 'left' | 'right'): boolean {
-  return window.localStorage.getItem(`diff-review-${side}-panel-visible`) !== '0'
+  return readStoredValue(`diff-review-${side}-panel-visible`) !== '0'
 }
 
 export function storePanelVisible(side: 'left' | 'right', visible: boolean): void {
-  if (visible) window.localStorage.removeItem(`diff-review-${side}-panel-visible`)
-  else window.localStorage.setItem(`diff-review-${side}-panel-visible`, '0')
+  writeStoredValue(`diff-review-${side}-panel-visible`, visible ? null : '0')
 }
 
 export function PanelResizeHandle({

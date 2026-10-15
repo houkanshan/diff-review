@@ -5043,3 +5043,19 @@ body.resizing-panels * {
 .auth-modal button:disabled { opacity: 0.6; cursor: default; }
 .auth-modal a { color: var(--blue); }
 .auth-modal [role=alert] { color: var(--red); }
+.auth-session-notice {
+  position: fixed;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  max-width: min(90vw, 640px);
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-soft);
+  font-size: 12px;
+  pointer-events: none;
+}
