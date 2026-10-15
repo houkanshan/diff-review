@@ -9,8 +9,19 @@ function isProtectedMedia(source: string): boolean {
 
 // Match the server attachment cap. Videos buffer fully before playback.
 const MAX_MEDIA_BYTES = 100 * 1024 * 1024
+const INERT_MEDIA_TYPES = new Set([
+  'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif',
+  'image/bmp', 'image/x-icon', 'image/vnd.microsoft.icon',
+  'video/mp4', 'video/webm', 'video/ogg', 'video/quicktime', 'video/x-m4v', 'video/mpeg',
+])
 
 async function readMediaBlob(response: Response): Promise<Blob> {
+  const mediaType = (response.headers.get('Content-Type') ?? '').split(';', 1)[0]!.trim().toLowerCase()
+  // Blob documents inherit this origin; active formats such as SVG must never get a URL.
+  if (!INERT_MEDIA_TYPES.has(mediaType)) {
+    await response.body?.cancel()
+    throw new Error('Unsupported media type')
+  }
   if (Number(response.headers.get('Content-Length')) > MAX_MEDIA_BYTES) {
     await response.body?.cancel()
     throw new Error('Media exceeds the size limit')
@@ -34,7 +45,7 @@ async function readMediaBlob(response: Response): Promise<Blob> {
       reader.releaseLock()
     }
   }
-  return new Blob(chunks, { type: response.headers.get('Content-Type') ?? '' })
+  return new Blob(chunks, { type: mediaType })
 }
 
 // Each mounted consumer owns its blob; disposal also covers an in-flight body read.
@@ -120,7 +131,7 @@ export function AuthenticatedImage({
   const media = useMediaSource(src, element, loading === 'lazy')
   const [failedUrl, setFailedUrl] = useState<string>()
   if (fallback != null && (media.failed || (media.url != null && failedUrl === media.url))) return fallback
-  return <img {...props} ref={element} src={media.url} loading={loading} onError={(event) => {
+  return <img {...props} ref={element} src={media.url} loading={loading} data-media-error={media.failed || undefined} onError={(event) => {
     setFailedUrl(media.url)
     onError?.(event)
   }} />
