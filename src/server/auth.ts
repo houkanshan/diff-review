@@ -28,6 +28,7 @@ export class ApiAuth {
   private readonly token: string
   private readonly publicOrigin: string | null
   private readonly embedOrigins: string[]
+  private readonly allowAnyEmbedOrigin: boolean
   private readonly publicRequests = new WeakSet<IncomingMessage>()
   private failedLogins = 0
   private loginWindow = 0
@@ -37,6 +38,7 @@ export class ApiAuth {
     this.publicOrigin = env.DIFF_REVIEW_PUBLIC_ORIGIN ? browserOrigin(env.DIFF_REVIEW_PUBLIC_ORIGIN) : null
     this.embedOrigins = (env.DIFF_REVIEW_EMBED_ORIGINS ?? '').split(/[\s,]+/).filter(Boolean).map(browserOrigin)
     if (this.publicOrigin && !this.token) throw new Error('DIFF_REVIEW_PUBLIC_ORIGIN requires a token')
+    this.allowAnyEmbedOrigin = !!this.publicOrigin && !!this.token && this.embedOrigins.length === 0
   }
 
   private signature(expires: string, cookieName: string): string {
@@ -91,7 +93,10 @@ export class ApiAuth {
 
   async handle(request: IncomingMessage, response: ServerResponse, pathname: string, publicEntry = false): Promise<boolean> {
     if (publicEntry) this.publicRequests.add(request)
-    response.setHeader('Content-Security-Policy', `frame-ancestors 'self' http://localhost:* http://127.0.0.1:* http://[::1]:* ${this.embedOrigins.join(' ')}`.trim())
+    const ancestors = this.allowAnyEmbedOrigin
+      ? 'http: https:'
+      : `'self' http://localhost:* http://127.0.0.1:* http://[::1]:* ${this.embedOrigins.join(' ')}`.trim()
+    response.setHeader('Content-Security-Policy', `frame-ancestors ${ancestors}`)
     response.setHeader('X-Content-Type-Options', 'nosniff')
     response.setHeader('Referrer-Policy', 'no-referrer')
     response.setHeader('Cache-Control', 'no-store')
@@ -117,7 +122,7 @@ export class ApiAuth {
     const method = request.method ?? 'GET'
     if (pathname === '/api/health' && method === 'GET') return false
     if (pathname === '/api/auth/status' && method === 'GET') {
-      return send(200, { required: !!this.token, authenticated, publicOrigin: this.publicOrigin, embedOrigins: this.embedOrigins })
+      return send(200, { required: !!this.token, authenticated, publicOrigin: this.publicOrigin, embedOrigins: this.embedOrigins, allowAnyEmbedOrigin: this.allowAnyEmbedOrigin })
     }
     if ((pathname === '/api/auth/login' || pathname === '/api/auth/logout') && method === 'POST') {
       if (!this.allowedOrigin(request)) return deny(403, 'Untrusted request origin')

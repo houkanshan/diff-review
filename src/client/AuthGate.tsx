@@ -19,7 +19,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     window.addEventListener(AUTH_REQUIRED, expired)
     void authStatus().then((status) => {
       if (!active) return
-      setEmbedOrigins(status.embedOrigins)
+      setEmbedOrigins(status.embedOrigins, status.allowAnyEmbedOrigin)
       setAuthState(status.authenticated ? 'authenticated' : 'unauthenticated')
     }).catch(() => {
       if (!active) return
@@ -37,7 +37,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
       setError('')
       void login(token).then((status) => {
         setToken('')
-        setEmbedOrigins(status.embedOrigins)
+        setEmbedOrigins(status.embedOrigins, status.allowAnyEmbedOrigin)
         setAuthState('authenticated')
       }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Sign-in failed'))
         .finally(() => setChecking(false))

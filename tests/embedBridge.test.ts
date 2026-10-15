@@ -26,6 +26,42 @@ describe('Diff Review embed bridge', () => {
     expect(isAllowedEmbedParentOrigin('https://monitor.example.test/path')).toBe(false)
   })
 
+  it('accepts arbitrary HTTP(S) parents only when the server enables public framing', () => {
+    setEmbedOrigins([], true)
+    expect(isAllowedEmbedParentOrigin('http://ec2-dev:4899')).toBe(true)
+    expect(isAllowedEmbedParentOrigin('https://any-monitor.example.test')).toBe(true)
+    for (const origin of ['null', 'file://', 'data:text/plain,hello', 'javascript:alert(1)', 'https://user@monitor.test', 'http://monitor.test/path']) {
+      expect(isAllowedEmbedParentOrigin(origin)).toBe(false)
+    }
+    setEmbedOrigins(['https://monitor.example.test'])
+    expect(isAllowedEmbedParentOrigin('http://ec2-dev:4899')).toBe(false)
+  })
+
+  it('binds unrestricted framing replies to the actual parent and nonce, and honors policy tightening', () => {
+    let receive: ((event: MessageEvent) => void) | undefined
+    const parent = { postMessage: vi.fn() }
+    vi.stubGlobal('window', {
+      parent, location: { href: 'http://review.test:47659/s/one' },
+      addEventListener: (_type: string, callback: (event: MessageEvent) => void) => { receive = callback },
+    })
+    installEmbedBridge()
+    const handshake = { type: 'pi-monitor:diff-review-connect', nonce: 'early-public' }
+    receive?.({ source: {}, origin: 'http://monitor.test:4899', data: handshake } as unknown as MessageEvent)
+    setEmbedOrigins([], true)
+    expect(parent.postMessage).not.toHaveBeenCalled()
+    receive?.({ source: parent, origin: 'null', data: handshake } as unknown as MessageEvent)
+    expect(parent.postMessage).not.toHaveBeenCalled()
+    setEmbedOrigins([])
+    receive?.({ source: parent, origin: 'http://monitor.test:4899', data: handshake } as unknown as MessageEvent)
+    expect(parent.postMessage).not.toHaveBeenCalled()
+    setEmbedOrigins([], true)
+    expect(parent.postMessage).toHaveBeenCalledWith({ type: 'diff-review:location', nonce: 'early-public', href: 'http://review.test:47659/s/one' }, 'http://monitor.test:4899')
+    parent.postMessage.mockClear()
+    setEmbedOrigins(['https://other-monitor.test'])
+    publishEmbedLocation()
+    expect(parent.postMessage).not.toHaveBeenCalled()
+  })
+
   it('validates an early HTTPS parent handshake once status supplies the allowlist', () => {
     let receive: ((event: MessageEvent) => void) | undefined
     const parent = { postMessage: vi.fn() }

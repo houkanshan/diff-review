@@ -53,6 +53,33 @@ describe('daemon authentication boundary', () => {
     })
   })
 
+  it.each(['http://review.test:47659', 'https://review.test'])('permits HTTP(S) framing without a manual allowlist for authenticated public origin %s', async (publicOrigin) => {
+    await withServer({ DIFF_REVIEW_TOKEN: token, DIFF_REVIEW_PUBLIC_ORIGIN: publicOrigin }, async (base) => {
+      const response = await fetch(base + '/api/auth/status')
+      expect(response.headers.get('content-security-policy')).toBe('frame-ancestors http: https:')
+      expect(response.headers.get('access-control-allow-origin')).toBeNull()
+      expect(await response.json()).toMatchObject({ required: true, authenticated: false, embedOrigins: [], allowAnyEmbedOrigin: true })
+      expect((await fetch(base + '/api/sessions')).status).toBe(401)
+      // Framing permission never authorizes a parent to log in or mutate the API.
+      expect((await fetch(base + '/api/auth/login', { method: 'POST', headers: { Origin: 'http://any-monitor.test:4899' }, body: JSON.stringify({ token }) })).status).toBe(403)
+    })
+  })
+
+  it('retains the optional framing allowlist and conservative private defaults', async () => {
+    await withServer(config, async (base) => {
+      const response = await fetch(base + '/api/auth/status')
+      expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'self' http://localhost:* http://127.0.0.1:* http://[::1]:* https://monitor.example.test")
+      expect(await response.json()).toMatchObject({ embedOrigins: ['https://monitor.example.test'], allowAnyEmbedOrigin: false })
+    })
+    for (const privateEnv of [{}, { DIFF_REVIEW_TOKEN: token }]) {
+      await withServer(privateEnv, async (base) => {
+        const response = await fetch(base + '/api/auth/status')
+        expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'self' http://localhost:* http://127.0.0.1:* http://[::1]:*")
+        expect(await response.json()).toMatchObject({ embedOrigins: [], allowAnyEmbedOrigin: false })
+      })
+    }
+  })
+
   it('issues persistent derived cookies, rejects CSRF, expires sessions and clears cookies', async () => {
     await withServer(config, async (base) => {
       const signIn = (origin: string, supplied = token) => fetch(base + '/api/auth/login', {

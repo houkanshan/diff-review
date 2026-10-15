@@ -10,10 +10,13 @@ type EmbedPeer = {
 
 let peer: EmbedPeer | null = null
 let embedOrigins: string[] = []
+let allowAnyEmbedOrigin = false
 let pendingPeer: EmbedPeer | null = null
 
-export function setEmbedOrigins(origins: string[]): void {
+export function setEmbedOrigins(origins: string[], allowAny = false): void {
   embedOrigins = origins
+  allowAnyEmbedOrigin = allowAny
+  if (peer && !isAllowedEmbedParentOrigin(peer.origin)) peer = null
   if (pendingPeer && isAllowedEmbedParentOrigin(pendingPeer.origin)) {
     peer = pendingPeer
     publishEmbedLocation()
@@ -25,7 +28,8 @@ export function isAllowedEmbedParentOrigin(origin: string): boolean {
   try {
     const url = new URL(origin)
     const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
-    return url.origin === origin && ((url.protocol === 'http:' && LOOPBACK_HOSTS.has(hostname)) || embedOrigins.includes(origin))
+    return url.origin === origin && ['http:', 'https:'].includes(url.protocol)
+      && (allowAnyEmbedOrigin || (url.protocol === 'http:' && LOOPBACK_HOSTS.has(hostname)) || embedOrigins.includes(origin))
   } catch {
     return false
   }

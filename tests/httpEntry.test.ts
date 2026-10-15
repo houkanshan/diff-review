@@ -8,7 +8,7 @@ import { ReviewStore } from '../src/server/store'
 
 const token = 'http-entry-test-token'
 const origin = 'http://review.test:47659'
-const env = { DIFF_REVIEW_TOKEN: token, DIFF_REVIEW_PUBLIC_ORIGIN: origin, DIFF_REVIEW_EMBED_ORIGINS: 'http://monitor.test:4899' }
+const env = { DIFF_REVIEW_TOKEN: token, DIFF_REVIEW_PUBLIC_ORIGIN: origin }
 
 describe('opt-in authenticated HTTP entry', () => {
   it('requires explicit interface, unprivileged HTTP origin and credentials', () => {
@@ -79,7 +79,7 @@ describe('opt-in authenticated HTTP entry', () => {
         req.end()
       })
       expect(streamStatus).toBe(200)
-      expect(JSON.parse((await call(false, '/api/auth/status', { Cookie: cookie })).body)).toMatchObject({ authenticated: true, publicOrigin: origin })
+      expect(JSON.parse((await call(false, '/api/auth/status', { Cookie: cookie })).body)).toMatchObject({ authenticated: true, publicOrigin: origin, embedOrigins: [], allowAnyEmbedOrigin: true })
       for (const suppliedOrigin of ['', localOrigin, 'http://monitor.test:4899']) {
         expect((await call(false, '/api/sessions', { Cookie: cookie, ...(suppliedOrigin ? { Origin: suppliedOrigin } : {}) }, 'POST')).status).toBe(403)
       }
