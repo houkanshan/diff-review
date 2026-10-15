@@ -54,10 +54,27 @@ export class ApiAuth {
       || (this.publicOrigin !== null && request.headers.origin === this.publicOrigin)
   }
 
-  /** Bearer and tokenless streams have no browser-session deadline. */
+  private browserBearerSignature(expires: string, request: IncomingMessage): string {
+    const audience = this.publicRequest(request) ? this.publicOrigin : 'loopback'
+    return createHmac('sha256', this.token).update(`diff-review:bearer:v1:${audience}:${expires}`).digest('hex')
+  }
+
+  private bearer(request: IncomingMessage): { expiresAt: number | null } | null {
+    if (!this.token) return null
+    const authorization = request.headers.authorization ?? ''
+    if (equal(authorization, `Bearer ${this.token}`)) return { expiresAt: null }
+    const match = /^Bearer drb1\.(\d{13})\.([0-9a-f]{64})$/.exec(authorization)
+    if (!match) return null
+    const expiresAt = Number(match[1])
+    if (expiresAt <= Date.now() || expiresAt > Date.now() + MAX_AGE * 1000 + 60_000) return null
+    return equal(match[2]!, this.browserBearerSignature(match[1]!, request)) ? { expiresAt } : null
+  }
+
+  /** Only master credentials and tokenless local streams have no deadline. */
   streamExpiresAt(request: IncomingMessage): number | null {
-    if (!this.token || equal(request.headers.authorization ?? '', `Bearer ${this.token}`)) return null
-    return this.cookieExpiresAt(request)
+    if (!this.token) return null
+    const bearer = this.bearer(request)
+    return bearer ? bearer.expiresAt : this.cookieExpiresAt(request) ?? 0
   }
 
   private cookieExpiresAt(request: IncomingMessage): number | null {
@@ -117,19 +134,20 @@ export class ApiAuth {
     if (!hostAllowed || (forwarded && (!this.token || !this.publicOrigin))) return deny(403, 'Untrusted request host or proxy')
     if (!pathname.startsWith('/api/')) return false
     response.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
-    const bearer = !!this.token && equal(request.headers.authorization ?? '', `Bearer ${this.token}`)
-    const authenticated = !this.token || bearer || (this.cookieExpiresAt(request) ?? 0) > Date.now()
+    const bearer = this.bearer(request)
+    const authenticated = !this.token || bearer !== null || (this.cookieExpiresAt(request) ?? 0) > Date.now()
     const method = request.method ?? 'GET'
     if (pathname === '/api/health' && method === 'GET') return false
     if (pathname === '/api/auth/status' && method === 'GET') {
       return send(200, { required: !!this.token, authenticated, publicOrigin: this.publicOrigin, embedOrigins: this.embedOrigins, allowAnyEmbedOrigin: this.allowAnyEmbedOrigin })
     }
-    if ((pathname === '/api/auth/login' || pathname === '/api/auth/logout') && method === 'POST') {
+    if (['/api/auth/login', '/api/auth/logout', '/api/auth/token'].includes(pathname) && method === 'POST') {
       if (!this.allowedOrigin(request)) return deny(403, 'Untrusted request origin')
       if (pathname.endsWith('/logout')) {
         response.setHeader('Set-Cookie', this.cookie(request, '', 0))
         return send(200, { ok: true })
       }
+      if (pathname === '/api/auth/token' && request.headers['content-type']?.split(';')[0]?.trim().toLowerCase() !== 'application/json') return deny(415, 'Expected application/json')
       if (Date.now() - this.loginWindow >= 60_000) {
         this.loginWindow = Date.now()
         this.failedLogins = 0
@@ -150,6 +168,9 @@ export class ApiAuth {
         return deny(401, 'Incorrect token')
       }
       const expires = String(Date.now() + MAX_AGE * 1000)
+      if (pathname === '/api/auth/token') {
+        return send(200, { credential: `drb1.${expires}.${this.browserBearerSignature(expires, request)}`, expiresAt: Number(expires) })
+      }
       const cookieName = this.cookieName(request)
       response.setHeader('Set-Cookie', this.cookie(request, `${expires}.${this.signature(expires, cookieName)}`, MAX_AGE))
       return send(200, { ok: true })
