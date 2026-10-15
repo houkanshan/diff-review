@@ -43,6 +43,7 @@ import type {
 import { ClientError, getPiChat, sendPiChat, setPiChatModel } from './api'
 import { PanelResizeHandle, storePanelWidth, storedPanelWidth } from './PanelResizeHandle'
 import { subscribeServerEvents } from './sessionEvents'
+import { writeClipboardText } from './clipboard'
 import { formatTimestamp } from './time'
 
 export function PiChatControl({
@@ -597,7 +598,7 @@ function CopyableValue({ value, label }: { value: string; label: string }) {
         aria-label={copied ? 'Copied' : label}
         title={copied ? 'Copied' : label}
         onClick={async () => {
-          await navigator.clipboard.writeText(value)
+          await writeClipboardText(value)
           setCopied(true)
           window.setTimeout(() => setCopied(false), 1600)
         }}

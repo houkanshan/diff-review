@@ -26,10 +26,11 @@ describe('daemon authentication boundary', () => {
   it('validates configuration and token fallback', () => {
     expect(configuredToken({ PI_MONITOR_TOKEN: 'fallback' })).toBe('fallback')
     expect(configuredToken({ DIFF_REVIEW_TOKEN: 'own', PI_MONITOR_TOKEN: 'fallback' })).toBe('own')
-    for (const origin of ['http://review.test', 'https://review.test/path', 'https://user@review.test', 'https://review.test\\path', 'https://*.review.test']) {
+    for (const origin of ['ftp://review.test', 'https://review.test/path', 'https://user@review.test', 'https://review.test\\path', 'https://*.review.test']) {
       expect(() => new ApiAuth({ ...config, DIFF_REVIEW_PUBLIC_ORIGIN: origin })).toThrow()
     }
     expect(() => new ApiAuth({ ...config, DIFF_REVIEW_PUBLIC_ORIGIN: 'https://review.test/' })).not.toThrow()
+    expect(() => new ApiAuth({ ...config, DIFF_REVIEW_PUBLIC_ORIGIN: 'http://review.test:47659' })).not.toThrow()
     expect(() => new ApiAuth({ DIFF_REVIEW_PUBLIC_ORIGIN: config.DIFF_REVIEW_PUBLIC_ORIGIN })).toThrow()
     expect(configuredToken({ DIFF_REVIEW_TOKEN: ' padded ' })).toBe(' padded ')
   })

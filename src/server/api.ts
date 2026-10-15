@@ -140,11 +140,13 @@ export class ApiHandler {
     this.piReviews.close()
   }
 
-  handle = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
+  handlePublic = (request: IncomingMessage, response: ServerResponse): Promise<void> => this.handle(request, response, true)
+
+  handle = async (request: IncomingMessage, response: ServerResponse, publicEntry = false): Promise<void> => {
     try {
       setCommonHeaders(response)
       const url = new URL(request.url ?? '/', 'http://127.0.0.1')
-      if (await this.auth.handle(request, response, url.pathname)) return
+      if (await this.auth.handle(request, response, url.pathname, publicEntry)) return
       if (request.method === 'OPTIONS') {
         response.writeHead(204).end()
         return

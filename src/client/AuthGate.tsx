@@ -44,6 +44,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     }}>
       <h2 id="auth-title">Sign in to Diff Review</h2>
       <p>Enter the daemon token. This browser remembers your sign-in using an HttpOnly cookie.</p>
+      {window.location.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname) && <p>HTTP does not encrypt your token or review data. Use a trusted private connection.</p>}
       <label>Token <input type="password" value={token} onChange={(event) => setToken(event.target.value)} autoComplete="current-password" autoFocus /></label>
       {error && <p role="alert">{error}</p>}
       <button type="submit" disabled={checking || !token}>{checking ? 'Connecting…' : 'Sign in'}</button>

@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 
 const LOCAL_COOKIE = 'diff_review_session'
 const PUBLIC_COOKIE = '__Host-diff_review_session'
+const HTTP_PUBLIC_COOKIE = 'diff_review_http_session'
 const MAX_AGE = 30 * 24 * 60 * 60
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]'])
 
@@ -10,9 +11,9 @@ export function configuredToken(env: NodeJS.ProcessEnv = process.env): string {
   return env.DIFF_REVIEW_TOKEN || env.PI_MONITOR_TOKEN || ''
 }
 
-function httpsOrigin(value: string): string {
+export function browserOrigin(value: string): string {
   const url = new URL(value)
-  if (!/^https:\/\/[^/?#\s@\\]+\/?$/.test(value) || url.username || url.password || url.hostname.includes('*') || url.pathname !== '/' || url.search || url.hash || url.protocol !== 'https:') throw new Error('Expected an HTTPS origin without path, credentials, query or fragment')
+  if (!/^https?:\/\/[^/?#\s@\\]+\/?$/i.test(value) || url.username || url.password || url.hostname.includes('*') || url.pathname !== '/' || url.search || url.hash || !['http:', 'https:'].includes(url.protocol)) throw new Error('Expected an HTTP(S) origin without path, credentials, query or fragment')
   return url.origin
 }
 
@@ -27,22 +28,26 @@ export class ApiAuth {
   private readonly token: string
   private readonly publicOrigin: string | null
   private readonly embedOrigins: string[]
+  private readonly publicRequests = new WeakSet<IncomingMessage>()
   private failedLogins = 0
   private loginWindow = 0
 
   constructor(env: NodeJS.ProcessEnv = process.env) {
     this.token = configuredToken(env)
-    this.publicOrigin = env.DIFF_REVIEW_PUBLIC_ORIGIN ? httpsOrigin(env.DIFF_REVIEW_PUBLIC_ORIGIN) : null
-    this.embedOrigins = (env.DIFF_REVIEW_EMBED_ORIGINS ?? '').split(/[\s,]+/).filter(Boolean).map(httpsOrigin)
+    this.publicOrigin = env.DIFF_REVIEW_PUBLIC_ORIGIN ? browserOrigin(env.DIFF_REVIEW_PUBLIC_ORIGIN) : null
+    this.embedOrigins = (env.DIFF_REVIEW_EMBED_ORIGINS ?? '').split(/[\s,]+/).filter(Boolean).map(browserOrigin)
     if (this.publicOrigin && !this.token) throw new Error('DIFF_REVIEW_PUBLIC_ORIGIN requires a token')
   }
 
   private signature(expires: string, cookieName: string): string {
-    return createHmac('sha256', this.token).update(`diff-review:browser:v2:${cookieName}:${expires}`).digest('hex')
+    const context = cookieName === LOCAL_COOKIE
+      ? `v2:${cookieName}` : `v3:${cookieName}:${this.publicOrigin}`
+    return createHmac('sha256', this.token).update(`diff-review:browser:${context}:${expires}`).digest('hex')
   }
 
   private publicRequest(request: IncomingMessage): boolean {
-    return (this.publicOrigin !== null && request.headers.host === new URL(this.publicOrigin).host)
+    return this.publicRequests.has(request)
+      || (this.publicOrigin !== null && request.headers.host === new URL(this.publicOrigin).host)
       || Object.keys(request.headers).some((name) => name === 'forwarded' || name.startsWith('x-forwarded-'))
       || (this.publicOrigin !== null && request.headers.origin === this.publicOrigin)
   }
@@ -54,7 +59,7 @@ export class ApiAuth {
   }
 
   private cookieExpiresAt(request: IncomingMessage): number | null {
-    const name = this.publicRequest(request) ? PUBLIC_COOKIE : LOCAL_COOKIE
+    const name = this.cookieName(request)
     const value = request.headers.cookie?.split(';').map((v) => v.trim()).find((v) => v.startsWith(`${name}=`))?.slice(name.length + 1)
     if (!value) return null
     const [expires, signature] = value.split('.')
@@ -66,6 +71,7 @@ export class ApiAuth {
     const origin = request.headers.origin
     if (!origin) return false
     if (origin === this.publicOrigin) return true
+    if (this.publicRequest(request)) return false
     try {
       const url = new URL(origin)
       return url.origin === origin && url.protocol === 'http:' && LOOPBACK.has(url.hostname)
@@ -73,14 +79,21 @@ export class ApiAuth {
     } catch { return false }
   }
 
-  private cookie(request: IncomingMessage, value: string, maxAge: number): string {
-    const secure = this.publicRequest(request)
-    return `${secure ? PUBLIC_COOKIE : LOCAL_COOKIE}=${value}; Path=/; Max-Age=${maxAge}; HttpOnly; SameSite=${secure ? 'Strict; Secure' : 'Lax'}`
+  private cookieName(request: IncomingMessage): string {
+    if (!this.publicRequest(request)) return LOCAL_COOKIE
+    return this.publicOrigin?.startsWith('http:') ? HTTP_PUBLIC_COOKIE : PUBLIC_COOKIE
   }
 
-  async handle(request: IncomingMessage, response: ServerResponse, pathname: string): Promise<boolean> {
+  private cookie(request: IncomingMessage, value: string, maxAge: number): string {
+    const name = this.cookieName(request)
+    return `${name}=${value}; Path=/; Max-Age=${maxAge}; HttpOnly; SameSite=${name === LOCAL_COOKIE ? 'Lax' : 'Strict'}${name === PUBLIC_COOKIE ? '; Secure' : ''}`
+  }
+
+  async handle(request: IncomingMessage, response: ServerResponse, pathname: string, publicEntry = false): Promise<boolean> {
+    if (publicEntry) this.publicRequests.add(request)
     response.setHeader('Content-Security-Policy', `frame-ancestors 'self' http://localhost:* http://127.0.0.1:* http://[::1]:* ${this.embedOrigins.join(' ')}`.trim())
     response.setHeader('X-Content-Type-Options', 'nosniff')
+    response.setHeader('Referrer-Policy', 'no-referrer')
     response.setHeader('Cache-Control', 'no-store')
     const send = (status: number, body: unknown) => {
       response.writeHead(status, { 'Content-Type': 'application/json' }).end(JSON.stringify(body))
@@ -95,6 +108,7 @@ export class ApiAuth {
       if (this.publicOrigin && host === new URL(this.publicOrigin).host) hostAllowed = true
     } catch { /* Invalid Host is never trusted. */ }
     const forwarded = Object.keys(request.headers).some((name) => name === 'forwarded' || name.startsWith('x-forwarded-'))
+    if (publicEntry && (!this.token || !this.publicOrigin || request.headers.host !== new URL(this.publicOrigin).host || forwarded)) return deny(403, 'Untrusted public request host or proxy')
     if (!hostAllowed || (forwarded && (!this.token || !this.publicOrigin))) return deny(403, 'Untrusted request host or proxy')
     if (!pathname.startsWith('/api/')) return false
     response.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
@@ -131,7 +145,7 @@ export class ApiAuth {
         return deny(401, 'Incorrect token')
       }
       const expires = String(Date.now() + MAX_AGE * 1000)
-      const cookieName = this.publicRequest(request) ? PUBLIC_COOKIE : LOCAL_COOKIE
+      const cookieName = this.cookieName(request)
       response.setHeader('Set-Cookie', this.cookie(request, `${expires}.${this.signature(expires, cookieName)}`, MAX_AGE))
       return send(200, { ok: true })
     }

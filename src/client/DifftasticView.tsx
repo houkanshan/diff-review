@@ -20,6 +20,7 @@ import {
 } from './annotationComposer'
 import { highlightFileLines, syntaxLanguageFor } from './syntaxHighlight'
 import { ShortcutTooltip } from './ShortcutTooltip'
+import { writeClipboardText } from './clipboard'
 import { showCopiedToast } from './Toasts'
 import { annotationThreads } from '../shared/annotationThreads'
 import type {
@@ -855,7 +856,7 @@ function CopyFileButton({ filePath }: { filePath: string }) {
       title={copied ? 'Copied' : 'Copy file name'}
       onClick={async (event) => {
         event.stopPropagation()
-        await navigator.clipboard.writeText(filePath)
+        await writeClipboardText(filePath)
         showCopiedToast()
         setCopied(true)
         window.setTimeout(() => setCopied(false), 1200)

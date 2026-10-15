@@ -194,6 +194,7 @@ import { storedEditor, storeEditor } from './editor'
 import { DifftasticView, scrollDifftasticTarget } from './DifftasticView'
 import { OpenInEditorButton } from './OpenInEditorButton'
 import { ShortcutTooltip } from './ShortcutTooltip'
+import { writeClipboardText } from './clipboard'
 import { showCopiedToast } from './Toasts'
 import { publishEmbedLocation } from './embedBridge'
 import { canAutoRefreshReview } from './sessionRefresh'
@@ -1844,7 +1845,7 @@ function ReviewWorkspace({
   ), [session.globalComments])
   const hasHumanComments = humanAnnotations.length > 0 || humanGlobalComments.length > 0
   const copyHumanComments = useCallback(async () => {
-    await navigator.clipboard.writeText(
+    await writeClipboardText(
       await formatCommentsForAgent(
         session.id,
         humanGlobalComments.map((comment) => comment.comment).join('\n\n') || null,
@@ -3999,7 +4000,7 @@ function CopyableMetaText({ value, children }: { value: string; children: ReactN
       type="button"
       title={copied ? 'Copied' : `Copy ${value}`}
       onClick={async () => {
-        await navigator.clipboard.writeText(value)
+        await writeClipboardText(value)
         showCopiedToast()
         setCopied(true)
         window.setTimeout(() => setCopied(false), 1200)
@@ -5039,7 +5040,7 @@ function FileCopyButton({ filePath }: { filePath: string }) {
       title={copied ? 'Copied' : 'Copy file name'}
       onClick={async (event) => {
         event.stopPropagation()
-        await navigator.clipboard.writeText(filePath)
+        await writeClipboardText(filePath)
         showCopiedToast()
         setCopied(true)
         window.setTimeout(() => setCopied(false), 1200)
@@ -6448,7 +6449,7 @@ async function copyAnnotationForAgent(
   allAnnotations: SessionAnnotation[],
   files: FileDiffMetadata[],
 ): Promise<void> {
-  await navigator.clipboard.writeText(
+  await writeClipboardText(
     await formatAnnotationForAgent(sessionId, annotation, allAnnotations, files),
   )
   showCopiedToast('Copied annotation')
