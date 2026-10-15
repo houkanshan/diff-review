@@ -80,6 +80,11 @@ describe('opt-in authenticated HTTP entry', () => {
       })
       expect(streamStatus).toBe(200)
       expect(JSON.parse((await call(false, '/api/auth/status', { Cookie: cookie })).body)).toMatchObject({ authenticated: true, publicOrigin: origin })
+      for (const suppliedOrigin of ['', localOrigin, 'http://monitor.test:4899']) {
+        expect((await call(false, '/api/sessions', { Cookie: cookie, ...(suppliedOrigin ? { Origin: suppliedOrigin } : {}) }, 'POST')).status).toBe(403)
+      }
+      expect((await call(false, '/api/sessions', { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' }, 'POST', '{}')).status).toBe(400)
+      expect((await call(false, '/api/sessions', { Cookie: cookie.replace('diff_review_http_session=', '__Host-diff_review_session=') })).status).toBe(401)
       expect((await call(false, '/api/auth/logout', { Cookie: cookie }, 'POST')).status).toBe(403)
       expect((await call(false, '/api/auth/logout', { Cookie: cookie, Origin: localOrigin }, 'POST')).status).toBe(403)
       expect((await call(false, '/api/auth/logout', { Cookie: cookie, Origin: 'http://monitor.test:4899' }, 'POST')).status).toBe(403)
