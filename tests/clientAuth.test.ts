@@ -19,7 +19,7 @@ beforeEach(() => {
   dispatchEvent = vi.fn()
   vi.stubGlobal('window', { localStorage: storage, dispatchEvent, location: new URL('http://review.test:47659') })
 })
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 function loginFetch() {
   const fetcher = vi.fn().mockResolvedValueOnce(Response.json(session)).mockImplementation(() => Promise.resolve(Response.json(status)))
@@ -70,13 +70,14 @@ describe('cookie-independent browser authentication', () => {
     expect(values.size).toBe(0)
   })
 
-  it('discards expired or malformed persisted credentials', async () => {
+  it('ignores invalid persisted credentials without deleting shared storage', async () => {
     values.set(key, JSON.stringify({ ...session, expiresAt: 1 }))
     const fetcher = vi.fn().mockResolvedValue(Response.json({ ...status, authenticated: false }))
     vi.stubGlobal('fetch', fetcher)
     const auth = await import('../src/client/auth')
     await auth.authStatus()
-    expect(values.has(key)).toBe(false)
+    expect(values.has(key)).toBe(true)
+    expect(storage.removeItem).not.toHaveBeenCalled()
     expect((fetcher.mock.calls[0]?.[1]?.headers as Headers).has('authorization')).toBe(false)
   })
 
@@ -95,16 +96,70 @@ describe('cookie-independent browser authentication', () => {
     expect(fetcher).toHaveBeenCalledTimes(1)
   })
 
-  it('clears persisted credentials and asks the gate to sign in on an API401', async () => {
+  it('rejects a failed credential locally without deleting shared storage on an API401', async () => {
     loginFetch()
     const auth = await import('../src/client/auth')
     await auth.login('master-secret')
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ error: { code: 'UNAUTHORIZED', message: 'Sign in' } }, { status: 401 })))
     const { getSessions } = await import('../src/client/api')
     await expect(getSessions()).rejects.toThrow('Sign in')
-    expect(values.has(key)).toBe(false)
+    expect(JSON.parse(values.get(key)!)).toEqual(session)
+    expect(storage.removeItem).not.toHaveBeenCalled()
     expect(auth.isCredentialPersistent()).toBe(false)
     expect(dispatchEvent.mock.calls[0]?.[0].type).toBe(auth.AUTH_REQUIRED)
+  })
+
+  it('adopts another tab\'s newer credential before handling local expiry', async () => {
+    loginFetch()
+    const auth = await import('../src/client/auth')
+    await auth.login('master-secret')
+    const next = { credential: `drb1.${expiresAt + 120_000}.${'b'.repeat(64)}`, expiresAt: expiresAt + 120_000 }
+    values.set(key, JSON.stringify(next))
+    vi.spyOn(Date, 'now').mockReturnValue(expiresAt + 1)
+    const fetcher = vi.fn().mockImplementation(() => Promise.resolve(Response.json(status)))
+    vi.stubGlobal('fetch', fetcher)
+    await auth.authStatus()
+    expect((fetcher.mock.calls[0]?.[1]?.headers as Headers).get('authorization')).toBe(`Bearer ${next.credential}`)
+    expect(JSON.parse(values.get(key)!)).toEqual(next)
+    expect(auth.isCredentialPersistent()).toBe(true)
+    expect(dispatchEvent).not.toHaveBeenCalled()
+  })
+
+  it.each(['GET', 'POST'])('preserves another tab\'s login after a stale %s401 without replaying mutations', async (method) => {
+    loginFetch()
+    const auth = await import('../src/client/auth')
+    await auth.login('master-secret')
+    let rejectStale!: (response: Response) => void
+    const pendingResponse = new Promise<Response>(resolve => { rejectStale = resolve })
+    const fetcher = vi.fn().mockReturnValueOnce(pendingResponse).mockImplementation(() => Promise.resolve(Response.json(status)))
+    vi.stubGlobal('fetch', fetcher)
+    const pending = auth.authenticatedFetch('/api/sessions', { method })
+    const next = { credential: `drb1.${expiresAt + 1000}.${'b'.repeat(64)}`, expiresAt: expiresAt + 1000 }
+    values.set(key, JSON.stringify(next))
+    rejectStale(Response.json({}, { status: 401 }))
+    expect((await pending).status).toBe(method === 'GET' ? 200 : 401)
+    expect(fetcher).toHaveBeenCalledTimes(method === 'GET' ? 2 : 1)
+    expect(JSON.parse(values.get(key)!)).toEqual(next)
+    expect(storage.removeItem).not.toHaveBeenCalled()
+    expect(dispatchEvent).not.toHaveBeenCalled()
+    expect(auth.isCredentialPersistent()).toBe(true)
+  })
+
+  it('never removes a new credential written after its last storage read', async () => {
+    loginFetch()
+    const auth = await import('../src/client/auth')
+    await auth.login('master-secret')
+    const next = { credential: `drb1.${expiresAt + 1000}.${'b'.repeat(64)}`, expiresAt: expiresAt + 1000 }
+    let reads = 0
+    storage.getItem.mockImplementation((name: string) => {
+      const raw = values.get(name) ?? null
+      if (++reads === 2) values.set(key, JSON.stringify(next))
+      return raw
+    })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({}, { status: 401 })))
+    await auth.authenticatedFetch('/api/sessions')
+    expect(JSON.parse(values.get(key)!)).toEqual(next)
+    expect(storage.removeItem).not.toHaveBeenCalled()
   })
 
   it('rejects non-API paths and overrides unsafe credential/redirect settings', async () => {

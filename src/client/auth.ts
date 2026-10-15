@@ -1,7 +1,7 @@
 import { readStoredValue, writeStoredValue } from './browserStorage'
 
 export const AUTH_REQUIRED = 'diff-review:auth-required'
-const CREDENTIAL_KEY = 'diff-review-browser-credential:v1'
+export const CREDENTIAL_STORAGE_KEY = 'diff-review-browser-credential:v1'
 
 type BrowserCredential = { credential: string; expiresAt: number }
 export type AuthStatus = { required: boolean; authenticated: boolean; publicOrigin: string | null; embedOrigins: string[]; allowAnyEmbedOrigin: boolean }
@@ -9,6 +9,7 @@ export type AuthStatus = { required: boolean; authenticated: boolean; publicOrig
 let currentCredential: BrowserCredential | null = null
 let restored = false
 let persistent = false
+let rejectedCredential: string | null = null
 
 function parseCredential(value: unknown): BrowserCredential | null {
   if (!value || typeof value !== 'object') return null
@@ -19,17 +20,23 @@ function parseCredential(value: unknown): BrowserCredential | null {
 }
 
 function credential(): BrowserCredential | null {
-  if (!restored) {
+  // Reconcile shared storage before expiry/401 handling; another tab may have signed in.
+  // A memory-only sign-in keeps its own credential even if an older stored value remains.
+  if (!restored || persistent || currentCredential === null) {
     restored = true
-    const raw = readStoredValue(CREDENTIAL_KEY)
-    try { currentCredential = raw ? parseCredential(JSON.parse(raw)) : null } catch { currentCredential = null }
-    persistent = currentCredential !== null
-    if (raw && !currentCredential) writeStoredValue(CREDENTIAL_KEY, null)
+    const raw = readStoredValue(CREDENTIAL_STORAGE_KEY)
+    let stored: BrowserCredential | null = null
+    try { stored = raw ? parseCredential(JSON.parse(raw)) : null } catch { /* Ignore malformed storage. */ }
+    if (stored && stored.credential !== rejectedCredential) {
+      currentCredential = stored
+      persistent = true
+    } else {
+      persistent = false
+    }
   }
   if (currentCredential && currentCredential.expiresAt <= Date.now()) {
     currentCredential = null
     persistent = false
-    writeStoredValue(CREDENTIAL_KEY, null)
   }
   return currentCredential
 }
@@ -39,10 +46,12 @@ export function isCredentialPersistent(): boolean {
 }
 
 export function requireAuthentication(): void {
+  rejectedCredential = currentCredential?.credential ?? rejectedCredential
   currentCredential = null
   restored = true
   persistent = false
-  writeStoredValue(CREDENTIAL_KEY, null)
+  // Never delete shared storage on automatic failure: localStorage has no atomic
+  // compare-and-delete, so even a checked removal can erase another tab's new login.
   window.dispatchEvent(new Event(AUTH_REQUIRED))
 }
 
@@ -54,13 +63,25 @@ export async function authenticatedFetch(pathname: string, init?: RequestInit): 
   const origin = window.location.origin
   const parsed = new URL(pathname, origin)
   if (parsed.origin !== origin || !parsed.pathname.startsWith('/api/')) throw new Error('Authenticated requests require a local /api/ path')
-  const headers = new Headers(init?.headers)
-  headers.delete('Authorization')
-  const active = credential()
-  if (active) headers.set('Authorization', `Bearer ${active.credential}`)
-  const response = await fetch(parsed.href, { ...init, headers, credentials: 'omit', redirect: 'error' })
-  if (response.status === 401 && active === currentCredential) requireAuthentication()
-  return response
+  for (let attempt = 0; ; attempt++) {
+    const headers = new Headers(init?.headers)
+    headers.delete('Authorization')
+    const active = credential()
+    if (active) headers.set('Authorization', `Bearer ${active.credential}`)
+    const response = await fetch(parsed.href, { ...init, headers, credentials: 'omit', redirect: 'error' })
+    if (response.status !== 401) return response
+    const latest = credential()
+    if (latest && latest.credential !== active?.credential) {
+      // Only reads retry, once. Mutations are never replayed automatically.
+      if (attempt === 0 && ['GET', 'HEAD'].includes((init?.method ?? 'GET').toUpperCase())) {
+        await response.body?.cancel().catch(() => {})
+        continue
+      }
+    } else {
+      requireAuthentication()
+    }
+    return response
+  }
 }
 
 export async function authStatus(): Promise<AuthStatus> {
@@ -78,8 +99,8 @@ export async function login(token: string): Promise<AuthStatus> {
   if (!next) throw new Error('The server did not return a valid browser credential. Update and restart Diff Review.')
   currentCredential = next
   restored = true
-  persistent = writeStoredValue(CREDENTIAL_KEY, JSON.stringify(next))
-  if (!persistent) writeStoredValue(CREDENTIAL_KEY, null)
+  rejectedCredential = null
+  persistent = writeStoredValue(CREDENTIAL_STORAGE_KEY, JSON.stringify(next))
   const status = await authStatus()
   if (!status.authenticated) {
     requireAuthentication()
