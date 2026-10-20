@@ -70,7 +70,7 @@ diff-review HEAD
 diff-review --pr 42
 ```
 
-The command starts the daemon when needed and opens the review in a browser. In a multi-commit review, use the header's **Commits** dropdown: click a commit to view it alone or Shift-click another commit to select a continuous range.
+The command starts the daemon when needed and opens the review in a browser. Browser links, including `session create` text and `--json` output, use `DIFF_REVIEW_PUBLIC_ORIGIN` when configured (requires a token); otherwise they use the local daemon address. CLI API requests always use loopback and send the configured token only in the Authorization header, never in a review URL. In a multi-commit review, use the header's **Commits** dropdown: click a commit to view it alone or Shift-click another commit to select a continuous range.
 
 Control the daemon explicitly with:
 

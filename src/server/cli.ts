@@ -13,7 +13,7 @@ import type {
   SessionAnnotation,
   SessionGlobalComment,
 } from '../shared/types.js'
-import { configuredToken } from './auth.js'
+import { browserOrigin, configuredToken } from './auth.js'
 import { daemonClientUrl, serveDaemon } from './daemon.js'
 import { loadEnvFiles } from './env.js'
 import { AppError, errorMessage } from './errors.js'
@@ -27,7 +27,7 @@ import {
 
 loadEnvFiles()
 
-const BASE_URL = daemonClientUrl()
+const API_URL = daemonClientUrl()
 
 void main().catch((error: unknown) => {
   console.error(`diff-review: ${errorMessage(error)}`)
@@ -57,9 +57,8 @@ async function main(): Promise<void> {
   }
 
   if (args[0] === 'session' && args[1] === 'create') {
-    await ensureDaemon()
     const result = await createSession(args.slice(2))
-    printSession(result.session, result.json)
+    printSession(result.session, result.json, result.url)
     return
   }
 
@@ -86,10 +85,9 @@ async function main(): Promise<void> {
     return
   }
 
-  await ensureDaemon()
   const result = await createSession(args)
-  printSession(result.session, result.json)
-  await openBrowser(`${BASE_URL}/s/${result.session.id}`)
+  printSession(result.session, result.json, result.url)
+  await openBrowser(result.url)
 }
 
 function setupSkill(): void {
@@ -108,7 +106,19 @@ function setupSkill(): void {
   console.log(`Installed explain-diff skill to ${destination}`)
 }
 
-async function createSession(args: string[]): Promise<{ session: ReviewSession; json: boolean }> {
+async function createSession(args: string[]): Promise<{ session: ReviewSession; json: boolean; url: string }> {
+  let browserUrl = API_URL
+  if (process.env.DIFF_REVIEW_PUBLIC_ORIGIN) {
+    try {
+      browserUrl = browserOrigin(process.env.DIFF_REVIEW_PUBLIC_ORIGIN)
+    } catch {
+      throw new AppError('INVALID_CONFIGURATION', 'DIFF_REVIEW_PUBLIC_ORIGIN must be an HTTP(S) origin without path, credentials, query or fragment')
+    }
+    if (!configuredToken()) {
+      throw new AppError('INVALID_CONFIGURATION', 'DIFF_REVIEW_PUBLIC_ORIGIN requires a token')
+    }
+  }
+  await ensureDaemon()
   const parsed = parseArgs(args)
   const repositoryPath = stringFlag(parsed, 'repo') ?? process.cwd()
   const target = await targetFromArguments(parsed, repositoryPath)
@@ -116,7 +126,7 @@ async function createSession(args: string[]): Promise<{ session: ReviewSession; 
     method: 'POST',
     body: JSON.stringify({ repositoryPath, target }),
   })
-  return { session, json: booleanFlag(parsed, 'json') }
+  return { session, json: booleanFlag(parsed, 'json'), url: `${browserUrl}/s/${session.id}` }
 }
 
 async function addAnnotation(
@@ -219,7 +229,7 @@ async function ensureDaemon(): Promise<void> {
 }
 
 async function requestJson<T>(pathname: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${BASE_URL}${pathname}`, {
+  const response = await fetch(`${API_URL}${pathname}`, {
     ...init,
     headers: { 'Content-Type': 'application/json', ...(configuredToken() ? { Authorization: `Bearer ${configuredToken()}` } : {}), ...init?.headers },
   })
@@ -296,7 +306,7 @@ function booleanFlag(args: ParsedArgs, name: string): boolean {
   return args.flags.get(name) === true
 }
 
-function printSession(session: ReviewSession, json: boolean): void {
+function printSession(session: ReviewSession, json: boolean, url: string): void {
   if (json) {
     console.log(
       JSON.stringify(
@@ -305,7 +315,7 @@ function printSession(session: ReviewSession, json: boolean): void {
           repository: session.repositoryRoot,
           target: session.targetLabel,
           gitCommand: session.gitCommand,
-          url: `${BASE_URL}/s/${session.id}`,
+          url,
         },
         null,
         2,
@@ -316,7 +326,7 @@ function printSession(session: ReviewSession, json: boolean): void {
   console.log(`Session: ${session.id}`)
   console.log(`Repository: ${session.repositoryRoot}`)
   console.log(`Review with: ${session.gitCommand}`)
-  console.log(`Open: ${BASE_URL}/s/${session.id}`)
+  console.log(`Open: ${url}`)
 }
 
 function wantsHelp(args: string[]): boolean {
