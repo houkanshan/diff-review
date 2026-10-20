@@ -1,8 +1,24 @@
 import { Popover } from '@base-ui/react/popover'
 import { useQuery } from '@tanstack/react-query'
+import { Pencil } from 'lucide-react'
 import { useState, type CSSProperties } from 'react'
 import type { GitHubLabel } from '../shared/types'
 import { getRepositoryLabels } from './api'
+
+export function labelOptions(
+  available: GitHubLabel[],
+  selected: GitHubLabel[],
+  search: string,
+): GitHubLabel[] {
+  // Keep assigned labels removable even if the repository catalog is stale.
+  const choices = new Map(available.map((label) => [label.name, label]))
+  for (const label of selected) choices.set(label.name, label)
+  const selectedNames = new Set(selected.map((label) => label.name))
+  return [...choices.values()]
+    .filter((label) => label.name.toLowerCase().includes(search.toLowerCase()))
+    .sort((left, right) => Number(selectedNames.has(right.name)) - Number(selectedNames.has(left.name))
+      || left.name.localeCompare(right.name))
+}
 
 export function PullRequestLabels({
   repositoryPath,
@@ -24,12 +40,7 @@ export function PullRequestLabels({
     staleTime: 5 * 60_000,
     retry: false,
   })
-  // Keep assigned labels removable even if the repository catalog is stale.
-  const choices = new Map((available.data ?? []).map((label) => [label.name, label]))
-  for (const label of labels) choices.set(label.name, label)
-  const visible = [...choices.values()]
-    .filter((label) => label.name.toLowerCase().includes(search.toLowerCase()))
-    .sort((left, right) => left.name.localeCompare(right.name))
+  const visible = labelOptions(available.data ?? [], labels, search)
   const additionalReviewLabel = labels.find((label) => label.name === 'additional-review-needed')
 
   const setLabel = async (label: GitHubLabel, selected: boolean) => {
@@ -45,23 +56,17 @@ export function PullRequestLabels({
   }
 
   return (
-    <>
-      {error != null && !open && <span role="alert">{error}</span>}
-      {additionalReviewLabel != null && (
-        <button
-          type="button"
-          className="remove-additional-label-button"
-          disabled={busy}
-          onClick={() => void setLabel(additionalReviewLabel, false)}
-        >
-          {busy ? 'Updating…' : 'Remove addi. label'}
-        </button>
-      )}
+    <section className="pr-sidebar-section pr-sidebar-labels-section" aria-label="Pull request labels">
       <Popover.Root open={open} onOpenChange={(nextOpen) => {
         setOpen(nextOpen)
         if (nextOpen) setSearch('')
       }}>
-        <Popover.Trigger className="pr-draft-button">Labels</Popover.Trigger>
+        <div className="pr-label-section-heading">
+          <h2>Labels</h2>
+          <Popover.Trigger className="pr-edit-text-button" aria-label="Edit labels" title="Edit labels">
+            <Pencil size={16} />
+          </Popover.Trigger>
+        </div>
         <Popover.Portal>
           <Popover.Positioner sideOffset={8} align="end" className="popup-positioner">
             <Popover.Popup className="pr-label-popover">
@@ -104,6 +109,28 @@ export function PullRequestLabels({
           </Popover.Positioner>
         </Popover.Portal>
       </Popover.Root>
-    </>
+      {labels.length === 0
+        ? <p className="pr-sidebar-empty">No labels</p>
+        : (
+            <div className="pr-sidebar-labels">
+              {labels.map((label) => (
+                <span key={label.name} style={{ '--label-color': `#${label.color}` } as CSSProperties}>
+                  {label.name}
+                </span>
+              ))}
+            </div>
+          )}
+      {error != null && !open && <p role="alert">{error}</p>}
+      {additionalReviewLabel != null && (
+        <button
+          type="button"
+          className="remove-additional-label-button"
+          disabled={busy}
+          onClick={() => void setLabel(additionalReviewLabel, false)}
+        >
+          {busy ? 'Updating…' : 'Remove addi. label'}
+        </button>
+      )}
+    </section>
   )
 }

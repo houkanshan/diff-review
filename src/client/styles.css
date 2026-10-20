@@ -3319,6 +3319,9 @@ body.resizing-panels * {
 }
 .pr-sidebar-person strong { color: var(--text); font-weight: 600; }
 .pr-sidebar-person small { margin-top: 1px; color: var(--faint); font-size: 9px; }
+.pr-label-section-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.pr-label-section-heading h2 { margin: 0; }
+.pr-sidebar-labels-section > .remove-additional-label-button { margin-top: 10px; }
 .pr-sidebar-labels { display: flex; flex-wrap: wrap; gap: 6px; }
 .pr-sidebar-labels span {
   max-width: 100%;

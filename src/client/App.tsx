@@ -871,8 +871,6 @@ function PullRequestsPage({
               details={details}
               onViewChange={setPendingPullRequestView}
               onOpenPullRequestList={onOpenPullRequestList}
-              repositoryPath={route.repositoryPath}
-              onSetLabel={(label, selected) => savePullRequestLabel(details.number, label, selected)}
               currentRevision={false}
               reviewComments={[]}
               reviewReady={false}
@@ -904,6 +902,8 @@ function PullRequestsPage({
               <PullRequestConversation
                 key={details.number}
                 details={details}
+                repositoryPath={route.repositoryPath}
+                onSetLabel={(label, selected) => savePullRequestLabel(details.number, label, selected)}
                 onUpdateText={(changes) => savePullRequestText(details.number, changes)}
                 oldRevision={false}
                 resolvedTheme={resolvedTheme}
@@ -2174,8 +2174,6 @@ function ReviewWorkspace({
               details={pullRequest.details}
               onViewChange={switchPullRequestView}
               onOpenPullRequestList={onOpenPullRequestList}
-              repositoryPath={session.repositoryRoot}
-              onSetLabel={pullRequest.onSetLabel}
               currentRevision={session.id === pullRequest.currentSessionId}
               reviewComments={pendingReviewComments(session)}
               onSubmitReview={pullRequest.onSubmitReview}
@@ -2196,6 +2194,8 @@ function ReviewWorkspace({
               <PullRequestConversation
                 key={pullRequest.details.number}
                 details={pullRequest.details}
+                repositoryPath={session.repositoryRoot}
+                onSetLabel={pullRequest.onSetLabel}
                 onUpdateText={pullRequest.onUpdateText}
                 commits={pullRequest.commits}
                 oldRevision={session.id !== pullRequest.currentSessionId}
@@ -2969,8 +2969,6 @@ function PullRequestViewHeader({
   reviewReady = true,
   onViewChange,
   onOpenPullRequestList,
-  repositoryPath,
-  onSetLabel,
   onSubmitReview,
   onSetDraft,
   onSquashMerge,
@@ -2982,8 +2980,6 @@ function PullRequestViewHeader({
   reviewReady?: boolean
   onViewChange(view: PullRequestViewMode): void
   onOpenPullRequestList?(): void
-  repositoryPath: string
-  onSetLabel(label: GitHubLabel, selected: boolean): Promise<void>
   onSubmitReview(event: PullRequestReviewEvent, body: string): Promise<void>
   onSetDraft(isDraft: boolean): Promise<void>
   onSquashMerge(): Promise<void>
@@ -3063,11 +3059,6 @@ function PullRequestViewHeader({
         )}
         {draftError != null && <span role="alert">{draftError}</span>}
         {mergeError != null && <span role="alert">{mergeError}</span>}
-        <PullRequestLabels
-          repositoryPath={repositoryPath}
-          labels={details.labels}
-          onSetLabel={onSetLabel}
-        />
         {reviewReady && (
           <SubmitReviewPopover
             key={`${details.number}:${details.state}`}
@@ -3276,6 +3267,8 @@ function SubmitReviewPopover({
 
 function PullRequestConversation({
   details,
+  repositoryPath,
+  onSetLabel,
   commits = [],
   oldRevision,
   resolvedTheme,
@@ -3284,6 +3277,8 @@ function PullRequestConversation({
   onUpdateText,
 }: {
   details: PullRequestDetails
+  repositoryPath: string
+  onSetLabel(label: GitHubLabel, selected: boolean): Promise<void>
   commits?: CommitSummary[]
   oldRevision: boolean
   resolvedTheme: ResolvedTheme
@@ -3324,6 +3319,8 @@ function PullRequestConversation({
         <PullRequestSidebar
           key={`${details.number}:${details.checkStatus}`}
           details={details}
+          repositoryPath={repositoryPath}
+          onSetLabel={onSetLabel}
           commits={commits}
         />
         <div className="pr-overview-main">
@@ -3463,7 +3460,12 @@ function PullRequestCommentComposer({
   )
 }
 
-function PullRequestSidebar({ details, commits }: { details: PullRequestDetails; commits: CommitSummary[] }) {
+function PullRequestSidebar({ details, commits, repositoryPath, onSetLabel }: {
+  details: PullRequestDetails
+  commits: CommitSummary[]
+  repositoryPath: string
+  onSetLabel(label: GitHubLabel, selected: boolean): Promise<void>
+}) {
   const checksShouldOpen = details.checkStatus === 'fail' || details.checkStatus === 'pending'
   const [checksOpen, setChecksOpen] = useState(checksShouldOpen)
   const visibleChecks = details.checkStatus === 'fail'
@@ -3566,20 +3568,11 @@ function PullRequestSidebar({ details, commits }: { details: PullRequestDetails;
         emptyLabel="No assignees"
       />
 
-      <section className="pr-sidebar-section pr-sidebar-labels-section">
-        <h2>Labels</h2>
-        {details.labels.length === 0
-          ? <p className="pr-sidebar-empty">No labels</p>
-          : (
-              <div className="pr-sidebar-labels">
-                {details.labels.map((label) => (
-                  <span key={label.name} style={{ '--label-color': `#${label.color}` } as CSSProperties}>
-                    {label.name}
-                  </span>
-                ))}
-              </div>
-            )}
-      </section>
+      <PullRequestLabels
+        repositoryPath={repositoryPath}
+        labels={details.labels}
+        onSetLabel={onSetLabel}
+      />
       <PullRequestCommits commits={commits} pullRequestUrl={details.url} />
     </aside>
   )
