@@ -1840,6 +1840,33 @@ svg {
   box-shadow: 0 16px 45px var(--shadow);
 }
 
+.pr-label-popover {
+  width: min(320px, calc(100vw - 24px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  padding: 14px;
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--surface-raised);
+  box-shadow: 0 16px 45px var(--shadow);
+}
+.pr-label-popover h2 { margin: 0 0 12px; font-size: 14px; }
+.pr-label-popover > input {
+  width: 100%;
+  padding: 8px;
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface-inset);
+}
+.pr-label-options { max-height: 280px; overflow: auto; margin-top: 8px; }
+.pr-label-options label { display: flex; align-items: center; gap: 8px; padding: 8px 4px; cursor: pointer; }
+.pr-label-options label > span:last-child { overflow-wrap: anywhere; min-width: 0; }
+.pr-label-options label:hover { background: var(--surface-inset); }
+.pr-label-swatch { width: 10px; height: 10px; flex: none; border-radius: 50%; background: var(--label-color); }
+.pr-label-hint { margin: 12px 0 0; color: var(--muted); font-size: 11px; }
+
 .submit-review-popover > h2 {
   margin: 0 0 14px;
   font-size: 14px;

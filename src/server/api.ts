@@ -75,6 +75,8 @@ import {
   invalidatePullRequestDetailsCache,
   invalidatePullRequestListCache,
   listPullRequests,
+  listRepositoryLabels,
+  addPullRequestLabel,
   removePullRequestLabel,
   setPullRequestDraft,
   squashMergePullRequest,
@@ -237,6 +239,12 @@ export class ApiHandler {
       return
     }
 
+    if (method === 'GET' && url.pathname === '/api/labels') {
+      const root = await resolveRepository(requiredQuery(url, 'repositoryPath'))
+      sendJson(response, 200, await listRepositoryLabels(root))
+      return
+    }
+
     if (method === 'GET' && url.pathname === '/api/pull-requests') {
       const root = await resolveRepository(requiredQuery(url, 'repositoryPath'))
       const view = parsePullRequestListView(requiredQuery(url, 'view'))
@@ -290,14 +298,19 @@ export class ApiHandler {
       return
     }
 
-    if (method === 'DELETE' && pullRequestLabelMatch != null) {
+    if ((method === 'POST' || method === 'DELETE') && pullRequestLabelMatch != null) {
       const number = Number(pullRequestLabelMatch[1])
       const label = decodeURIComponent(pullRequestLabelMatch[2])
       const input = parseUpdatePullRequestLabelInput(await readJson(request))
       const root = await resolveRepository(input.repositoryPath)
-      await removePullRequestLabel(root, number, label)
-      invalidatePullRequestDetailsCache()
-      await invalidatePullRequestListCache(root)
+      try {
+        if (method === 'POST') await addPullRequestLabel(root, number, label)
+        else await removePullRequestLabel(root, number, label)
+      } finally {
+        // A timed-out mutation may still have been applied by GitHub.
+        invalidatePullRequestDetailsCache()
+        await invalidatePullRequestListCache(root)
+      }
       response.writeHead(204).end()
       return
     }

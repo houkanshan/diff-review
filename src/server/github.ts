@@ -556,6 +556,41 @@ function parseGitHubRepositoryUrl(value: string): { owner: string; name: string 
   return { owner: segments[0], name: segments[1] }
 }
 
+const repositoryLabelsCache = new Map<string, { expiresAt: number; labels: Promise<GitHubLabel[]> }>()
+
+export function listRepositoryLabels(root: string): Promise<GitHubLabel[]> {
+  const cached = repositoryLabelsCache.get(root)
+  if (cached != null && cached.expiresAt > Date.now()) return cached.labels
+  const labels = runGitHub(
+    ['api', '--paginate', '--slurp', 'repos/{owner}/{repo}/labels?per_page=100'],
+    root,
+    undefined,
+    'page',
+  ).then((output) => expectArray(parseJson(output, 'GitHub labels'))
+    .flatMap((page) => expectArray(page).map(parseLabel)))
+  const entry = { expiresAt: Date.now() + 5 * 60_000, labels }
+  repositoryLabelsCache.set(root, entry)
+  void labels.catch(() => {
+    if (repositoryLabelsCache.get(root) === entry) repositoryLabelsCache.delete(root)
+  })
+  return labels
+}
+
+export async function addPullRequestLabel(
+  root: string,
+  number: number,
+  label: string,
+): Promise<void> {
+  validatePullRequestNumber(number)
+  if (!label.trim()) throw new AppError('INVALID_PULL_REQUEST_LABEL', 'Label must not be empty')
+  await runGitHub(
+    ['api', '--method', 'POST', `repos/{owner}/{repo}/issues/${number}/labels`, '--input', '-'],
+    root,
+    JSON.stringify({ labels: [label] }),
+    'mutate',
+  )
+}
+
 export async function removePullRequestLabel(
   root: string,
   number: number,

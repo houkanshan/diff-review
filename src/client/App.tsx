@@ -124,6 +124,7 @@ import type {
   CommitSummary,
   DiffSide,
   GitHubIssueReference,
+  GitHubLabel,
   GitHubReviewer,
   GitHubUser,
   MinimizedCommentReason,
@@ -156,6 +157,7 @@ import {
   addAnnotation,
   addGlobalComment,
   addPullRequestComment,
+  addPullRequestLabel,
   archiveAllAnnotations,
   createSession,
   getFileContents,
@@ -223,6 +225,7 @@ import {
 import { PIERRE_COLLAPSED_CONTEXT_THRESHOLD } from './annotationPlacement'
 import { AnnotationStickyOverlay } from './AnnotationStickyOverlay'
 import { PullRequestCommits } from './PullRequestCommits'
+import { PullRequestLabels } from './PullRequestLabels'
 import { PullRequestTextEditor, PullRequestTextEditsProvider } from './PullRequestTextEditor'
 import { isModifiedSubmitEnter } from './textInputSubmit'
 
@@ -252,7 +255,7 @@ interface PullRequestWorkspaceContext {
   piStatus: PiReviewStatus
   onSelectRevision(sessionId: string, replace?: boolean): void
   onOpenCommit(commitId: string): Promise<void>
-  onRemoveAdditionalReviewLabel(): Promise<void>
+  onSetLabel(label: GitHubLabel, selected: boolean): Promise<void>
   onUpdateText(changes: Pick<UpdatePullRequestInput, 'title' | 'body'>): Promise<void>
   onAddComment(body: string, replyToId?: string | null): Promise<void>
   onSubmitReview(event: PullRequestReviewEvent, body: string): Promise<void>
@@ -599,6 +602,35 @@ function PullRequestsPage({
     ])
   }, [queryClient, route.repositoryPath])
 
+  const savePullRequestLabel = async (
+    pullRequestNumber: number,
+    label: GitHubLabel,
+    selected: boolean,
+  ): Promise<void> => {
+    const mutate = selected ? addPullRequestLabel : removePullRequestLabel
+    try {
+      await mutate(pullRequestNumber, label.name, { repositoryPath: route.repositoryPath })
+    } catch (error) {
+      void refreshPullRequestData(pullRequestNumber)
+      throw error
+    }
+    const updateLabels = (current: PullRequestDetails): PullRequestDetails => ({
+      ...current,
+      labels: selected
+        ? [...current.labels.filter((item) => item.name !== label.name), label]
+        : current.labels.filter((item) => item.name !== label.name),
+    })
+    queryClient.setQueryData<PullRequestDetails>(
+      ['pull-request-details', route.repositoryPath, pullRequestNumber],
+      (current) => current == null ? undefined : updateLabels(current),
+    )
+    queryClient.setQueriesData<PullRequestWorkspace>(
+      { queryKey: ['pull-request-workspace', route.repositoryPath, pullRequestNumber] },
+      (current) => current == null ? undefined : { ...current, details: updateLabels(current.details) },
+    )
+    void refreshPullRequestData(pullRequestNumber)
+  }
+
   const savePullRequestText = async (
     pullRequestNumber: number,
     changes: Pick<UpdatePullRequestInput, 'title' | 'body'>,
@@ -839,23 +871,8 @@ function PullRequestsPage({
               details={details}
               onViewChange={setPendingPullRequestView}
               onOpenPullRequestList={onOpenPullRequestList}
-              onRemoveAdditionalReviewLabel={async () => {
-                await removePullRequestLabel(
-                  details.number,
-                  'additional-review-needed',
-                  { repositoryPath: route.repositoryPath },
-                )
-                queryClient.setQueryData(
-                  ['pull-request-details', route.repositoryPath, details.number],
-                  (current: PullRequestDetails | undefined) => current == null ? undefined : ({
-                    ...current,
-                    labels: current.labels.filter(
-                      (label) => label.name !== 'additional-review-needed',
-                    ),
-                  }),
-                )
-                refreshPullRequestData(details.number)
-              }}
+              repositoryPath={route.repositoryPath}
+              onSetLabel={(label, selected) => savePullRequestLabel(details.number, label, selected)}
               currentRevision={false}
               reviewComments={[]}
               reviewReady={false}
@@ -1004,33 +1021,7 @@ function PullRequestsPage({
               })
               onOpenSession(next.id)
             },
-            onRemoveAdditionalReviewLabel: async () => {
-              await removePullRequestLabel(
-                details.number,
-                'additional-review-needed',
-                { repositoryPath: route.repositoryPath },
-              )
-              queryClient.setQueriesData<PullRequestWorkspace>(
-                { queryKey: ['pull-request-workspace', route.repositoryPath, details.number] },
-                (current) => current == null ? undefined : ({
-                  ...current,
-                  details: {
-                    ...current.details,
-                    labels: current.details.labels.filter(
-                      (label) => label.name !== 'additional-review-needed',
-                    ),
-                  },
-                }),
-              )
-              await Promise.all([
-                queryClient.invalidateQueries({
-                  queryKey: ['pull-request-workspace', route.repositoryPath, details.number],
-                }),
-                queryClient.invalidateQueries({
-                  queryKey: ['pull-requests', route.repositoryPath],
-                }),
-              ])
-            },
+            onSetLabel: (label, selected) => savePullRequestLabel(details.number, label, selected),
             onUpdateText: (changes) => savePullRequestText(details.number, changes),
             onAddComment: async (body, replyToId) => {
               await addPullRequestComment(details.number, {
@@ -2183,7 +2174,8 @@ function ReviewWorkspace({
               details={pullRequest.details}
               onViewChange={switchPullRequestView}
               onOpenPullRequestList={onOpenPullRequestList}
-              onRemoveAdditionalReviewLabel={pullRequest.onRemoveAdditionalReviewLabel}
+              repositoryPath={session.repositoryRoot}
+              onSetLabel={pullRequest.onSetLabel}
               currentRevision={session.id === pullRequest.currentSessionId}
               reviewComments={pendingReviewComments(session)}
               onSubmitReview={pullRequest.onSubmitReview}
@@ -2977,7 +2969,8 @@ function PullRequestViewHeader({
   reviewReady = true,
   onViewChange,
   onOpenPullRequestList,
-  onRemoveAdditionalReviewLabel,
+  repositoryPath,
+  onSetLabel,
   onSubmitReview,
   onSetDraft,
   onSquashMerge,
@@ -2989,33 +2982,18 @@ function PullRequestViewHeader({
   reviewReady?: boolean
   onViewChange(view: PullRequestViewMode): void
   onOpenPullRequestList?(): void
-  onRemoveAdditionalReviewLabel(): Promise<void>
+  repositoryPath: string
+  onSetLabel(label: GitHubLabel, selected: boolean): Promise<void>
   onSubmitReview(event: PullRequestReviewEvent, body: string): Promise<void>
   onSetDraft(isDraft: boolean): Promise<void>
   onSquashMerge(): Promise<void>
 }) {
-  const [labelBusy, setLabelBusy] = useState(false)
-  const [labelError, setLabelError] = useState<string | null>(null)
   const [draftBusy, setDraftBusy] = useState(false)
   const [draftError, setDraftError] = useState<string | null>(null)
   const [mergeBusy, setMergeBusy] = useState(false)
   const [mergeError, setMergeError] = useState<string | null>(null)
   const [mergeOpen, setMergeOpen] = useState(false)
   const mergeBlockedReason = squashMergeBlockedReason(details, currentRevision)
-  const hasAdditionalReviewLabel = details.labels.some(
-    (label) => label.name === 'additional-review-needed',
-  )
-  const removeAdditionalReviewLabel = async () => {
-    setLabelBusy(true)
-    setLabelError(null)
-    try {
-      await onRemoveAdditionalReviewLabel()
-    } catch (caught) {
-      setLabelError(caught instanceof Error ? caught.message : String(caught))
-    } finally {
-      setLabelBusy(false)
-    }
-  }
   const setDraft = async (isDraft: boolean) => {
     setDraftBusy(true)
     setDraftError(null)
@@ -3083,18 +3061,13 @@ function PullRequestViewHeader({
         {details.state === 'OPEN' && details.mergeable === 'CONFLICTING' && (
           <span className="merge-conflict-badge" role="status">Merge conflicts</span>
         )}
-        {labelError != null && <span role="alert">{labelError}</span>}
         {draftError != null && <span role="alert">{draftError}</span>}
         {mergeError != null && <span role="alert">{mergeError}</span>}
-        {hasAdditionalReviewLabel && (
-          <button
-            className="remove-additional-label-button"
-            disabled={labelBusy}
-            onClick={() => void removeAdditionalReviewLabel()}
-          >
-            {labelBusy ? 'Removing…' : 'Remove addi. label'}
-          </button>
-        )}
+        <PullRequestLabels
+          repositoryPath={repositoryPath}
+          labels={details.labels}
+          onSetLabel={onSetLabel}
+        />
         {reviewReady && (
           <SubmitReviewPopover
             key={`${details.number}:${details.state}`}

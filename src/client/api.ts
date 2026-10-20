@@ -7,6 +7,7 @@ import type {
   CreateSessionInput,
   DifftasticAvailability,
   DifftasticFileDiff,
+  GitHubLabel,
   OpenPullRequestInput,
   PiChatModelChoice,
   PiChatModelSettings,
@@ -97,6 +98,23 @@ export function openPullRequest(
     body: JSON.stringify(input),
     timeoutMs: GITHUB_OPEN_TIMEOUT_MS,
   })
+}
+
+export function getRepositoryLabels(repositoryPath: string): Promise<GitHubLabel[]> {
+  return request(`/api/labels?repositoryPath=${encodeURIComponent(repositoryPath)}`, {
+    timeoutMs: GITHUB_OPEN_TIMEOUT_MS,
+  })
+}
+
+export function addPullRequestLabel(
+  number: number,
+  label: string,
+  input: UpdatePullRequestLabelInput,
+): Promise<void> {
+  return request(
+    `/api/pull-requests/${number}/labels/${encodeURIComponent(label)}`,
+    { method: 'POST', body: JSON.stringify(input) },
+  )
 }
 
 export function removePullRequestLabel(
