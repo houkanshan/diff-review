@@ -2118,6 +2118,34 @@ svg {
   appearance: none;
 }
 
+.pr-exclusion-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.pr-exclusion-filters label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.pr-exclusion-filters input {
+  width: 11px;
+  height: 11px;
+  margin: 0;
+  accent-color: var(--text);
+}
+
+.pr-exclusion-filters > span {
+  flex-basis: 100%;
+  color: var(--faint);
+}
+
 .pr-view-tabs {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

@@ -42,6 +42,7 @@ import {
   readStoredPullRequestList,
   storePullRequestList,
 } from './pullRequestListCache'
+import { matchesPullRequestFilters, readPullRequestFilters } from './pullRequestFilters'
 import { useHotkey } from '@tanstack/react-hotkeys'
 import {
   MessageSquarePlus as AddCommentIcon,
@@ -2731,6 +2732,7 @@ function PullRequestRail({
   ]
   const [width, setWidth] = useState(() => storedPanelWidth('pr', 292, 220, 520))
   const [authorLogin, setAuthorLogin] = useState('')
+  const [filters, setFilters] = useState(readPullRequestFilters)
   const authors = useMemo(() => {
     const logins = new Set<string>()
     const next: string[] = []
@@ -2743,9 +2745,7 @@ function PullRequestRail({
     if (authorLogin !== '' && !logins.has(authorLogin)) next.unshift(authorLogin)
     return next
   }, [authorLogin, items])
-  const visibleItems = authorLogin === ''
-    ? items
-    : items.filter((item) => item.author.login === authorLogin)
+  const visibleItems = items.filter((item) => matchesPullRequestFilters(item, filters, authorLogin))
   return (
     <>
     <aside className="pr-rail" style={fill ? undefined : { width }}>
@@ -2795,6 +2795,33 @@ function PullRequestRail({
             )
           })}
         </div>
+        <div className="pr-exclusion-filters" aria-label="Pull request exclusions">
+          <label>
+            <input
+              type="checkbox"
+              checked={filters.excludeUserGuides}
+              onChange={(event) => {
+                const checked = event.target.checked
+                setFilters((current) => ({ ...current, excludeUserGuides: checked }))
+                writeStoredValue('diff-review-exclude-user-guides', String(checked))
+              }}
+            />
+            Exclude user guides
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={filters.excludeE2e}
+              onChange={(event) => {
+                const checked = event.target.checked
+                setFilters((current) => ({ ...current, excludeE2e: checked }))
+                writeStoredValue('diff-review-exclude-e2e', String(checked))
+              }}
+            />
+            Exclude E2E
+          </label>
+          <span>Your pull requests stay visible.</span>
+        </div>
       </div>
       <div className="pr-list">
         {items.length === 0 && error != null ? (
@@ -2804,7 +2831,7 @@ function PullRequestRail({
         ) : items.length === 0 ? (
           <div className="pr-list-message">No pull requests in this view.</div>
         ) : visibleItems.length === 0 ? (
-          <div className="pr-list-message">No pull requests by this author.</div>
+          <div className="pr-list-message">No pull requests match these filters.</div>
         ) : visibleItems.map((pullRequest) => (
           <button
             key={pullRequest.number}

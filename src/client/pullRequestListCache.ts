@@ -11,7 +11,7 @@ import type {
 } from '../shared/types'
 
 const STORAGE_PREFIX = 'diff-review-pull-requests:'
-const STORAGE_VERSION = 5
+const STORAGE_VERSION = 6
 
 const PULL_REQUEST_STATES = new Set<PullRequestState>(['OPEN', 'CLOSED', 'MERGED'])
 const CHECK_STATUSES = new Set<PullRequestCheckStatus>(['none', 'unknown', 'pending', 'pass', 'fail'])
@@ -96,6 +96,7 @@ function parsePullRequestSummary(value: unknown): PullRequestSummary | undefined
     typeof value.state !== 'string' ||
     !PULL_REQUEST_STATES.has(value.state as PullRequestState) ||
     typeof value.isDraft !== 'boolean' ||
+    typeof value.viewerDidAuthor !== 'boolean' ||
     typeof value.baseRefName !== 'string' ||
     typeof value.headRefName !== 'string' ||
     typeof value.additions !== 'number' ||
@@ -136,6 +137,7 @@ function parsePullRequestSummary(value: unknown): PullRequestSummary | undefined
     url: value.url,
     state: value.state as PullRequestState,
     isDraft: value.isDraft,
+    viewerDidAuthor: value.viewerDidAuthor,
     baseRefName: value.baseRefName,
     headRefName: value.headRefName,
     additions: value.additions,

@@ -298,6 +298,8 @@ export interface PullRequestSummary {
   createdAt: string
   updatedAt: string
   author: GitHubUser
+  /** Present on list summaries from the authenticated GitHub query. */
+  viewerDidAuthor?: boolean
   assignees: GitHubUser[]
   reviewers: GitHubReviewer[]
   labels: GitHubLabel[]

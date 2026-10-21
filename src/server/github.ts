@@ -313,7 +313,7 @@ function pullRequestListQuery(
     pullRequests(first: 20, states: ${states}${labels}${afterArg}, orderBy: {field: UPDATED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        number title url state isDraft baseRefName headRefName additions deletions createdAt updatedAt
+        number title url state isDraft viewerDidAuthor baseRefName headRefName additions deletions createdAt updatedAt
         author { login avatarUrl ... on User { name } }
         assignees(first: 100) { nodes { login name avatarUrl } }
         reviewRequests(first: 100) {
@@ -331,16 +331,19 @@ function pullRequestListQuery(
 
 function parseGraphQLPullRequestListNode(value: unknown): PullRequestSummary {
   const raw = expectObject(value)
-  return parsePullRequestSummary({
-    ...raw,
-    assignees: expectArray(optionalObject(raw.assignees)?.nodes),
-    reviewRequests: expectArray(optionalObject(raw.reviewRequests)?.nodes).flatMap((request) => {
-      const reviewer = optionalObject(request)?.requestedReviewer
-      return reviewer == null ? [] : [reviewer]
-    }),
-    latestReviews: expectArray(optionalObject(raw.latestReviews)?.nodes),
-    labels: expectArray(optionalObject(raw.labels)?.nodes),
-  }, parseCheckRollupState(checkRollupState(raw)))
+  return {
+    ...parsePullRequestSummary({
+      ...raw,
+      assignees: expectArray(optionalObject(raw.assignees)?.nodes),
+      reviewRequests: expectArray(optionalObject(raw.reviewRequests)?.nodes).flatMap((request) => {
+        const reviewer = optionalObject(request)?.requestedReviewer
+        return reviewer == null ? [] : [reviewer]
+      }),
+      latestReviews: expectArray(optionalObject(raw.latestReviews)?.nodes),
+      labels: expectArray(optionalObject(raw.labels)?.nodes),
+    }, parseCheckRollupState(checkRollupState(raw))),
+    viewerDidAuthor: expectBoolean(raw.viewerDidAuthor, 'viewerDidAuthor'),
+  }
 }
 
 const PULL_REQUEST_DETAILS_TTL_MS = 10_000
