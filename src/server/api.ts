@@ -1,5 +1,4 @@
 import { EventEmitter } from 'node:events'
-import { createReadStream, existsSync, statSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import path from 'node:path'
 import { ApiAuth } from './auth.js'
@@ -93,6 +92,7 @@ import {
 } from './jev.js'
 import { PiReviewRunner } from './pi.js'
 import { ReviewStore } from './store.js'
+import { serveStaticClient } from './staticClient.js'
 
 const JSON_BODY_LIMIT = 2 * 1024 * 1024
 const AVATAR_BODY_LIMIT = 5 * 1024 * 1024
@@ -158,7 +158,7 @@ export class ApiHandler {
         await this.handleApi(request, response, url)
         return
       }
-      this.serveClient(response, url.pathname)
+      await this.serveClient(request, response, url.pathname)
     } catch (error) {
       this.sendError(response, error)
     }
@@ -1092,7 +1092,7 @@ export class ApiHandler {
     )
   }
 
-  private serveClient(response: ServerResponse, pathname: string): void {
+  private async serveClient(request: IncomingMessage, response: ServerResponse, pathname: string): Promise<void> {
     if (this.clientDirectory == null) {
       sendJson(response, 503, {
         error: {
@@ -1103,17 +1103,7 @@ export class ApiHandler {
       return
     }
 
-    const requested = pathname === '/' ? 'index.html' : pathname.replace(/^\//, '')
-    const candidate = path.resolve(this.clientDirectory, requested)
-    const safeCandidate = candidate.startsWith(`${this.clientDirectory}${path.sep}`)
-      ? candidate
-      : path.join(this.clientDirectory, 'index.html')
-    const filePath =
-      existsSync(safeCandidate) && statSync(safeCandidate).isFile()
-        ? safeCandidate
-        : path.join(this.clientDirectory, 'index.html')
-    response.writeHead(200, { 'Content-Type': mimeType(filePath) })
-    createReadStream(filePath).pipe(response)
+    await serveStaticClient(request, response, this.clientDirectory, pathname)
   }
 
   private sendError(response: ServerResponse, error: unknown): void {
@@ -1655,21 +1645,4 @@ async function fetchGitHubAttachment(url: URL): Promise<CachedMedia> {
     throw new AppError('GITHUB_ATTACHMENT_TOO_LARGE', 'GitHub attachment exceeds 100 MiB', 502)
   }
   return { body, contentType }
-}
-
-function mimeType(filePath: string): string {
-  switch (path.extname(filePath)) {
-    case '.html':
-      return 'text/html; charset=utf-8'
-    case '.js':
-      return 'text/javascript; charset=utf-8'
-    case '.css':
-      return 'text/css; charset=utf-8'
-    case '.svg':
-      return 'image/svg+xml'
-    case '.woff2':
-      return 'font/woff2'
-    default:
-      return 'application/octet-stream'
-  }
 }

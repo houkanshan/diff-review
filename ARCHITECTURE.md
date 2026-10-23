@@ -39,6 +39,8 @@ An independent HTTPS proxy may expose the loopback daemon only with a token and 
 
 Build: Vite → `dist/client`; `tsc` (`tsconfig.server.json`) → `dist/node`. Production daemon serves both API and static client. Dev: Vite `:5173` proxies `/api` to the daemon.
 
+**Static delivery.** After the existing host/proxy security checks, `staticClient.ts` serves GET/HEAD with representation-specific ETags and conditional 304 responses. Content-hashed `/assets/` files use a one-year immutable browser cache; HTML, SPA routes and unversioned files use `no-cache` (revalidate before reuse). Vite generates Brotli/gzip sidecars for compressible build output; the daemon negotiates `Accept-Encoding` with `Vary` and streams the selected file without request-time compression or an application memory cache. Missing asset/file paths return uncached 404s, not SPA HTML. API, authentication and protected media retain `no-store`; static caching never bypasses the authorization boundary. Old tabs may need a reload after a build removes their lazy-loaded chunks.
+
 ## Core data
 
 `ReviewTarget` is one of: `worktree`, `branch-worktree`, `unstaged`, `staged`, `{ kind: 'range'; expression }`, `{ kind: 'pr'; number }`.
