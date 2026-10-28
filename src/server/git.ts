@@ -4,6 +4,7 @@ import { lstat, readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
 
 import {
+  type CommitStats,
   type CommitSummary,
   isLocalChangesOid,
   localChangesCommit,
@@ -589,28 +590,48 @@ async function listCommits(
   newRevision: string,
 ): Promise<CommitSummary[]> {
   const result = await runGit(root, [
+    '-c',
+    'core.quotePath=false',
     'log',
     '--first-parent',
+    '--diff-merges=first-parent',
+    '--root',
+    '--find-renames',
+    '--no-ext-diff',
+    '--numstat',
     '--reverse',
     '--date=iso-strict',
-    '--format=%H%x00%h%x00%s%x00%an%x00%cI%x1e',
+    '--format=%x1e%H%x00%h%x00%s%x00%an%x00%cI',
     `${oldRevision}..${newRevision}`,
   ])
 
   return result.stdout
     .split('\x1e')
-    .map((record) => record.replace(/^\n+|\n+$/g, ''))
-    .filter(Boolean)
+    .filter((record) => record.trim() !== '')
     .map((record) => {
-      const [oid, abbreviated, subject, author, authoredAt] = record.split('\x00')
+      const [header = '', ...statLines] = record.split('\n')
+      const [oid, abbreviated, subject, author, authoredAt] = header.split('\x00')
       return {
         oid: oid ?? '',
         shortOid: abbreviated ?? '',
         subject: subject ?? '',
         author: author ?? '',
         authoredAt: authoredAt ?? '',
+        stats: parseNumstat(statLines),
       }
     })
+}
+
+/** Sums `--numstat` lines; binary files (`-\t-`) contribute zero lines. */
+function parseNumstat(lines: string[]): CommitStats {
+  const stats: CommitStats = { additions: 0, deletions: 0 }
+  for (const line of lines) {
+    const match = /^(\d+|-)\t(\d+|-)\t/.exec(line)
+    if (match == null) continue
+    if (match[1] !== '-') stats.additions += Number(match[1])
+    if (match[2] !== '-') stats.deletions += Number(match[2])
+  }
+  return stats
 }
 
 async function gitDiff(

@@ -98,6 +98,54 @@ describe('Git review targets', () => {
     }
   })
 
+  test('lists per-commit line stats against the first parent', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-stats-'))
+    const repository = path.join(directory, 'repo')
+    try {
+      mkdirSync(repository)
+      git(repository, ['init', '-b', 'main'])
+      git(repository, ['config', 'user.name', 'Diff Reviewer'])
+      git(repository, ['config', 'user.email', 'reviewer@example.com'])
+      const lines = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`)
+      writeFileSync(path.join(repository, 'old-name.txt'), `${lines.join('\n')}\n`)
+      writeFileSync(path.join(repository, 'notes.txt'), 'a\nb\n')
+      git(repository, ['add', '.'])
+      git(repository, ['commit', '-m', 'root'])
+
+      git(repository, ['mv', 'old-name.txt', 'new-name.txt'])
+      writeFileSync(path.join(repository, 'new-name.txt'), `${[...lines.slice(0, -1), 'changed'].join('\n')}\n`)
+      git(repository, ['add', '.'])
+      git(repository, ['commit', '-m', 'rename'])
+
+      writeFileSync(path.join(repository, 'image.bin'), Buffer.from([0, 1, 2, 3, 0, 255]))
+      writeFileSync(path.join(repository, 'notes.txt'), 'a\nb\nc\n')
+      git(repository, ['add', '.'])
+      git(repository, ['commit', '-m', 'binary'])
+
+      git(repository, ['commit', '--allow-empty', '-m', 'empty'])
+
+      git(repository, ['switch', '-c', 'side', 'HEAD~1'])
+      writeFileSync(path.join(repository, 'side.txt'), 'one\ntwo\nthree\n')
+      git(repository, ['add', 'side.txt'])
+      git(repository, ['commit', '-m', 'side'])
+      git(repository, ['switch', 'main'])
+      git(repository, ['merge', '--no-ff', 'side', '-m', 'merge side'])
+
+      const rootOid = git(repository, ['rev-list', '--max-parents=0', 'HEAD']).trim()
+      const review = await resolveCommitSpan(repository, rootOid, 'HEAD')
+
+      expect(review.commits.map((commit) => [commit.subject, commit.stats])).toEqual([
+        ['root', { additions: 22, deletions: 0 }],
+        ['rename', { additions: 1, deletions: 1 }],
+        ['binary', { additions: 1, deletions: 0 }],
+        ['empty', { additions: 0, deletions: 0 }],
+        ['merge side', { additions: 3, deletions: 0 }],
+      ])
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   test('can omit whitespace-only changes from a review', async () => {
     const review = await resolveTarget(
       fixture.repository,

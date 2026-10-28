@@ -130,12 +130,23 @@ export type PiChatEvent = {
 
 export type ServerEvent = SessionUpdatedEvent | PiChatEvent
 
+export interface CommitStats {
+  additions: number
+  deletions: number
+}
+
 export interface CommitSummary {
   oid: string
   shortOid: string
   subject: string
   author: string
   authoredAt: string
+  /**
+   * Line counts against the first parent (empty tree for root commits), with
+   * rename detection; binary files count as zero lines. Absent for local changes
+   * and for sessions persisted before stats existed.
+   */
+  stats?: CommitStats
 }
 
 export const LOCAL_CHANGES_OID = 'local-changes'

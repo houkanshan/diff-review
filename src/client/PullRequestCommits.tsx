@@ -1,4 +1,5 @@
 import type { CommitSummary } from '../shared/types'
+import { CommitStatsLabel } from './CommitStatsLabel'
 import { formatTimestamp, relativeTime } from './time'
 
 export function PullRequestCommits({
@@ -21,6 +22,7 @@ export function PullRequestCommits({
           <code>{commit.shortOid}</code>
         </a>
         <span className="pr-sidebar-commit-author" title={commit.author}>{commit.author}</span>
+        <CommitStatsLabel commit={commit} />
         {commit.authoredAt !== '' && (
           <time dateTime={commit.authoredAt} title={formatTimestamp(commit.authoredAt)}>
             {relativeTime(commit.authoredAt)}

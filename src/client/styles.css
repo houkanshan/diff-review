@@ -1224,6 +1224,12 @@ svg {
   flex: none;
 }
 
+.commit-option-copy small .commit-stats,
+.commit-option-copy small .commit-stats span {
+  flex: none;
+  overflow: visible;
+}
+
 .commit-option-copy code {
   color: var(--accent);
 }
@@ -2316,6 +2322,7 @@ svg {
 }
 .addition { color: var(--green); }
 .deletion { color: var(--red); }
+.commit-stats { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .modification { color: var(--accent); }
 
 .pr-list-message {
@@ -3143,6 +3150,7 @@ body.resizing-panels * {
 .pr-sidebar-commit-meta code { font-family: var(--font-mono); font-size: inherit; }
 .pr-sidebar-commit-author { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pr-sidebar-commit-meta time { flex-shrink: 0; margin-left: auto; color: var(--faint); }
+.pr-sidebar-commit-meta .commit-stats { flex-shrink: 0; white-space: nowrap; }
 .pr-sidebar-commit-middle > summary {
   color: var(--blue);
   font-size: 11px;

@@ -226,6 +226,7 @@ import {
 import { PIERRE_COLLAPSED_CONTEXT_THRESHOLD } from './annotationPlacement'
 import { AnnotationStickyOverlay } from './AnnotationStickyOverlay'
 import { PullRequestCommits } from './PullRequestCommits'
+import { CommitStatsLabel } from './CommitStatsLabel'
 import { PullRequestLabels } from './PullRequestLabels'
 import { PullRequestTextEditor, PullRequestTextEditsProvider } from './PullRequestTextEditor'
 import { isModifiedSubmitEnter } from './textInputSubmit'
@@ -4783,6 +4784,7 @@ function CommitPicker({
                         <small>
                           <code>{commit.shortOid}</code>
                           <span>{commit.author}</span>
+                          <CommitStatsLabel commit={commit} />
                           {commit.authoredAt !== '' && (
                             <time dateTime={commit.authoredAt} title={formatTimestamp(commit.authoredAt)}>
                               {relativeTimeAgo(commit.authoredAt)}

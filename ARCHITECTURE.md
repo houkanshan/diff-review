@@ -45,7 +45,7 @@ Build: Vite → `dist/client`; `tsc` (`tsconfig.server.json`) → `dist/node`. P
 
 `ReviewTarget` is one of: `worktree`, `branch-worktree`, `unstaged`, `staged`, `{ kind: 'range'; expression }`, `{ kind: 'pr'; number }`.
 
-`resolveTarget()` produces a `ResolvedReview`: label, git command, unified `patch`, old/new `SnapshotRef` (`commit` | `index` | `worktree`), and commits.
+`resolveTarget()` produces a `ResolvedReview`: label, git command, unified `patch`, old/new `SnapshotRef` (`commit` | `index` | `worktree`), and commits. Each `CommitSummary` carries optional `stats` (`+additions −deletions` against the first parent, empty tree for root commits, binary files as zero lines), computed in the same `git log` call; sessions persisted before stats existed omit it and the UI hides the counts.
 
 `ReviewSession` stores that patch plus `target`, `revisionBaseOid` / `revisionHeadOid`, `annotations`, `viewedFiles`, and commit selection.
 

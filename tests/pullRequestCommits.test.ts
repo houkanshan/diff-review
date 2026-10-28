@@ -65,6 +65,19 @@ describe('Pull request sidebar commits', () => {
     expect(markup).toContain(`${pullRequestUrl}/commits/${'1'.padStart(40, '0')}`)
   })
 
+  test('shows per-commit additions and deletions with the established colors', () => {
+    const markup = render([{ ...commits(1)[0], stats: { additions: 12, deletions: 3 } }])
+    expect(markup).toContain('<span class="addition">+12</span>')
+    expect(markup).toContain('<span class="deletion">−3</span>')
+    expect(markup).toContain('title="12 lines added, 3 lines deleted"')
+  })
+
+  test('omits line stats for commits persisted before stats existed', () => {
+    const markup = render(commits(1))
+    expect(markup).not.toContain('commit-stats')
+    expect(markup).toContain('Ada Lovelace')
+  })
+
   test('does not render an invalid time when a commit has no timestamp', () => {
     expect(render([{ ...commits(1)[0], authoredAt: '' }])).not.toContain('<time')
   })
