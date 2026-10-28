@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { runCommand } from './command.js'
+import { CommitStatsCache } from './commitStatsCache.js'
 import { lstat, readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
 
@@ -584,6 +585,9 @@ async function firstParentOrEmptyTree(root: string, revision: string): Promise<s
   return (await runGit(root, ['hash-object', '-t', 'tree', '/dev/null'])).stdout.trim()
 }
 
+const commitStatsCache = new CommitStatsCache()
+const STATS_BATCH_SIZE = 128
+
 async function listCommits(
   root: string,
   oldRevision: string,
@@ -599,38 +603,52 @@ async function listCommits(
     '--format=%x1e%H%x00%h%x00%s%x00%an%x00%cI',
     `${oldRevision}..${newRevision}`,
   ]
-  let output: string
-  let includeStats = true
-  try {
-    output = (await runGit(root, [
-      ...logArgs,
-      '--diff-merges=first-parent',
-      '--root',
-      '--find-renames',
-      '--no-ext-diff',
-      '--numstat',
-    ])).stdout
-  } catch {
-    // Optional stats may need missing intermediate blobs even when the review diff is usable.
-    output = (await runGit(root, logArgs)).stdout
-    includeStats = false
-  }
-
-  return output
+  const output = (await runGit(root, logArgs)).stdout
+  const commits: CommitSummary[] = output
     .split('\x1e')
     .filter((record) => record.trim() !== '')
     .map((record) => {
-      const [header = '', ...statLines] = record.split('\n')
+      const [header = ''] = record.split('\n')
       const [oid, abbreviated, subject, author, authoredAt] = header.split('\x00')
+      const stats = commitStatsCache.get(root, oid ?? '')
       return {
         oid: oid ?? '',
         shortOid: abbreviated ?? '',
         subject: subject ?? '',
         author: author ?? '',
         authoredAt: authoredAt ?? '',
-        ...(includeStats ? { stats: parseNumstat(statLines) } : {}),
+        ...(stats != null ? { stats } : {}),
       }
     })
+
+  const missing = commits.filter((commit) => commit.stats == null)
+  // Keep stats on this request's summaries: a history can exceed the global LRU capacity.
+  for (let start = 0; start < missing.length; start += STATS_BATCH_SIZE) {
+    const batch = missing.slice(start, start + STATS_BATCH_SIZE)
+    try {
+      const result = await runGit(root, [
+        '-c', 'core.quotePath=false', 'log',
+        '--no-walk=unsorted', '--format=%x1e%H',
+        '--numstat', '--root', '--diff-merges=first-parent',
+        '--find-renames', '--no-ext-diff',
+        ...batch.map((commit) => commit.oid), '--',
+      ])
+      const statsByOid = new Map<string, CommitStats>()
+      for (const record of result.stdout.split('\x1e').slice(1)) {
+        const [oid = '', ...lines] = record.split('\n')
+        statsByOid.set(oid, parseNumstat(lines))
+      }
+      for (const commit of batch) {
+        const stats = statsByOid.get(commit.oid)
+        if (stats == null) continue
+        commit.stats = stats
+        commitStatsCache.set(root, commit.oid, stats)
+      }
+    } catch {
+      // Optional stats may need missing blobs; preserve metadata and retry on the next request.
+    }
+  }
+  return commits
 }
 
 /** Sums `--numstat` lines; binary files (`-\t-`) contribute zero lines. */
