@@ -13,6 +13,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
@@ -28,6 +29,7 @@ afterEach(() => vi.unstubAllEnvs())
 import {
   getRepositoryInfo,
   resolveCommitSpan,
+  resolvePinnedCommitDiff,
   resolveSelectedSpan,
   rerenderCommitReview,
   listMergeConflictFiles,
@@ -141,6 +143,54 @@ describe('Git review targets', () => {
         ['empty', { additions: 0, deletions: 0 }],
         ['merge side', { additions: 3, deletions: 0 }],
       ])
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test('opens pinned reviews offline when only intermediate commit blobs are missing', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-blobless-stats-'))
+    const source = path.join(directory, 'source')
+    const clone = path.join(directory, 'clone')
+    try {
+      mkdirSync(source)
+      git(source, ['init', '-b', 'main'])
+      git(source, ['config', 'user.name', 'Diff Reviewer'])
+      git(source, ['config', 'user.email', 'reviewer@example.com'])
+      git(source, ['config', 'uploadpack.allowFilter', 'true'])
+      const revisions: string[] = []
+      for (const subject of ['base', 'intermediate', 'head']) {
+        writeFileSync(path.join(source, 'file.txt'), `${subject}\n`)
+        git(source, ['add', '.'])
+        git(source, ['commit', '-m', subject])
+        revisions.push(git(source, ['rev-parse', 'HEAD']).trim())
+      }
+      const [base, intermediate, head] = revisions as [string, string, string]
+      git(source, ['clone', '--no-checkout', '--filter=blob:none', pathToFileURL(source).href, clone])
+      // Fetch endpoint blobs only, then make the promisor remote unavailable.
+      expect(git(clone, ['cat-file', 'blob', `${base}:file.txt`])).toBe('base\n')
+      expect(git(clone, ['cat-file', 'blob', `${head}:file.txt`])).toBe('head\n')
+      git(clone, ['config', 'remote.origin.url', path.join(directory, 'unavailable')])
+      const missingBlob = git(source, ['rev-parse', `${intermediate}:file.txt`]).trim()
+      expect(() => git(clone, ['cat-file', '-e', missingBlob])).toThrow()
+      expect(git(clone, ['diff', base, head])).toContain('+head')
+      expect(git(clone, ['log', '--format=%s', `${base}..${head}`])).toBe('head\nintermediate\n')
+
+      const review = await resolvePinnedCommitDiff(clone, base, head)
+
+      expect(review.patch).toContain('-base')
+      expect(review.patch).toContain('+head')
+      expect(review.oldSnapshot).toEqual({ kind: 'commit', id: base })
+      expect(review.newSnapshot).toEqual({ kind: 'commit', id: head })
+      expect(review.commits.map(({ oid, subject, author, authoredAt }) => ({ oid, subject, author, authoredAt }))).toEqual([
+        { oid: intermediate, subject: 'intermediate', author: 'Diff Reviewer', authoredAt: expect.any(String) },
+        { oid: head, subject: 'head', author: 'Diff Reviewer', authoredAt: expect.any(String) },
+      ])
+      for (const commit of review.commits) {
+        expect(commit.shortOid).not.toBe('')
+        expect(commit.authoredAt).not.toBe('')
+        expect(Object.hasOwn(commit, 'stats')).toBe(false)
+      }
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }

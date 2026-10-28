@@ -589,23 +589,34 @@ async function listCommits(
   oldRevision: string,
   newRevision: string,
 ): Promise<CommitSummary[]> {
-  const result = await runGit(root, [
+  const logArgs = [
     '-c',
     'core.quotePath=false',
     'log',
     '--first-parent',
-    '--diff-merges=first-parent',
-    '--root',
-    '--find-renames',
-    '--no-ext-diff',
-    '--numstat',
     '--reverse',
     '--date=iso-strict',
     '--format=%x1e%H%x00%h%x00%s%x00%an%x00%cI',
     `${oldRevision}..${newRevision}`,
-  ])
+  ]
+  let output: string
+  let includeStats = true
+  try {
+    output = (await runGit(root, [
+      ...logArgs,
+      '--diff-merges=first-parent',
+      '--root',
+      '--find-renames',
+      '--no-ext-diff',
+      '--numstat',
+    ])).stdout
+  } catch {
+    // Optional stats may need missing intermediate blobs even when the review diff is usable.
+    output = (await runGit(root, logArgs)).stdout
+    includeStats = false
+  }
 
-  return result.stdout
+  return output
     .split('\x1e')
     .filter((record) => record.trim() !== '')
     .map((record) => {
@@ -617,7 +628,7 @@ async function listCommits(
         subject: subject ?? '',
         author: author ?? '',
         authoredAt: authoredAt ?? '',
-        stats: parseNumstat(statLines),
+        ...(includeStats ? { stats: parseNumstat(statLines) } : {}),
       }
     })
 }
