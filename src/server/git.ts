@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { runCommand } from './command.js'
 import { CommitStatsCache } from './commitStatsCache.js'
+import { beginStatsContext, type StatsDependencies } from './commitStatsContext.js'
 import { lstat, readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
 
@@ -585,7 +586,8 @@ async function firstParentOrEmptyTree(root: string, revision: string): Promise<s
   return (await runGit(root, ['hash-object', '-t', 'tree', '/dev/null'])).stdout.trim()
 }
 
-const commitStatsCache = new CommitStatsCache()
+export type CachedCommitStats = { stats: CommitStats; context: string; dependencies: StatsDependencies }
+const commitStatsCache = new CommitStatsCache<CachedCommitStats>()
 const STATS_BATCH_SIZE = 128
 
 async function listCommits(
@@ -610,17 +612,23 @@ async function listCommits(
     .map((record) => {
       const [header = ''] = record.split('\n')
       const [oid, abbreviated, subject, author, authoredAt] = header.split('\x00')
-      const stats = commitStatsCache.get(root, oid ?? '')
       return {
         oid: oid ?? '',
         shortOid: abbreviated ?? '',
         subject: subject ?? '',
         author: author ?? '',
         authoredAt: authoredAt ?? '',
-        ...(stats != null ? { stats } : {}),
       }
     })
 
+  if (commits.length === 0) return commits
+  const context = await beginStatsContext(root, runGit)
+  const candidates = commits.map((commit) => ({ commit, cached: commitStatsCache.get(root, commit.oid) }))
+    .filter(({ cached }) => context && cached?.context === context.token)
+  // Validate the union once, not the same ancestor files for every commit.
+  if (context && candidates.length && await context.unchanged(candidates.map(({ cached }) => cached!.dependencies))) {
+    for (const { commit, cached } of candidates) commit.stats = cached!.stats
+  }
   const missing = commits.filter((commit) => commit.stats == null)
   // Keep stats on this request's summaries: a history can exceed the global LRU capacity.
   for (let start = 0; start < missing.length; start += STATS_BATCH_SIZE) {
@@ -628,21 +636,23 @@ async function listCommits(
     try {
       const result = await runGit(root, [
         '-c', 'core.quotePath=false', 'log',
-        '--no-walk=unsorted', '--format=%x1e%H',
-        '--numstat', '--root', '--diff-merges=first-parent',
+        '--no-walk=unsorted', '--format=%H',
+        '--numstat', '-z', '--root', '--diff-merges=first-parent',
         '--find-renames', '--no-ext-diff',
         ...batch.map((commit) => commit.oid), '--',
       ])
-      const statsByOid = new Map<string, CommitStats>()
-      for (const record of result.stdout.split('\x1e').slice(1)) {
-        const [oid = '', ...lines] = record.split('\n')
-        statsByOid.set(oid, parseNumstat(lines))
-      }
+      const statsByOid = parseNumstat(result.stdout)
       for (const commit of batch) {
-        const stats = statsByOid.get(commit.oid)
-        if (stats == null) continue
-        commit.stats = stats
-        commitStatsCache.set(root, commit.oid, stats)
+        const parsed = statsByOid.get(commit.oid)
+        if (parsed) commit.stats = parsed.stats
+      }
+      const dependencies = context && await context.dependencies([...statsByOid.values()].flatMap(({ files }) => files))
+      if (context && dependencies && await context.unchanged([dependencies])) {
+        for (const commit of batch) {
+          if (commit.stats) commitStatsCache.set(root, commit.oid, {
+            stats: commit.stats, context: context.token, dependencies,
+          })
+        }
       }
     } catch {
       // Optional stats may need missing blobs; preserve metadata and retry on the next request.
@@ -652,15 +662,25 @@ async function listCommits(
 }
 
 /** Sums `--numstat` lines; binary files (`-\t-`) contribute zero lines. */
-function parseNumstat(lines: string[]): CommitStats {
-  const stats: CommitStats = { additions: 0, deletions: 0 }
-  for (const line of lines) {
-    const match = /^(\d+|-)\t(\d+|-)\t/.exec(line)
-    if (match == null) continue
-    if (match[1] !== '-') stats.additions += Number(match[1])
-    if (match[2] !== '-') stats.deletions += Number(match[2])
+function parseNumstat(output: string): Map<string, { stats: CommitStats; files: string[] }> {
+  const records = output.split('\x00')
+  const result = new Map<string, { stats: CommitStats; files: string[] }>()
+  let current: { stats: CommitStats; files: string[] } | undefined
+  for (let index = 0; index < records.length; index++) {
+    const record = records[index]!.replace(/^\n/, '')
+    if (/^[0-9a-f]{40,64}$/.test(record)) {
+      current = { stats: { additions: 0, deletions: 0 }, files: [] }
+      result.set(record, current)
+      continue
+    }
+    const match = /^(\d+|-)\t(\d+|-)\t([\s\S]*)$/.exec(record)
+    if (!match || !current) continue
+    if (match[1] !== '-') current.stats.additions += Number(match[1])
+    if (match[2] !== '-') current.stats.deletions += Number(match[2])
+    if (match[3] === '') current.files.push(records[++index]!, records[++index]!)
+    else current.files.push(match[3]!)
   }
-  return stats
+  return result
 }
 
 async function gitDiff(

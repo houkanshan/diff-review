@@ -1,12 +1,12 @@
 import type { CommitStats } from '../shared/types.js'
 
-/** Process-local LRU of immutable commit stats, isolated by canonical repository root. */
-export class CommitStatsCache {
-  private readonly entries = new Map<string, CommitStats>()
+/** Process-local bounded LRU, isolated by canonical repository root. */
+export class CommitStatsCache<T = CommitStats> {
+  private readonly entries = new Map<string, T>()
 
   constructor(private readonly capacity = 5000) {}
 
-  get(root: string, oid: string): CommitStats | undefined {
+  get(root: string, oid: string): T | undefined {
     const key = `${root}\x00${oid}`
     const stats = this.entries.get(key)
     if (stats !== undefined) {
@@ -16,7 +16,7 @@ export class CommitStatsCache {
     return stats
   }
 
-  set(root: string, oid: string, stats: CommitStats): void {
+  set(root: string, oid: string, stats: T): void {
     const key = `${root}\x00${oid}`
     this.entries.delete(key)
     this.entries.set(key, stats)
