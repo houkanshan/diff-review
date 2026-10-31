@@ -5,6 +5,7 @@ import { annotationThreads } from '../shared/annotationThreads'
 import type { SessionAnnotation } from '../shared/types'
 import { fileIdForAnnotation, stickyOverlayIdsAtom } from './annotationComposer'
 import {
+  dockedCardBottom,
   measurePierreColumnLeft,
   measurePierreRangeGeometry,
   measureStickyCardBox,
@@ -33,6 +34,8 @@ export function AnnotationStickyOverlay({
   const boxes = useRef(new Map<string, { left: number; width: number; bottom: number }>())
   const nodes = useRef(new Map<string, HTMLElement>())
   const setOverlayIds = useSetAtom(stickyOverlayIdsAtom)
+  const scheduleSync = useRef<() => void>(() => {})
+  const resizeObserver = useRef<ResizeObserver | null>(null)
 
   useLayoutEffect(() => {
     if (scroller == null) return
@@ -45,6 +48,8 @@ export function AnnotationStickyOverlay({
         startLine: number
         endLine: number
       }> = []
+      const rangeStartBottoms = new Map<string, number>()
+      let viewportBottom = scroller.clientHeight
       const visible = annotations.filter((annotation) =>
         annotation.comment != null &&
         annotation.archivedAt == null &&
@@ -64,6 +69,8 @@ export function AnnotationStickyOverlay({
         const inDoc = measureStickyCardBox(scroller, root.id)
         const height = inDoc?.height ?? nodes.current.get(root.id)?.offsetHeight ?? DEFAULT_CARD_HEIGHT
         if (stickyOverlayMode(geometry, height, inDoc?.top ?? null) !== 'dock') continue
+        rangeStartBottoms.set(root.id, geometry.startBottom)
+        viewportBottom = geometry.viewportBottom
         candidates.push({
           id: root.id,
           fileId,
@@ -72,9 +79,9 @@ export function AnnotationStickyOverlay({
           endLine: root.endLine,
         })
       }
-      const nextIds = selectDockedAnnotationIds(candidates)
-      let bottom = 0
-      for (const id of nextIds) {
+      const nextIds: string[] = []
+      let stackBottom: number | null = null
+      for (const id of selectDockedAnnotationIds(candidates)) {
         const root = visible.find((annotation) => annotation.id === id)
         if (root == null) continue
         const fileId = fileIdForAnnotation(root, files)
@@ -85,10 +92,19 @@ export function AnnotationStickyOverlay({
           measurePierreColumnLeft(scroller, fileId, root.endSide ?? root.side)
             ?? measurePierreColumnLeft(scroller, fileId, root.side),
         )
-        boxes.current.set(root.id, { left: box.left, width: box.width, bottom })
         const node = nodes.current.get(root.id)
+        const height = node?.offsetHeight ?? inDoc?.height ?? DEFAULT_CARD_HEIGHT
+        const bottom = dockedCardBottom(
+          rangeStartBottoms.get(root.id) ?? Number.NEGATIVE_INFINITY,
+          viewportBottom,
+          stackBottom,
+          height,
+        )
+        if (bottom == null || bottom + height <= 0) continue
+        nextIds.push(root.id)
+        boxes.current.set(root.id, { left: box.left, width: box.width, bottom })
         if (node != null) applyBox(node, box.left, box.width, bottom)
-        bottom += (node?.offsetHeight ?? DEFAULT_CARD_HEIGHT) + 8
+        stackBottom = bottom + height + 8
       }
       setIds((current) => idsEqual(current, nextIds) ? current : nextIds)
       setOverlayIds((current: ReadonlySet<string>) =>
@@ -102,6 +118,7 @@ export function AnnotationStickyOverlay({
         sync()
       })
     }
+    scheduleSync.current = schedule
     sync()
     scroller.addEventListener('scroll', schedule, { passive: true })
     window.addEventListener('resize', schedule)
@@ -109,6 +126,7 @@ export function AnnotationStickyOverlay({
       if (frame !== 0) window.cancelAnimationFrame(frame)
       scroller.removeEventListener('scroll', schedule)
       window.removeEventListener('resize', schedule)
+      scheduleSync.current = () => {}
     }
   }, [annotations, collapsedFiles, files, scroller, setOverlayIds])
 
@@ -154,6 +172,19 @@ export function AnnotationStickyOverlay({
     setOverlayIds(new Set<string>())
   }, [setOverlayIds])
 
+  // Card heights are estimated until a card mounts; re-sync once the real
+  // height is known so tall cards stay below the start of their range.
+  useLayoutEffect(() => {
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => scheduleSync.current())
+    resizeObserver.current = observer
+    for (const node of nodes.current.values()) observer.observe(node)
+    return () => {
+      observer.disconnect()
+      resizeObserver.current = null
+    }
+  }, [])
+
   const threads = annotationThreads(annotations.filter((annotation) =>
     annotation.comment != null && annotation.archivedAt == null,
   ))
@@ -169,8 +200,13 @@ export function AnnotationStickyOverlay({
             key={id}
             className="annotation-sticky-card"
             ref={(node) => {
+              const previous = nodes.current.get(id)
+              if (previous != null && previous !== node) resizeObserver.current?.unobserve(previous)
               if (node == null) nodes.current.delete(id)
-              else nodes.current.set(id, node)
+              else {
+                nodes.current.set(id, node)
+                resizeObserver.current?.observe(node)
+              }
             }}
           >
             {renderCard(thread.root, thread.replies)}

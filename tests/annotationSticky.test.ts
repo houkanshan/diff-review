@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 
 import {
+  dockedCardBottom,
   resolveUnmountedRangeEdges,
   overlayCardBox,
   selectDockedAnnotationIds,
@@ -67,6 +68,25 @@ describe('annotation sticky geometry', () => {
       fileTop: 0,
       fileBottom: 2000,
     }, 80, null)).toBe('hidden')
+  })
+
+  test('parks a docked card at the stack position when its range starts above it', () => {
+    expect(dockedCardBottom(100, 800, null, 300)).toBe(0)
+    expect(dockedCardBottom(100, 800, 120, 300)).toBe(120)
+  })
+
+  test('keeps a tall docked card below the first line of its range', () => {
+    // Range starts at 600; a 500px card would otherwise reach up to 300.
+    expect(dockedCardBottom(600, 800, null, 500)).toBe(-300)
+    expect(dockedCardBottom(600, 800, 100, 50)).toBe(100)
+  })
+
+  test('does not dock a stacked card that would cross its range start', () => {
+    // Two 300px cards whose ranges both start at 600 in an 800px viewport.
+    const first = dockedCardBottom(600, 800, null, 300)
+    expect(first).toBe(-100)
+    expect(dockedCardBottom(600, 800, first! + 300 + 8, 300)).toBeNull()
+    expect(dockedCardBottom(600, 800, 180, 50)).toBeNull()
   })
 
   test('keeps a stable width when the in-doc card is not mounted', () => {

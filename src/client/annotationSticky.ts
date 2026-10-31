@@ -203,6 +203,27 @@ function edgePresence(
   return { before, inside, after }
 }
 
+/**
+ * Bottom offset for a docked card, constrained like `position: sticky`: the
+ * card's top never rises above the bottom of the range's first line, so a tall
+ * card slides in with its range instead of covering the code above it.
+ * `rangeStartBottom` and `viewportBottom` are scroller-relative; the result is
+ * the distance from the dock edge (negative means partly below the edge).
+ * `stackBottom` is null for the first card. A later card that cannot sit above
+ * the stack without crossing its range start returns null (not docked), so
+ * stacked cards never overlap.
+ */
+export function dockedCardBottom(
+  rangeStartBottom: number,
+  viewportBottom: number,
+  stackBottom: number | null,
+  cardHeight: number,
+): number | null {
+  const limit = viewportBottom - rangeStartBottom - cardHeight
+  if (stackBottom == null) return Math.min(0, limit)
+  return limit >= stackBottom ? stackBottom : null
+}
+
 export type StickyCardBox = {
   left: number
   width: number
