@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 
 import {
+  dockCeiling,
   dockedCardBottom,
   resolveUnmountedRangeEdges,
   overlayCardBox,
@@ -87,6 +88,21 @@ describe('annotation sticky geometry', () => {
     expect(first).toBe(-100)
     expect(dockedCardBottom(600, 800, first! + 300 + 8, 300)).toBeNull()
     expect(dockedCardBottom(600, 800, 180, 50)).toBeNull()
+  })
+
+  test('keeps an outer card below visible in-doc cards inside its range', () => {
+    const card = { left: 50, right: 600 }
+    // Outer range starts at 100; an inner card occupies 300-500.
+    expect(dockCeiling(100, 800, 50, 550, [{ ...card, top: 300, bottom: 500 }])).toBe(500)
+    // Cards above the range start, below the viewport, or in another column are ignored.
+    expect(dockCeiling(100, 800, 50, 550, [
+      { ...card, top: 0, bottom: 90 },
+      { ...card, top: 820, bottom: 900 },
+      { left: 700, right: 1200, top: 300, bottom: 500 },
+    ])).toBe(100)
+    // The outer card then stays under the inner card instead of covering it:
+    // a 400px card can only reach 500-900, so it is pushed 100px below the edge.
+    expect(dockedCardBottom(500, 800, null, 400)).toBe(-100)
   })
 
   test('keeps a stable width when the in-doc card is not mounted', () => {

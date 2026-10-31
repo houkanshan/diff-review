@@ -5,7 +5,9 @@ import { annotationThreads } from '../shared/annotationThreads'
 import type { SessionAnnotation } from '../shared/types'
 import { fileIdForAnnotation, stickyOverlayIdsAtom } from './annotationComposer'
 import {
+  dockCeiling,
   dockedCardBottom,
+  measureInDocCards,
   measurePierreColumnLeft,
   measurePierreRangeGeometry,
   measureStickyCardBox,
@@ -80,6 +82,7 @@ export function AnnotationStickyOverlay({
         })
       }
       const nextIds: string[] = []
+      const inDocCards = measureInDocCards(scroller)
       let stackBottom: number | null = null
       for (const id of selectDockedAnnotationIds(candidates)) {
         const root = visible.find((annotation) => annotation.id === id)
@@ -95,7 +98,13 @@ export function AnnotationStickyOverlay({
         const node = nodes.current.get(root.id)
         const height = node?.offsetHeight ?? inDoc?.height ?? DEFAULT_CARD_HEIGHT
         const bottom = dockedCardBottom(
-          rangeStartBottoms.get(root.id) ?? Number.NEGATIVE_INFINITY,
+          dockCeiling(
+            rangeStartBottoms.get(root.id) ?? Number.NEGATIVE_INFINITY,
+            viewportBottom,
+            box.left,
+            box.width,
+            inDocCards.filter((card) => card.id !== root.id),
+          ),
           viewportBottom,
           stackBottom,
           height,
@@ -166,6 +175,9 @@ export function AnnotationStickyOverlay({
       const node = nodes.current.get(id)
       if (box != null && node != null) applyBox(node, box.left, box.width, box.bottom)
     }
+    // Docking changes which in-doc cards are hidden spacers; re-measure so
+    // docked cards avoid in-doc cards that just became visible.
+    scheduleSync.current()
   }, [ids])
 
   useLayoutEffect(() => () => {

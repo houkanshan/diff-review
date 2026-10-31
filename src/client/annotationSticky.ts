@@ -224,6 +224,51 @@ export function dockedCardBottom(
   return limit >= stackBottom ? stackBottom : null
 }
 
+export type DockObstacle = { top: number; bottom: number; left: number; right: number }
+
+/**
+ * Highest point a docked card may reach: below the range's first line and
+ * below every visible in-doc annotation card that sits inside the range in the
+ * same column. Nested or later-starting annotations are read first; the outer
+ * card follows them in, like a sticky element pushed by its neighbours.
+ */
+export function dockCeiling(
+  rangeStartBottom: number,
+  viewportBottom: number,
+  left: number,
+  width: number,
+  obstacles: readonly DockObstacle[],
+): number {
+  let ceiling = rangeStartBottom
+  for (const obstacle of obstacles) {
+    if (obstacle.top < rangeStartBottom - 1 || obstacle.top >= viewportBottom) continue
+    if (obstacle.right <= left || obstacle.left >= left + width) continue
+    ceiling = Math.max(ceiling, obstacle.bottom)
+  }
+  return ceiling
+}
+
+export function measureInDocCards(
+  scroller: HTMLElement,
+): Array<DockObstacle & { id: string }> {
+  const scrollerRect = scroller.getBoundingClientRect()
+  const cards: Array<DockObstacle & { id: string }> = []
+  for (const card of scroller.querySelectorAll<HTMLElement>(
+    '.inline-annotation[data-annotation-id]:not(.is-spacer)',
+  )) {
+    const rect = card.getBoundingClientRect()
+    if (rect.height < 1 || rect.width < 1) continue
+    cards.push({
+      id: card.dataset.annotationId ?? '',
+      top: rect.top - scrollerRect.top,
+      bottom: rect.bottom - scrollerRect.top,
+      left: rect.left - scrollerRect.left,
+      right: rect.right - scrollerRect.left,
+    })
+  }
+  return cards
+}
+
 export type StickyCardBox = {
   left: number
   width: number
