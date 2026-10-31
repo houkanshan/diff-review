@@ -248,11 +248,11 @@ export function dockCeiling(
   return ceiling
 }
 
-export function measureInDocCards(
-  scroller: HTMLElement,
-): Array<DockObstacle & { id: string }> {
+export type InDocCard = DockObstacle & { id: string; element: HTMLElement }
+
+export function measureInDocCards(scroller: HTMLElement): InDocCard[] {
   const scrollerRect = scroller.getBoundingClientRect()
-  const cards: Array<DockObstacle & { id: string }> = []
+  const cards: InDocCard[] = []
   for (const card of scroller.querySelectorAll<HTMLElement>(
     '.inline-annotation[data-annotation-id]:not(.is-spacer)',
   )) {
@@ -260,6 +260,7 @@ export function measureInDocCards(
     if (rect.height < 1 || rect.width < 1) continue
     cards.push({
       id: card.dataset.annotationId ?? '',
+      element: card,
       top: rect.top - scrollerRect.top,
       bottom: rect.bottom - scrollerRect.top,
       left: rect.left - scrollerRect.left,

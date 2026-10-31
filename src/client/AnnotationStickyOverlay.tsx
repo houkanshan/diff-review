@@ -38,6 +38,7 @@ export function AnnotationStickyOverlay({
   const setOverlayIds = useSetAtom(stickyOverlayIdsAtom)
   const scheduleSync = useRef<() => void>(() => {})
   const resizeObserver = useRef<ResizeObserver | null>(null)
+  const observedInDoc = useRef(new Set<HTMLElement>())
 
   useLayoutEffect(() => {
     if (scroller == null) return
@@ -83,6 +84,7 @@ export function AnnotationStickyOverlay({
       }
       const nextIds: string[] = []
       const inDocCards = measureInDocCards(scroller)
+      observeInDocCards(inDocCards.map((card) => card.element))
       let stackBottom: number | null = null
       for (const id of selectDockedAnnotationIds(candidates)) {
         const root = visible.find((annotation) => annotation.id === id)
@@ -184,18 +186,31 @@ export function AnnotationStickyOverlay({
     setOverlayIds(new Set<string>())
   }, [setOverlayIds])
 
-  // Card heights are estimated until a card mounts; re-sync once the real
-  // height is known so tall cards stay below the start of their range.
+  // Re-sync when a docked card gets its real height, or when a visible in-doc
+  // card resizes (e.g. an editor opens) and pushes a docked card's ceiling.
   useLayoutEffect(() => {
     if (typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(() => scheduleSync.current())
     resizeObserver.current = observer
     for (const node of nodes.current.values()) observer.observe(node)
+    for (const node of observedInDoc.current) observer.observe(node)
     return () => {
       observer.disconnect()
       resizeObserver.current = null
     }
   }, [])
+
+  function observeInDocCards(elements: readonly HTMLElement[]): void {
+    const observer = resizeObserver.current
+    const next = new Set(elements)
+    for (const node of observedInDoc.current) {
+      if (!next.has(node)) observer?.unobserve(node)
+    }
+    for (const node of next) {
+      if (!observedInDoc.current.has(node)) observer?.observe(node)
+    }
+    observedInDoc.current = next
+  }
 
   const threads = annotationThreads(annotations.filter((annotation) =>
     annotation.comment != null && annotation.archivedAt == null,
