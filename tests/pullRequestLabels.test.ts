@@ -5,7 +5,9 @@ import { describe, expect, test, vi } from 'vitest'
 import {
   addPullRequestLabel,
   listRepositoryLabels,
+  listReviewerCandidates,
   removePullRequestLabel,
+  setPullRequestReviewer,
 } from '../src/server/github.js'
 
 type GitHubCall = { args: string[]; cwd: string; input: string }
@@ -14,6 +16,7 @@ type FakeGitHub = {
   root: string
   otherRoot: string
   reply: (output: string, error?: string) => void
+  replyByCommand: (replies: Record<string, { output: string; error?: string }>) => void
   calls: () => GitHubCall[]
 }
 
@@ -33,9 +36,11 @@ const fs = require('node:fs')
 const args = process.argv.slice(2)
 const input = fs.readFileSync(0, 'utf8')
 fs.appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify({ args, cwd: process.cwd(), input }) + '\\n')
-const reply = JSON.parse(fs.readFileSync(${JSON.stringify(replyFile)}, 'utf8'))
+const replies = JSON.parse(fs.readFileSync(${JSON.stringify(replyFile)}, 'utf8'))
+const reply = replies.byCommand?.[args.slice(0, 2).join(' ')] ?? replies
 if (reply.error) {
   process.stderr.write(reply.error)
+  if (reply.output) process.stdout.write(reply.output)
   process.exit(1)
 }
 process.stdout.write(reply.output)
@@ -48,6 +53,7 @@ process.stdout.write(reply.output)
       root,
       otherRoot,
       reply: (output, error = '') => writeFileSync(replyFile, JSON.stringify({ output, error })),
+      replyByCommand: (byCommand) => writeFileSync(replyFile, JSON.stringify({ output: '', error: '', byCommand })),
       calls: () => readFileSync(callsFile, 'utf8').split('\n').filter(Boolean)
         .map((line) => JSON.parse(line) as GitHubCall),
     })
@@ -189,6 +195,43 @@ describe('GitHub pull request label mutations', () => {
         message: 'gh: Resource not accessible by integration (HTTP 403)',
       })
       expect(calls()).toHaveLength(1)
+    })
+  })
+})
+
+describe('GitHub pull request reviewers', () => {
+  test('requests and removes user and team reviewers through the REST endpoint', async () => {
+    await withFakeGitHub(async ({ root, reply, calls }) => {
+      reply('{}')
+      await setPullRequestReviewer(root, 7, { login: 'octocat', kind: 'user' }, true)
+      await setPullRequestReviewer(root, 7, { login: 'acme/platform', kind: 'team' }, false)
+      expect(calls().map(({ args, input }) => ({ args, input: JSON.parse(input) }))).toEqual([
+        {
+          args: ['api', '--method', 'POST', 'repos/{owner}/{repo}/pulls/7/requested_reviewers', '--input', '-'],
+          input: { reviewers: ['octocat'] },
+        },
+        {
+          args: ['api', '--method', 'DELETE', 'repos/{owner}/{repo}/pulls/7/requested_reviewers', '--input', '-'],
+          input: { reviewers: [], team_reviewers: ['platform'] },
+        },
+      ])
+    })
+  })
+
+  test('keeps user candidates when the owner is not an organization (partial GraphQL data)', async () => {
+    await withFakeGitHub(async ({ root, replyByCommand }) => {
+      replyByCommand({
+        'repo view': { output: JSON.stringify({ nameWithOwner: 'solo/repo' }) },
+        'api graphql': {
+          output: JSON.stringify({
+            data: { repository: { assignableUsers: { nodes: [{ login: 'octocat' }] } }, organization: null },
+            errors: [{ type: 'NOT_FOUND', path: ['organization'] }],
+          }),
+          error: 'gh: Could not resolve to an Organization',
+        },
+      })
+      const candidates = await listReviewerCandidates(root, 'oct')
+      expect(candidates.map((item) => item.login)).toEqual(['octocat'])
     })
   })
 })

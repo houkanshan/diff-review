@@ -4,6 +4,7 @@ import type {
   DiffSide,
   GitHubLabel,
   GitHubIssueReference,
+  GitHubIssueReferenceStatus,
   GitHubReviewer,
   GitHubUser,
   PullRequestActivity,
@@ -23,6 +24,7 @@ import type {
 } from '../shared/types.js'
 import {
   extractIssueReferenceTargets,
+  issueReferenceKey,
   type GitHubIssueReferenceTarget,
 } from '../shared/markdown.js'
 import { AppError, errorMessage } from './errors.js'
@@ -103,7 +105,12 @@ const GITHUB_COMMAND_TIMEOUT_MS = {
 type ResolvedIssueReference = Omit<GitHubIssueReference, 'token' | 'label'>
 type ResolvedIssueReferenceTarget = GitHubIssueReferenceTarget & { owner: string; repository: string }
 
-const issueReferenceCache = new Map<string, Promise<ResolvedIssueReference | null>>()
+// Reference status (open/merged/closed) changes, so entries expire instead of living forever.
+const ISSUE_REFERENCE_TTL_MS = 5 * 60_000
+const issueReferenceCache = new Map<string, {
+  expiresAt: number
+  reference: Promise<ResolvedIssueReference | null>
+}>()
 const PULL_REQUEST_LIST_TTL_MS = 60_000
 const repositoryKeyByRoot = new Map<string, string>()
 let pullRequestListEpoch = 0
@@ -117,10 +124,6 @@ const pullRequestListCache = new Map<string, {
 interface PullRequestListPage {
   items: PullRequestSummary[]
   pageInfo: PullRequestListPageInfo
-}
-
-function issueReferenceKey(reference: { owner: string; repository: string; number: number }): string {
-  return `${reference.owner.toLowerCase()}/${reference.repository.toLowerCase()}#${reference.number}`
 }
 
 function listCacheKey(repositoryKey: string, view: PullRequestListView): string {
@@ -483,24 +486,29 @@ async function resolveIssueReferences(
   const uniqueTargets = [...new Map(
     resolvedTargets.map((target) => [issueReferenceKey(target), target]),
   ).values()]
-  const missing = uniqueTargets.filter((target) => !issueReferenceCache.has(issueReferenceKey(target)))
+  const now = Date.now()
+  const missing = uniqueTargets.filter((target) =>
+    (issueReferenceCache.get(issueReferenceKey(target))?.expiresAt ?? 0) <= now)
   if (missing.length > 0) {
     const batch = fetchIssueReferenceBatch(root, missing)
-    const cachedBatch = new Map<string, Promise<ResolvedIssueReference | null>>()
+    const cachedBatch = new Map<string, { expiresAt: number; reference: Promise<ResolvedIssueReference | null> }>()
     for (const target of missing) {
       const key = issueReferenceKey(target)
-      const reference = batch.then((references) => references.get(key) ?? null)
-      cachedBatch.set(key, reference)
-      issueReferenceCache.set(key, reference)
+      const entry = {
+        expiresAt: now + ISSUE_REFERENCE_TTL_MS,
+        reference: batch.then((references) => references.get(key) ?? null),
+      }
+      cachedBatch.set(key, entry)
+      issueReferenceCache.set(key, entry)
     }
     void batch.catch(() => {
-      for (const [key, reference] of cachedBatch) {
-        if (issueReferenceCache.get(key) === reference) issueReferenceCache.delete(key)
+      for (const [key, entry] of cachedBatch) {
+        if (issueReferenceCache.get(key) === entry) issueReferenceCache.delete(key)
       }
     })
   }
   const references = await Promise.all(resolvedTargets.map(async (target) => {
-    const reference = await issueReferenceCache.get(issueReferenceKey(target))!
+    const reference = await issueReferenceCache.get(issueReferenceKey(target))!.reference
     if (reference == null) return null
     const isCurrentRepository =
       target.owner.toLowerCase() === currentRepository.owner.toLowerCase() &&
@@ -520,23 +528,38 @@ async function fetchIssueReferenceBatch(
   root: string,
   targets: ResolvedIssueReferenceTarget[],
 ): Promise<Map<string, ResolvedIssueReference>> {
+  // One aliased repository lookup per target. Unknown or inaccessible repositories produce
+  // per-alias NOT_FOUND errors; GitHub still returns data for the other aliases.
   const selections = targets.map((target, index) =>
-    `ref${index}: search(query: ${JSON.stringify(`repo:${target.owner}/${target.repository} ${target.number}`)}, type: ISSUE, first: 10) { ` +
-    'nodes { ... on Issue { __typename number title url } ... on PullRequest { __typename number title url } } }',
+    `ref${index}: repository(owner: ${JSON.stringify(target.owner)}, name: ${JSON.stringify(target.repository)}) { ` +
+    `issueOrPullRequest(number: ${target.number}) { __typename ` +
+    '... on Issue { number title url state stateReason } ' +
+    '... on PullRequest { number title url state isDraft } } }',
   ).join('\n')
-  const query = `query { ${selections} }`
-  const output = await runGitHub(['api', 'graphql', '-f', `query=${query}`], root)
+  const output = await runGitHub(
+    ['api', 'graphql', '-f', `query=query { ${selections} }`],
+    root,
+    undefined,
+    'read',
+    { acceptPartialGraphQLData: true },
+  )
+  return parseIssueReferenceBatch(output, targets)
+}
+
+export function parseIssueReferenceBatch(
+  output: string,
+  targets: Array<{ owner: string; repository: string; number: number }>,
+): Map<string, ResolvedIssueReference> {
   const response = expectObject(parseJson(output, 'GitHub issue references'))
-  const rawResults = expectObject(response.data)
+  const rawResults = optionalObject(response.data)
+  if (rawResults == null) throw invalidGitHubResponse('GitHub issue references returned no data')
   const references = new Map<string, ResolvedIssueReference>()
   for (const [index, target] of targets.entries()) {
-    const rawSearch = expectObject(rawResults[`ref${index}`])
-    const rawReference = expectArray(rawSearch.nodes)
-      .map(optionalObject)
-      .find((candidate) => optionalPositiveInteger(candidate?.number) === target.number)
-    const title = optionalString(rawReference?.title)
-    const url = optionalString(rawReference?.url)
-    const typeName = optionalString(rawReference?.__typename)
+    const rawReference = optionalObject(optionalObject(rawResults[`ref${index}`])?.issueOrPullRequest)
+    if (rawReference == null || optionalPositiveInteger(rawReference.number) !== target.number) continue
+    const title = optionalString(rawReference.title)
+    const url = optionalString(rawReference.url)
+    const typeName = optionalString(rawReference.__typename)
     if (title == null || url == null || (typeName !== 'Issue' && typeName !== 'PullRequest')) continue
     references.set(
       issueReferenceKey(target),
@@ -545,12 +568,28 @@ async function fetchIssueReferenceBatch(
         repository: target.repository,
         number: target.number,
         kind: typeName === 'PullRequest' ? 'pull-request' : 'issue',
+        status: typeName === 'PullRequest'
+          ? pullRequestReferenceStatus(rawReference)
+          : issueReferenceStatus(rawReference),
         title,
         url,
       },
     )
   }
   return references
+}
+
+function pullRequestReferenceStatus(raw: Record<string, unknown>): GitHubIssueReferenceStatus {
+  const state = optionalString(raw.state)?.toUpperCase()
+  if (state === 'MERGED') return 'merged'
+  if (state === 'CLOSED') return 'closed'
+  return raw.isDraft === true ? 'draft' : 'open'
+}
+
+function issueReferenceStatus(raw: Record<string, unknown>): GitHubIssueReferenceStatus {
+  if (optionalString(raw.state)?.toUpperCase() !== 'CLOSED') return 'open'
+  const reason = optionalString(raw.stateReason)?.toUpperCase()
+  return reason === 'NOT_PLANNED' || reason === 'DUPLICATE' ? 'not-planned' : 'completed'
 }
 
 function parseGitHubRepositoryUrl(value: string): { owner: string; name: string } {
@@ -620,6 +659,114 @@ export async function removePullRequestLabel(
       /label.*(?:does not exist|not found)|(?:does not exist|not found).*label/i.test(error.message)
     if (!labelWasAlreadyAbsent) throw error
   }
+}
+
+const REVIEWER_CANDIDATES_TTL_MS = 5 * 60_000
+const reviewerCandidatesCache = new Map<string, { expiresAt: number; candidates: Promise<GitHubReviewer[]> }>()
+
+/**
+ * Users and teams that can be requested for review. Users come from the repository's
+ * assignable users (server-side search); teams come from the owner organization when the
+ * token can read it. Personal repositories and tokens without `read:org` return users only.
+ */
+export function listReviewerCandidates(root: string, search: string): Promise<GitHubReviewer[]> {
+  const query = search.trim().slice(0, 100)
+  const key = `${root}\0${query.toLowerCase()}`
+  const cached = reviewerCandidatesCache.get(key)
+  if (cached != null && cached.expiresAt > Date.now()) return cached.candidates
+  const candidates = fetchReviewerCandidates(root, query)
+  const entry = { expiresAt: Date.now() + REVIEWER_CANDIDATES_TTL_MS, candidates }
+  reviewerCandidatesCache.set(key, entry)
+  void candidates.catch(() => {
+    if (reviewerCandidatesCache.get(key) === entry) reviewerCandidatesCache.delete(key)
+  })
+  return candidates
+}
+
+async function fetchReviewerCandidates(root: string, query: string): Promise<GitHubReviewer[]> {
+  const repositoryKey = await githubRepositoryKey(root)
+  if (repositoryKey == null) {
+    throw new AppError('GITHUB_REPOSITORY_UNKNOWN', 'Could not determine the GitHub repository')
+  }
+  const [owner, name] = repositoryKey.split('/')
+  const graphQuery = `query {
+    repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) {
+      assignableUsers(first: 50, query: ${JSON.stringify(query)}) { nodes { login name avatarUrl } }
+    }
+    organization(login: ${JSON.stringify(owner)}) {
+      teams(first: 20, query: ${JSON.stringify(query)}, orderBy: {field: NAME, direction: ASC}) {
+        nodes { slug name avatarUrl }
+      }
+    }
+  }`
+  // `organization` errors with NOT_FOUND for personal accounts; keep the user results.
+  const output = await runGitHub(
+    ['api', 'graphql', '-f', `query=${graphQuery}`],
+    root,
+    undefined,
+    'read',
+    { acceptPartialGraphQLData: true },
+  )
+  return parseReviewerCandidates(output)
+}
+
+export function parseReviewerCandidates(output: string): GitHubReviewer[] {
+  const data = optionalObject(expectObject(parseJson(output, 'GitHub reviewer candidates')).data)
+  const repository = optionalObject(data?.repository)
+  if (repository == null) throw invalidGitHubResponse('GitHub reviewer candidates returned no repository')
+  const users = expectArray(optionalObject(repository.assignableUsers)?.nodes).map((value): GitHubReviewer => ({
+    ...parseUser(value),
+    kind: 'user',
+    reviewStatus: 'none',
+    requested: false,
+  }))
+  const teamNodes = optionalObject(optionalObject(data?.organization)?.teams)?.nodes
+  const teams = (Array.isArray(teamNodes) ? teamNodes : []).flatMap((value): GitHubReviewer[] => {
+    const team = optionalObject(value)
+    const slug = optionalString(team?.slug)
+    if (team == null || slug == null) return []
+    return [{
+      kind: 'team',
+      login: slug,
+      name: optionalString(team.name) ?? slug,
+      avatarUrl: optionalString(team.avatarUrl),
+      reviewStatus: 'none',
+      requested: false,
+    }]
+  })
+  return [...teams, ...users]
+}
+
+/** Team logins may be `org/slug` (gh pr view) or bare `slug` (GraphQL); REST wants the slug. */
+function teamSlug(login: string): string {
+  return login.slice(login.lastIndexOf('/') + 1)
+}
+
+export async function setPullRequestReviewer(
+  root: string,
+  number: number,
+  reviewer: { login: string; kind: 'user' | 'team' },
+  requested: boolean,
+): Promise<void> {
+  validatePullRequestNumber(number)
+  const login = reviewer.login.trim()
+  if (!login) throw new AppError('INVALID_PULL_REQUEST_REVIEWER', 'Reviewer must not be empty')
+  const body = reviewer.kind === 'team'
+    ? { reviewers: [], team_reviewers: [teamSlug(login)] }
+    : { reviewers: [login] }
+  await runGitHub(
+    [
+      'api',
+      '--method',
+      requested ? 'POST' : 'DELETE',
+      `repos/{owner}/{repo}/pulls/${number}/requested_reviewers`,
+      '--input',
+      '-',
+    ],
+    root,
+    JSON.stringify(body),
+    'mutate',
+  )
 }
 
 export async function addPullRequestComment(
@@ -886,7 +1033,7 @@ export function parsePullRequestReviewers(
   const requested = expectArray(requestsValue).map((reviewerValue): GitHubReviewer => {
     const reviewer = expectObject(reviewerValue)
     const kind = expectString(reviewer.__typename, 'reviewRequests.__typename')
-    if (kind === 'User') return { ...parseUser(reviewer), kind: 'user', reviewStatus: 'none' }
+    if (kind === 'User') return { ...parseUser(reviewer), kind: 'user', reviewStatus: 'none', requested: true }
     if (kind === 'Team') {
       return {
         kind: 'team',
@@ -894,6 +1041,7 @@ export function parsePullRequestReviewers(
         name: expectString(reviewer.name, 'reviewRequests.name'),
         avatarUrl: optionalString(reviewer.avatarUrl),
         reviewStatus: 'none',
+        requested: true,
       }
     }
     throw invalidGitHubResponse(`Unknown review request type: ${kind}`)
@@ -905,10 +1053,16 @@ export function parsePullRequestReviewers(
       ...author,
       kind: 'user',
       reviewStatus: parsePullRequestReviewStatus(review.state),
+      requested: false,
     }]
   })
+  // A re-requested reviewer keeps their previous review status and stays removable.
+  const requestedLogins = new Set(requested.map((reviewer) => reviewer.login.toLowerCase()))
   return [...new Map(
-    [...requested, ...completed].map((reviewer) => [reviewer.login.toLowerCase(), reviewer]),
+    [...requested, ...completed].map((reviewer) => [
+      reviewer.login.toLowerCase(),
+      { ...reviewer, requested: requestedLogins.has(reviewer.login.toLowerCase()) },
+    ]),
   ).values()]
 }
 
@@ -1392,11 +1546,20 @@ function invalidGitHubResponse(message: string): AppError {
   return new AppError('GITHUB_RESPONSE_INVALID', message)
 }
 
+function hasGraphQLData(output: string): boolean {
+  try {
+    return optionalObject(optionalObject(JSON.parse(output))?.data) != null
+  } catch {
+    return false
+  }
+}
+
 async function runGitHub(
   args: string[],
   cwd: string,
   input?: string,
   kind: GitHubCommandKind = 'read',
+  options: { acceptPartialGraphQLData?: boolean } = {},
 ): Promise<string> {
   const timeoutMs = GITHUB_COMMAND_TIMEOUT_MS[kind]
   const result = await new Promise<{ stdout: string; stderr: string; exitCode: number }>(
@@ -1456,7 +1619,7 @@ async function runGitHub(
     }
     throw error
   })
-  if (result.exitCode !== 0) {
+  if (result.exitCode !== 0 && !(options.acceptPartialGraphQLData && hasGraphQLData(result.stdout))) {
     throw new AppError(
       'GITHUB_COMMAND_FAILED',
       result.stderr.trim() || `gh exited with ${result.exitCode}`,

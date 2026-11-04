@@ -7,6 +7,7 @@ import remarkParse from 'remark-parse'
 import { unified } from 'unified'
 import {
   extractIssueReferenceTargets,
+  parseIssueReferenceUrl,
   remarkIssueReferences,
 } from '../src/shared/markdown.js'
 import { pullRequestAllowsReviewEvent } from '../src/shared/pull-request.js'
@@ -28,6 +29,9 @@ import {
   parsePullRequestMergeable,
   parsePullRequestReviewers,
   parsePullRequestReviewStatus,
+  parseIssueReferenceBatch,
+  parseReviewerCandidates,
+  setPullRequestReviewer,
   pendingReviewComments,
   parsePullRequestTimelineEvents,
   applyMinimizedComments,
@@ -600,6 +604,7 @@ describe('GitHub issue references in Markdown', () => {
       owner: 'acme',
       repository: 'repo',
       number: 11160,
+      status: 'open' as const,
       title,
       url: 'https://github.com/acme/repo/issues/11160',
     }]
@@ -646,6 +651,85 @@ describe('GitHub issue references in Markdown', () => {
   })
 })
 
+describe('GitHub issue reference URLs and status', () => {
+  test('parses issue and pull request URLs from any repository', () => {
+    expect(parseIssueReferenceUrl('https://github.com/acme/other/pull/42/files#diff-1'))
+      .toEqual({ owner: 'acme', repository: 'other', number: 42 })
+    expect(parseIssueReferenceUrl('https://github.com/acme/other/issues/7'))
+      .toEqual({ owner: 'acme', repository: 'other', number: 7 })
+    expect(parseIssueReferenceUrl('https://github.com/acme/other/blob/main/README.md')).toBeNull()
+    expect(parseIssueReferenceUrl('https://example.com/acme/other/pull/1')).toBeNull()
+  })
+
+  test('extracts GitHub URLs, including autolinks, as cross-repository targets', () => {
+    expect(extractIssueReferenceTargets([
+      'see https://github.com/acme/other/pull/42 and [the bug](https://github.com/acme/repo/issues/9)',
+    ])).toEqual([
+      { token: 'acme/other#42', owner: 'acme', repository: 'other', number: 42 },
+      { token: 'acme/repo#9', owner: 'acme', repository: 'repo', number: 9 },
+    ])
+  })
+
+  test('shortens bare GitHub URLs to their reference label but keeps custom link text', () => {
+    const references = [{
+      token: 'acme/other#42',
+      label: 'acme/other#42',
+      kind: 'pull-request' as const,
+      owner: 'acme',
+      repository: 'other',
+      number: 42,
+      status: 'merged' as const,
+      title: 'Ship it',
+      url: 'https://github.com/acme/other/pull/42',
+    }]
+    const processor = unified().use(remarkParse).use(remarkGfm).use(remarkIssueReferences, { references })
+    const paragraph = (markdown: string) =>
+      (processor.runSync(processor.parse(markdown)) as unknown as { children: Array<{ children: unknown[] }> })
+        .children[0].children
+    expect(paragraph('see https://github.com/acme/other/pull/42')).toMatchObject([
+      { type: 'text', value: 'see ' },
+      { type: 'link', url: 'https://github.com/acme/other/pull/42', children: [{ type: 'text', value: 'acme/other#42' }] },
+    ])
+    expect(paragraph('[release](https://github.com/acme/other/pull/42)')).toMatchObject([
+      { type: 'link', children: [{ type: 'text', value: 'release' }] },
+    ])
+  })
+
+  test('maps issue and pull request states, skipping inaccessible repositories', () => {
+    const targets = [
+      { owner: 'acme', repository: 'repo', number: 1 },
+      { owner: 'acme', repository: 'repo', number: 2 },
+      { owner: 'acme', repository: 'repo', number: 3 },
+      { owner: 'acme', repository: 'repo', number: 4 },
+      { owner: 'acme', repository: 'repo', number: 5 },
+      { owner: 'ghost', repository: 'private', number: 6 },
+    ]
+    const node = (number: number, extra: Record<string, unknown>) => ({
+      issueOrPullRequest: { number, title: `T${number}`, url: `https://github.com/acme/repo/x/${number}`, ...extra },
+    })
+    const output = JSON.stringify({
+      data: {
+        ref0: node(1, { __typename: 'PullRequest', state: 'OPEN', isDraft: true }),
+        ref1: node(2, { __typename: 'PullRequest', state: 'MERGED', isDraft: false }),
+        ref2: node(3, { __typename: 'PullRequest', state: 'CLOSED', isDraft: false }),
+        ref3: node(4, { __typename: 'Issue', state: 'CLOSED', stateReason: 'NOT_PLANNED' }),
+        ref4: node(5, { __typename: 'Issue', state: 'CLOSED', stateReason: 'COMPLETED' }),
+        ref5: null,
+      },
+      errors: [{ type: 'NOT_FOUND', path: ['ref5'] }],
+    })
+    const references = parseIssueReferenceBatch(output, targets)
+    expect([...references.values()].map((reference) => [reference.number, reference.kind, reference.status]))
+      .toEqual([
+        [1, 'pull-request', 'draft'],
+        [2, 'pull-request', 'merged'],
+        [3, 'pull-request', 'closed'],
+        [4, 'issue', 'not-planned'],
+        [5, 'issue', 'completed'],
+      ])
+  })
+})
+
 describe('GitHub pull request sidebar data', () => {
   test('reads the merge commit oid from gh pr view', () => {
     expect(parseMergeCommitOid(null)).toBeNull()
@@ -681,14 +765,23 @@ describe('GitHub pull request sidebar data', () => {
         name: null,
         avatarUrl: 'https://github.com/octocat.png?size=64',
         reviewStatus: 'approved',
+        requested: true,
       },
-      { kind: 'team', login: 'acme/platform', name: 'Platform', avatarUrl: null, reviewStatus: 'none' },
+      {
+        kind: 'team',
+        login: 'acme/platform',
+        name: 'Platform',
+        avatarUrl: null,
+        reviewStatus: 'none',
+        requested: true,
+      },
       {
         kind: 'user',
         login: 'completed-reviewer',
         name: 'Completed Reviewer',
         avatarUrl: 'https://github.com/completed-reviewer.png?size=64',
         reviewStatus: 'rejected',
+        requested: false,
       },
     ])
   })
@@ -704,6 +797,7 @@ describe('GitHub pull request sidebar data', () => {
         name: null,
         avatarUrl: 'https://github.com/octocat.png?size=64',
         reviewStatus: 'none',
+        requested: true,
       },
       {
         kind: 'user',
@@ -711,8 +805,25 @@ describe('GitHub pull request sidebar data', () => {
         name: null,
         avatarUrl: 'https://github.com/hubot.png?size=64',
         reviewStatus: 'approved',
+        requested: false,
       },
     ])
+  })
+
+  test('parses reviewer candidates and tolerates a missing organization', () => {
+    expect(parseReviewerCandidates(JSON.stringify({
+      data: {
+        repository: { assignableUsers: { nodes: [{ login: 'octocat', name: 'Octo', avatarUrl: 'https://a/o' }] } },
+        organization: { teams: { nodes: [{ slug: 'platform', name: 'Platform', avatarUrl: null }] } },
+      },
+    }))).toEqual([
+      { kind: 'team', login: 'platform', name: 'Platform', avatarUrl: null, reviewStatus: 'none', requested: false },
+      { kind: 'user', login: 'octocat', name: 'Octo', avatarUrl: 'https://a/o', reviewStatus: 'none', requested: false },
+    ])
+    expect(parseReviewerCandidates(JSON.stringify({
+      data: { repository: { assignableUsers: { nodes: [{ login: 'hubot' }] } }, organization: null },
+      errors: [{ type: 'NOT_FOUND', path: ['organization'] }],
+    })).map((reviewer) => reviewer.login)).toEqual(['hubot'])
   })
 })
 

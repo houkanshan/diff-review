@@ -58,6 +58,8 @@ import {
   CheckCheck as ChecksPassedIcon,
   ChevronDown as ChevronIcon,
   CircleDot as IssueIcon,
+  CircleCheck as IssueCompletedIcon,
+  CircleSlash as IssueNotPlannedIcon,
   X as CloseIcon,
   MessageSquare as CommentIcon,
   GitCommitHorizontal as CommitIcon,
@@ -110,7 +112,7 @@ import {
 
 import { AuthenticatedImage, AuthenticatedVideo } from './AuthenticatedMedia'
 import { readStoredValue, writeStoredValue } from './browserStorage'
-import { remarkIssueReferences } from '../shared/markdown'
+import { issueReferenceKey, parseIssueReferenceUrl, remarkIssueReferences } from '../shared/markdown'
 import {
   isLocalChangesOid,
   reviewTargetForRepositorySwitch,
@@ -159,6 +161,7 @@ import {
   addGlobalComment,
   addPullRequestComment,
   addPullRequestLabel,
+  setPullRequestReviewer,
   archiveAllAnnotations,
   createSession,
   getFileContents,
@@ -228,6 +231,7 @@ import { AnnotationStickyOverlay } from './AnnotationStickyOverlay'
 import { PullRequestCommits } from './PullRequestCommits'
 import { CommitStatsLabel } from './CommitStatsLabel'
 import { PullRequestLabels } from './PullRequestLabels'
+import { PullRequestReviewers, reviewerIdentity } from './PullRequestReviewers'
 import { PullRequestTextEditor, PullRequestTextEditsProvider } from './PullRequestTextEditor'
 import { isModifiedSubmitEnter } from './textInputSubmit'
 
@@ -258,6 +262,7 @@ interface PullRequestWorkspaceContext {
   onSelectRevision(sessionId: string, replace?: boolean): void
   onOpenCommit(commitId: string): Promise<void>
   onSetLabel(label: GitHubLabel, selected: boolean): Promise<void>
+  onSetReviewer(reviewer: GitHubReviewer, requested: boolean): Promise<void>
   onUpdateText(changes: Pick<UpdatePullRequestInput, 'title' | 'body'>): Promise<void>
   onAddComment(body: string, replyToId?: string | null): Promise<void>
   onSubmitReview(event: PullRequestReviewEvent, body: string): Promise<void>
@@ -633,6 +638,42 @@ function PullRequestsPage({
     void refreshPullRequestData(pullRequestNumber)
   }
 
+  const savePullRequestReviewer = async (
+    pullRequestNumber: number,
+    reviewer: GitHubReviewer,
+    requested: boolean,
+  ): Promise<void> => {
+    try {
+      await setPullRequestReviewer(pullRequestNumber, requested, {
+        repositoryPath: route.repositoryPath,
+        login: reviewer.login,
+        kind: reviewer.kind,
+      })
+    } catch (error) {
+      void refreshPullRequestData(pullRequestNumber)
+      throw error
+    }
+    const updateReviewers = (current: PullRequestDetails): PullRequestDetails => {
+      const key = reviewerIdentity(reviewer)
+      const others = current.reviewers.filter((item) => reviewerIdentity(item) !== key)
+      const existing = current.reviewers.find((item) => reviewerIdentity(item) === key)
+      // Removing a request keeps a reviewer who already submitted a review, as GitHub does.
+      const next = requested
+        ? { ...(existing ?? reviewer), requested: true }
+        : existing != null && existing.reviewStatus !== 'none' ? { ...existing, requested: false } : null
+      return { ...current, reviewers: next == null ? others : [...others, next] }
+    }
+    queryClient.setQueryData<PullRequestDetails>(
+      ['pull-request-details', route.repositoryPath, pullRequestNumber],
+      (current) => current == null ? undefined : updateReviewers(current),
+    )
+    queryClient.setQueriesData<PullRequestWorkspace>(
+      { queryKey: ['pull-request-workspace', route.repositoryPath, pullRequestNumber] },
+      (current) => current == null ? undefined : { ...current, details: updateReviewers(current.details) },
+    )
+    void refreshPullRequestData(pullRequestNumber)
+  }
+
   const savePullRequestText = async (
     pullRequestNumber: number,
     changes: Pick<UpdatePullRequestInput, 'title' | 'body'>,
@@ -906,6 +947,7 @@ function PullRequestsPage({
                 details={details}
                 repositoryPath={route.repositoryPath}
                 onSetLabel={(label, selected) => savePullRequestLabel(details.number, label, selected)}
+                onSetReviewer={(reviewer, requested) => savePullRequestReviewer(details.number, reviewer, requested)}
                 onUpdateText={(changes) => savePullRequestText(details.number, changes)}
                 oldRevision={false}
                 resolvedTheme={resolvedTheme}
@@ -1024,6 +1066,7 @@ function PullRequestsPage({
               onOpenSession(next.id)
             },
             onSetLabel: (label, selected) => savePullRequestLabel(details.number, label, selected),
+            onSetReviewer: (reviewer, requested) => savePullRequestReviewer(details.number, reviewer, requested),
             onUpdateText: (changes) => savePullRequestText(details.number, changes),
             onAddComment: async (body, replyToId) => {
               await addPullRequestComment(details.number, {
@@ -2198,6 +2241,7 @@ function ReviewWorkspace({
                 details={pullRequest.details}
                 repositoryPath={session.repositoryRoot}
                 onSetLabel={pullRequest.onSetLabel}
+                onSetReviewer={pullRequest.onSetReviewer}
                 onUpdateText={pullRequest.onUpdateText}
                 commits={pullRequest.commits}
                 oldRevision={session.id !== pullRequest.currentSessionId}
@@ -3297,6 +3341,7 @@ function PullRequestConversation({
   details,
   repositoryPath,
   onSetLabel,
+  onSetReviewer,
   commits = [],
   oldRevision,
   resolvedTheme,
@@ -3307,6 +3352,7 @@ function PullRequestConversation({
   details: PullRequestDetails
   repositoryPath: string
   onSetLabel(label: GitHubLabel, selected: boolean): Promise<void>
+  onSetReviewer(reviewer: GitHubReviewer, requested: boolean): Promise<void>
   commits?: CommitSummary[]
   oldRevision: boolean
   resolvedTheme: ResolvedTheme
@@ -3349,6 +3395,7 @@ function PullRequestConversation({
           details={details}
           repositoryPath={repositoryPath}
           onSetLabel={onSetLabel}
+          onSetReviewer={onSetReviewer}
           commits={commits}
         />
         <div className="pr-overview-main">
@@ -3488,11 +3535,12 @@ function PullRequestCommentComposer({
   )
 }
 
-function PullRequestSidebar({ details, commits, repositoryPath, onSetLabel }: {
+function PullRequestSidebar({ details, commits, repositoryPath, onSetLabel, onSetReviewer }: {
   details: PullRequestDetails
   commits: CommitSummary[]
   repositoryPath: string
   onSetLabel(label: GitHubLabel, selected: boolean): Promise<void>
+  onSetReviewer(reviewer: GitHubReviewer, requested: boolean): Promise<void>
 }) {
   const checksShouldOpen = details.checkStatus === 'fail' || details.checkStatus === 'pending'
   const [checksOpen, setChecksOpen] = useState(checksShouldOpen)
@@ -3582,12 +3630,20 @@ function PullRequestSidebar({ details, commits, repositoryPath, onSetLabel }: {
             )}
       </details>
 
-      <SidebarPeople
-        className="pr-sidebar-reviewers-section"
-        title="Reviewers"
-        people={details.reviewers}
-        emptyLabel="No reviewers"
-        renderTrailing={(reviewer) => <ReviewStatus status={reviewer.reviewStatus} />}
+      <PullRequestReviewers
+        repositoryPath={repositoryPath}
+        reviewers={details.reviewers}
+        onSetReviewer={onSetReviewer}
+        renderReviewer={(reviewer) => (
+          <>
+            <UserAvatar user={reviewer} />
+            <span>
+              <strong>{reviewer.name ?? reviewer.login}</strong>
+              {reviewer.name != null && <small>{reviewer.login}</small>}
+            </span>
+            <ReviewStatus status={reviewer.reviewStatus} />
+          </>
+        )}
       />
       <SidebarPeople
         className="pr-sidebar-assignees-section"
@@ -4184,22 +4240,65 @@ function MarkdownLink({
   if (href != null && children === href && isGitHubAttachmentUrl(href)) {
     return <AuthenticatedVideo src={githubAttachmentUrl(href)} />
   }
-  const reference = issueReferences.find((item) => item.url === href)
+  const reference = findIssueReference(issueReferences, href)
   if (reference != null) {
+    const status = issueReferenceStatusLabel(reference)
     return (
       <a
         {...props}
-        className="markdown-issue-reference"
+        className={`markdown-issue-reference ${reference.status}`}
         href={href}
         target="_blank"
         rel="noreferrer"
+        title={`${reference.label} ${reference.title} (${status})`}
       >
-        {reference.kind === 'pull-request' ? <PullRequestIcon /> : <IssueIcon />}
+        <IssueReferenceStatusIcon reference={reference} />
+        <span className="sr-only">{status}: </span>
         {children}
       </a>
     )
   }
   return <a {...props} href={href}>{children}</a>
+}
+
+function findIssueReference(
+  references: GitHubIssueReference[],
+  href: string | undefined,
+): GitHubIssueReference | undefined {
+  if (href == null) return undefined
+  // Shorthand links use GitHub's canonical URL, which differs from the typed owner/repo
+  // after a repository rename or transfer; typed URLs match by owner/repo#number.
+  const exact = references.find((item) => item.url === href)
+  if (exact != null) return exact
+  const parsed = parseIssueReferenceUrl(href)
+  if (parsed == null) return undefined
+  const key = issueReferenceKey(parsed)
+  return references.find((item) => issueReferenceKey(item) === key)
+}
+
+function issueReferenceStatusLabel(reference: GitHubIssueReference): string {
+  const kind = reference.kind === 'pull-request' ? 'pull request' : 'issue'
+  switch (reference.status) {
+    case 'draft': return `Draft ${kind}`
+    case 'merged': return `Merged ${kind}`
+    case 'closed': return `Closed ${kind}`
+    case 'completed': return `Closed ${kind} (completed)`
+    case 'not-planned': return `Closed ${kind} (not planned)`
+    default: return `Open ${kind}`
+  }
+}
+
+function IssueReferenceStatusIcon({ reference }: { reference: GitHubIssueReference }) {
+  const props = { 'aria-hidden': true as const }
+  if (reference.kind === 'pull-request') {
+    if (reference.status === 'draft') return <PullRequestDraftIcon {...props} />
+    if (reference.status === 'merged') return <MergeIcon {...props} />
+    if (reference.status === 'closed') return <PullRequestClosedIcon {...props} />
+    return <PullRequestIcon {...props} />
+  }
+  if (reference.status === 'completed') return <IssueCompletedIcon {...props} />
+  if (reference.status === 'not-planned') return <IssueNotPlannedIcon {...props} />
+  return <IssueIcon {...props} />
 }
 
 function githubAttachmentUrl(source: string): string {

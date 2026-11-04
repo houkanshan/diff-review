@@ -1870,6 +1870,11 @@ svg {
 .pr-label-options label { display: flex; align-items: center; gap: 8px; padding: 8px 4px; cursor: pointer; }
 .pr-label-options label > span:last-child { overflow-wrap: anywhere; min-width: 0; }
 .pr-label-options label:hover { background: var(--surface-inset); }
+.pr-reviewer-popover .pr-label-options label > span:not(.review-status) { min-width: 0; flex: 1; }
+.pr-reviewer-popover .pr-label-options label strong,
+.pr-reviewer-popover .pr-label-options label small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr-reviewer-popover .pr-label-options label small { color: var(--faint); font-size: 10px; }
+.pr-reviewer-popover .user-avatar { width: 20px; height: 20px; flex: none; }
 .pr-label-swatch { width: 10px; height: 10px; flex: none; border-radius: 50%; background: var(--label-color); }
 .pr-label-hint { margin: 12px 0 0; color: var(--muted); font-size: 11px; }
 
@@ -3722,6 +3727,13 @@ body.resizing-panels * {
 .markdown-body a:hover { text-decoration-color: currentColor; }
 .markdown-issue-reference { display: inline-flex; align-items: baseline; gap: 5px; }
 .markdown-issue-reference svg { width: 13px; height: 13px; transform: translateY(2px); }
+.markdown-issue-reference > svg { flex: none; }
+.markdown-issue-reference.open > svg { color: var(--green); }
+.markdown-issue-reference.merged > svg { color: #8c69d8; }
+.markdown-issue-reference.closed > svg { color: var(--red); }
+.markdown-issue-reference.completed > svg { color: #8c69d8; }
+.markdown-issue-reference.not-planned > svg,
+.markdown-issue-reference.draft > svg { color: var(--muted); }
 
 .markdown-body ul,
 .markdown-body ol { padding-left: 1.6em; }

@@ -175,6 +175,8 @@ function parseGitHubReviewer(value: unknown): GitHubReviewer | undefined {
     ...user,
     kind: value.kind,
     reviewStatus: value.reviewStatus as PullRequestReviewStatus,
+    // Older cached entries predate the flag; pending reviewers were the requested ones.
+    requested: typeof value.requested === 'boolean' ? value.requested : value.reviewStatus === 'none',
   }
 }
 

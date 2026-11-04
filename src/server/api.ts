@@ -16,6 +16,7 @@ import type {
   UpdatePullRequestDraftInput,
   UpdatePullRequestInput,
   UpdatePullRequestLabelInput,
+  UpdatePullRequestReviewerInput,
   PullRequestDetails,
   PullRequestListView,
   PullRequestWorkspace,
@@ -75,6 +76,8 @@ import {
   invalidatePullRequestListCache,
   listPullRequests,
   listRepositoryLabels,
+  listReviewerCandidates,
+  setPullRequestReviewer,
   addPullRequestLabel,
   removePullRequestLabel,
   setPullRequestDraft,
@@ -206,6 +209,7 @@ export class ApiHandler {
     const pullRequestLabelMatch = /^\/api\/pull-requests\/(\d+)\/labels\/([^/]+)$/.exec(
       url.pathname,
     )
+    const pullRequestReviewerMatch = /^\/api\/pull-requests\/(\d+)\/reviewers$/.exec(url.pathname)
     const pullRequestCommentMatch = /^\/api\/pull-requests\/(\d+)\/comments$/.exec(url.pathname)
     const pullRequestReviewMatch = /^\/api\/pull-requests\/(\d+)\/reviews$/.exec(url.pathname)
     const pullRequestDraftMatch = /^\/api\/pull-requests\/(\d+)\/draft$/.exec(url.pathname)
@@ -242,6 +246,12 @@ export class ApiHandler {
     if (method === 'GET' && url.pathname === '/api/labels') {
       const root = await resolveRepository(requiredQuery(url, 'repositoryPath'))
       sendJson(response, 200, await listRepositoryLabels(root))
+      return
+    }
+
+    if (method === 'GET' && url.pathname === '/api/reviewer-candidates') {
+      const root = await resolveRepository(requiredQuery(url, 'repositoryPath'))
+      sendJson(response, 200, await listReviewerCandidates(root, url.searchParams.get('search') ?? ''))
       return
     }
 
@@ -306,6 +316,21 @@ export class ApiHandler {
       try {
         if (method === 'POST') await addPullRequestLabel(root, number, label)
         else await removePullRequestLabel(root, number, label)
+      } finally {
+        // A timed-out mutation may still have been applied by GitHub.
+        invalidatePullRequestDetailsCache()
+        await invalidatePullRequestListCache(root)
+      }
+      response.writeHead(204).end()
+      return
+    }
+
+    if ((method === 'POST' || method === 'DELETE') && pullRequestReviewerMatch != null) {
+      const number = Number(pullRequestReviewerMatch[1])
+      const input = parseUpdatePullRequestReviewerInput(await readJson(request))
+      const root = await resolveRepository(input.repositoryPath)
+      try {
+        await setPullRequestReviewer(root, number, input, method === 'POST')
       } finally {
         // A timed-out mutation may still have been applied by GitHub.
         invalidatePullRequestDetailsCache()
@@ -1161,6 +1186,17 @@ function parseOpenPullRequestInput(value: unknown): OpenPullRequestInput {
 function parseUpdatePullRequestLabelInput(value: unknown): UpdatePullRequestLabelInput {
   const object = expectObject(value)
   return { repositoryPath: expectString(object.repositoryPath, 'repositoryPath') }
+}
+
+function parseUpdatePullRequestReviewerInput(value: unknown): UpdatePullRequestReviewerInput {
+  const object = expectObject(value)
+  const kind = object.kind
+  if (kind !== 'user' && kind !== 'team') throw new AppError('INVALID_INPUT', 'kind must be user or team')
+  return {
+    repositoryPath: expectString(object.repositoryPath, 'repositoryPath'),
+    login: expectTrimmedString(object.login, 'login'),
+    kind,
+  }
 }
 
 function parseAddPullRequestCommentInput(value: unknown): AddPullRequestCommentInput {

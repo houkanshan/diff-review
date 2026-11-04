@@ -8,6 +8,7 @@ import type {
   DifftasticAvailability,
   DifftasticFileDiff,
   GitHubLabel,
+  GitHubReviewer,
   OpenPullRequestInput,
   PiChatModelChoice,
   PiChatModelSettings,
@@ -23,6 +24,7 @@ import type {
   UpdatePullRequestDraftInput,
   UpdatePullRequestInput,
   UpdatePullRequestLabelInput,
+  UpdatePullRequestReviewerInput,
   JevFileOrderResponse,
   RepositoryInfo,
   ReviewSession,
@@ -104,6 +106,22 @@ export function getRepositoryLabels(repositoryPath: string): Promise<GitHubLabel
   return request(`/api/labels?repositoryPath=${encodeURIComponent(repositoryPath)}`, {
     timeoutMs: GITHUB_OPEN_TIMEOUT_MS,
   })
+}
+
+export function getReviewerCandidates(repositoryPath: string, search: string): Promise<GitHubReviewer[]> {
+  const query = new URLSearchParams({ repositoryPath, search })
+  return request(`/api/reviewer-candidates?${query}`, { timeoutMs: GITHUB_OPEN_TIMEOUT_MS })
+}
+
+export function setPullRequestReviewer(
+  number: number,
+  requested: boolean,
+  input: UpdatePullRequestReviewerInput,
+): Promise<void> {
+  return request(
+    `/api/pull-requests/${number}/reviewers`,
+    { method: requested ? 'POST' : 'DELETE', body: JSON.stringify(input) },
+  )
 }
 
 export function addPullRequestLabel(

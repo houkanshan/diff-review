@@ -276,6 +276,8 @@ export interface GitHubUser {
 export interface GitHubReviewer extends GitHubUser {
   kind: 'user' | 'team'
   reviewStatus: PullRequestReviewStatus
+  /** Whether a review is currently requested (removable) rather than only submitted. */
+  requested: boolean
 }
 
 export interface GitHubLabel {
@@ -292,9 +294,18 @@ export interface GitHubIssueReference {
   repository: string
   number: number
   kind: 'issue' | 'pull-request'
+  status: GitHubIssueReferenceStatus
   title: string
   url: string
 }
+
+export type GitHubIssueReferenceStatus =
+  | 'open'
+  | 'draft'
+  | 'merged'
+  | 'closed'
+  | 'completed'
+  | 'not-planned'
 
 export interface PullRequestSummary {
   number: number
@@ -540,6 +551,12 @@ export interface OpenPullRequestInput {
 
 export interface UpdatePullRequestLabelInput {
   repositoryPath: string
+}
+
+export interface UpdatePullRequestReviewerInput {
+  repositoryPath: string
+  login: string
+  kind: 'user' | 'team'
 }
 
 export interface AddPullRequestCommentInput {
