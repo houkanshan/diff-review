@@ -142,7 +142,8 @@ export function AnnotationStickyOverlay({
   }, [annotations, collapsedFiles, files, scroller, setOverlayIds])
 
   useLayoutEffect(() => {
-    const host = scroller?.parentElement
+    // Narrative FileDiffs add a wrapper; the overlay remains beside that wrapper.
+    const host = scroller?.closest('.diff-view-host') ?? scroller?.parentElement
     if (scroller == null || host == null) return
     const pending = new Map<HTMLElement, number>()
     const restore = (node: HTMLElement) => {
