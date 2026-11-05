@@ -1292,7 +1292,9 @@ describe('GitHub pull request list', () => {
       const originalGraphqlJson = process.env.GH_TEST_GRAPHQL_JSON
       process.env.GH_TEST_GRAPHQL_JSON = 'not-json'
       await expect(listPullRequests(directory, 'open')).resolves.toMatchObject({ stale: true })
-      await new Promise((resolve) => setTimeout(resolve, 50))
+      // Join the background refresh instead of assuming its subprocess finishes in 50 ms.
+      await expect(listPullRequests(directory, 'open', { fresh: true }))
+        .rejects.toThrow('Could not parse GitHub pull request list')
       process.env.GH_TEST_GRAPHQL_JSON = originalGraphqlJson
       await expect(listPullRequests(directory, 'open')).resolves.toMatchObject({
         stale: true,
