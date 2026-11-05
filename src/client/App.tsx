@@ -4,6 +4,7 @@ import {
   type CodeViewHandle,
   type CodeViewItem,
   type CodeViewReactOptions,
+  type FileDiffOptions,
 } from '@pierre/diffs/react'
 import {
   type CodeViewLineSelection,
@@ -112,6 +113,7 @@ import {
 
 import { AuthenticatedImage, AuthenticatedVideo } from './AuthenticatedMedia'
 import { readStoredValue, writeStoredValue } from './browserStorage'
+import { NarrativeDiffView, type NarrativeDiffViewHandle } from './NarrativeDiffView'
 import { issueReferenceKey, parseIssueReferenceUrl, remarkIssueReferences } from '../shared/markdown'
 import {
   isLocalChangesOid,
@@ -192,7 +194,7 @@ import {
   updateAnnotationComment,
   updateGlobalComment,
 } from './api'
-import { applyHoveredRange, applyImportance } from './importance'
+import { applyHoveredRange } from './importance'
 import { formatTimestamp, relativeTime, relativeTimeAgo } from './time'
 import {
   annotationEditCaretOffset,
@@ -214,8 +216,9 @@ import {
   activeFilePathAtom,
   areCodeViewSelectionsEqual,
   buildCodeViewItems,
+  groupReviewFiles,
+  type NarrativeGroup,
   fileIdForAnnotation,
-  orderReviewFiles,
   composerDraftAtom,
   composerSelectionAtom,
   composerSessionIdAtom,
@@ -1209,6 +1212,8 @@ function ReviewWorkspace({
   onOpenPullRequestList?(): void
 }) {
   const viewerRef = useRef<CodeViewHandle<ReviewLineAnnotation, undefined>>(null)
+  const narrativeViewerRef = useRef<NarrativeDiffViewHandle>(null)
+  const narrativeMode = (session.sections?.length ?? 0) > 0
   const [layout, setLayout] = useState<DiffLayout>('unified')
   const [renderer, setRenderer] = useState<DiffRenderer>(() => storedDiffRenderer())
   const [orderByAnnotation, setOrderByAnnotation] = useState(() => storedOrderByAnnotation())
@@ -1414,12 +1419,12 @@ function ReviewWorkspace({
     session.selectedCommitEnd,
   ])
 
-  const displayFiles = useMemo(
-    () => orderByAnnotation
-      ? orderReviewFiles(parsedFiles, session.annotations, jevFileOrder?.paths ?? null)
-      : parsedFiles,
-    [jevFileOrder, orderByAnnotation, parsedFiles, session.annotations],
+  const narrativeGroups = useMemo(
+    () => groupReviewFiles(parsedFiles, session.annotations, session.sections ?? [],
+      orderByAnnotation ? jevFileOrder?.paths ?? null : null),
+    [jevFileOrder, orderByAnnotation, parsedFiles, session.annotations, session.sections],
   )
+  const displayFiles = useMemo(() => narrativeGroups.flatMap((group) => group.files), [narrativeGroups])
 
   const items = useMemo<CodeViewItem<ReviewLineAnnotation>[]>(() => {
     const nextItems = buildCodeViewItems(
@@ -1501,7 +1506,6 @@ function ReviewWorkspace({
         }
       },
       onPostRender(node, _instance, phase, context) {
-        applyImportance(node, phase, context, annotationsRef.current)
         if (phase !== 'unmount') {
           applyHoveredRange(node, context, hoveredAnnotationRef.current)
         }
@@ -1514,6 +1518,27 @@ function ReviewWorkspace({
     }),
     [layout, openComposer, overflow, resolvedTheme],
   )
+
+  // FileDiff has its own supported option surface, without CodeView-only layout or callbacks.
+  const narrativeOptions = useMemo<FileDiffOptions<ReviewLineAnnotation, undefined>>(() => ({
+    theme: diffOptions.theme,
+    themeType: diffOptions.themeType,
+    diffStyle: diffOptions.diffStyle,
+    diffIndicators: diffOptions.diffIndicators,
+    overflow: diffOptions.overflow,
+    enableLineSelection: diffOptions.enableLineSelection,
+    lineHoverHighlight: diffOptions.lineHoverHighlight,
+    hunkSeparators: 'line-info-basic',
+    stickyHeader: diffOptions.stickyHeaders,
+    collapsedContextThreshold: diffOptions.collapsedContextThreshold,
+    expansionLineCount: diffOptions.expansionLineCount,
+    lineDiffType: diffOptions.lineDiffType,
+    loadDiffFiles: diffOptions.loadDiffFiles,
+    unsafeCSS: diffOptions.unsafeCSS,
+  }), [diffOptions])
+  const handleNarrativePostRender = useCallback((node: HTMLElement, id: string) => {
+    applyHoveredRange(node, { item: { id } }, hoveredAnnotationRef.current)
+  }, [])
 
   const handleSelection = useCallback((next: CodeViewLineSelection | null) => {
     if (next == null && composerSelectionRef.current != null) {
@@ -1531,7 +1556,6 @@ function ReviewWorkspace({
       const fileId = node.querySelector('[data-file-id]')?.getAttribute('data-file-id')
       if (fileId == null) continue
       const context = { item: { id: fileId } }
-      applyImportance(node, 'update', context, annotationsRef.current)
       applyHoveredRange(node, context, hovered)
     }
   }, [hoveredAnnotationId, session.annotations])
@@ -1681,7 +1705,7 @@ function ReviewWorkspace({
 
   useLayoutEffect(() => {
     setDiffScroller(diffWorkspaceRef.current?.querySelector<HTMLElement>('.diff-view') ?? null)
-  }, [items.length, layout, renderer, resolvedTheme, session.id, session.patch])
+  }, [items.length, layout, renderer, resolvedTheme, session.id, session.patch, narrativeMode, pullRequestView])
 
   useEffect(() => {
     const onPointerMove = (event: PointerEvent) => {
@@ -1953,6 +1977,10 @@ function ReviewWorkspace({
     }
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
+        if (narrativeMode) {
+          narrativeViewerRef.current?.scrollToAnnotation(fileId, lineNumber, side === 'old' ? 'deletions' : 'additions', 'start')
+          return
+        }
         viewerRef.current?.scrollTo({
           type: 'line',
           id: fileId,
@@ -1963,7 +1991,7 @@ function ReviewWorkspace({
         })
       })
     })
-  }, [pullRequest, renderer, setFileCollapsed, switchPullRequestView])
+  }, [narrativeMode, pullRequest, renderer, setFileCollapsed, switchPullRequestView])
 
   const selectFile = useCallback((id: string) => {
     setActiveFilePath(id)
@@ -1975,9 +2003,10 @@ function ReviewWorkspace({
       return
     }
     window.requestAnimationFrame(() => {
-      viewerRef.current?.scrollTo({ type: 'item', id, align: 'start', offset: 8 })
+      if (narrativeMode) narrativeViewerRef.current?.scrollToFile(id)
+      else viewerRef.current?.scrollTo({ type: 'item', id, align: 'start', offset: 8 })
     })
-  }, [pullRequest, renderer, setFileCollapsed, switchPullRequestView])
+  }, [narrativeMode, pullRequest, renderer, setFileCollapsed, switchPullRequestView])
 
   const navigateToAnnotation = useCallback((annotation: SessionAnnotation) => {
     const fileId = fileIdForAnnotation(annotation, parsedFiles)
@@ -1993,15 +2022,40 @@ function ReviewWorkspace({
       })
       return
     }
+    const side = (annotation.endSide ?? annotation.side) === 'new' ? 'additions' : 'deletions'
+    if (narrativeMode) {
+      window.requestAnimationFrame(() => {
+        narrativeViewerRef.current?.scrollToAnnotation(fileId, annotation.endLine, side)
+      })
+      return
+    }
     viewerRef.current?.scrollTo({
       type: 'line',
       id: fileId,
       lineNumber: annotation.endLine,
-      side: annotation.side === 'new' ? 'additions' : 'deletions',
+      side,
       align: 'center',
       behavior: 'smooth-auto',
     })
-  }, [parsedFiles, pullRequest, renderer, setFileCollapsed, switchPullRequestView])
+  }, [narrativeMode, parsedFiles, pullRequest, renderer, setFileCollapsed, switchPullRequestView])
+
+  const renderNarrativeOverview = (group: NarrativeGroup<FileDiffMetadata>) => (
+    <section className="narrative-overview" data-section-prefix={group.section?.prefix ?? 'other'}>
+      <h2>{group.section?.prefix ?? 'Other changes'}</h2>
+      {group.section != null && <MarkdownBody body={group.section.body} issueReferences={[]} />}
+      {group.references.length > 0 && (
+        <ul className="narrative-references">
+          {group.references.map((note) => (
+            <li key={note.id}>
+              <button type="button" onClick={() => navigateToAnnotation(note)}>
+                {note.shortId} · {fileIdForAnnotation(note, parsedFiles)}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
 
   const workspaceStyle = {
     '--left-panel-width': `${leftPanelWidth}px`,
@@ -2292,7 +2346,7 @@ function ReviewWorkspace({
             {(error ?? repositorySwitchError) != null && (
               <div className="error-banner">{error ?? repositorySwitchError}</div>
             )}
-            {items.length === 0 ? (
+            {items.length === 0 && (session.sections?.length ?? 0) === 0 ? (
               <EmptyDiff
                 session={session}
                 onOpenSession={onOpenSession}
@@ -2302,6 +2356,8 @@ function ReviewWorkspace({
               <DifftasticView
                 session={session}
                 files={displayFiles}
+                narrativeGroups={narrativeGroups}
+                renderOverview={renderNarrativeOverview}
                 layout={layout}
                 resolvedTheme={resolvedTheme}
                 hoveredAnnotationId={hoveredAnnotationId}
@@ -2317,7 +2373,21 @@ function ReviewWorkspace({
               />
             ) : (
               <div className="diff-view-host">
-                <CodeView<ReviewLineAnnotation>
+                {narrativeMode ? <NarrativeDiffView
+                  ref={narrativeViewerRef}
+                  groups={narrativeGroups}
+                  items={items}
+                  options={narrativeOptions}
+                  selection={selection}
+                  onSelectionChange={handleSelection}
+                  onSelectionEnd={openComposer}
+                  onVisibleFileChange={setActiveFilePath}
+                  onPostRender={handleNarrativePostRender}
+                  renderOverview={renderNarrativeOverview}
+                  renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
+                  renderHeaderMetadata={renderHeaderMetadata}
+                  renderAnnotation={renderAnnotation}
+                /> : <CodeView<ReviewLineAnnotation>
                   ref={viewerRef}
                   key={`${layout}:${resolvedTheme}`}
                   className="diff-view"
@@ -2334,7 +2404,7 @@ function ReviewWorkspace({
                   renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
                   renderHeaderMetadata={renderHeaderMetadata}
                   renderAnnotation={renderAnnotation}
-                />
+                />}
                 <AnnotationStickyOverlay
                   scroller={diffScroller}
                   annotations={session.annotations}
@@ -5559,7 +5629,7 @@ function Inspector({
               </AnnotationIconButton>
             )}
             <AnnotationIconButton
-              label="Order by annotation"
+              label="Sort other changes"
               aria-pressed={orderByAnnotation}
               onClick={() => onOrderByAnnotationChange(!orderByAnnotation)}
             >
@@ -5586,7 +5656,7 @@ function Inspector({
         {visible.length === 0 && !showGlobalComment ? (
           <p className="notes-empty">
             {view === 'active'
-              ? 'Comments and importance highlights will collect here.'
+              ? 'Comments will collect here.'
               : 'Archived annotations will remain available here.'}
           </p>
         ) : (
@@ -5750,11 +5820,6 @@ function Inspector({
                       </time>
                       {annotation.intent === 'review-comment' && annotation.submittedAt == null && annotation.archivedAt == null && (
                         <span className="review-comment-source">pending review</span>
-                      )}
-                      {annotation.importance != null && (
-                        <span className="importance-inline">
-                          importance {formatImportance(annotation.importance)}
-                        </span>
                       )}
                     </div>
                     <div className="note-actions">
@@ -6731,10 +6796,6 @@ function fileChangeStats(file: FileDiffMetadata): FileChangeStats {
     }
   }
   return stats
-}
-
-function formatImportance(importance: number): string {
-  return importance.toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1')
 }
 
 function patchContentKey(patch: string): string {

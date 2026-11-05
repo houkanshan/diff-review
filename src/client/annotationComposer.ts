@@ -8,9 +8,8 @@ import type {
 } from '@pierre/diffs'
 
 import { annotationThreads, isAnnotationThreadRoot } from '../shared/annotationThreads'
-import type { AnnotationIntent, DifftasticHunk, SessionAnnotation } from '../shared/types'
+import type { AnnotationIntent, DifftasticHunk, SessionAnnotation, SessionSection } from '../shared/types'
 import { nearestVisibleLine, snapPierreLineNumber } from './annotationPlacement'
-import { compareReviewFilePaths } from './reviewFileOrder'
 
 export type ReviewLineAnnotation =
   | { kind: 'saved'; annotation: SessionAnnotation }
@@ -89,52 +88,70 @@ export function fileIdForAnnotation(
   return renamed?.name ?? annotation.filePath
 }
 
-const MISSING_AGENT_IMPORTANCE = 0.5
+export interface NarrativeGroup<T> {
+  section: SessionSection | null
+  files: T[]
+  references: SessionAnnotation[]
+}
+
+/** Section order owns files; later references link to the already-rendered note. */
+export function groupReviewFiles<T extends { name: string; prevName?: string | null }>(
+  files: readonly T[],
+  annotations: readonly SessionAnnotation[],
+  sections: readonly SessionSection[] = [],
+  jevPaths: readonly string[] | null = null,
+): NarrativeGroup<T>[] {
+  const byName = new Map(files.map((file) => [file.name, file]))
+  const claimed = new Set<string>()
+  const orderedSections = [...sections].sort((left, right) => {
+    const leftOrder = Number.isFinite(left.order) ? left.order : Infinity
+    const rightOrder = Number.isFinite(right.order) ? right.order : Infinity
+    return (leftOrder === rightOrder ? 0 : leftOrder - rightOrder) ||
+      left.createdAt.localeCompare(right.createdAt)
+  })
+  const notes = annotations.filter((note) =>
+    note.source === 'agent' && note.archivedAt == null && note.replyToId == null &&
+    note.comment != null,
+  ).sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+  const groups = orderedSections.map((section): NarrativeGroup<T> => {
+    const group: NarrativeGroup<T> = { section, files: [], references: [] }
+    const sectionFiles = new Set<string>()
+    for (const note of notes) {
+      if (note.sectionPrefix !== section.prefix) continue
+      const fileId = fileIdForAnnotation(note, files)
+      const file = byName.get(fileId)
+      if (file == null) continue
+      if (claimed.has(fileId) && !sectionFiles.has(fileId)) {
+        group.references.push(note)
+      } else if (!claimed.has(fileId)) {
+        claimed.add(fileId)
+        sectionFiles.add(fileId)
+        group.files.push(file)
+      }
+    }
+    return group
+  })
+  const remaining = files.filter((file) => !claimed.has(file.name))
+  const ranked = new Map(remaining.map((file) => [file.name, file]))
+  const rest: T[] = []
+  for (const path of jevPaths ?? []) {
+    const file = ranked.get(path)
+    if (file == null) continue
+    rest.push(file)
+    ranked.delete(path)
+  }
+  rest.push(...remaining.filter((file) => ranked.has(file.name)))
+  if (rest.length > 0) groups.push({ section: null, files: rest, references: [] })
+  return groups
+}
 
 export function orderReviewFiles<T extends { name: string; prevName?: string | null }>(
   files: readonly T[],
-  annotations: readonly Pick<SessionAnnotation, 'filePath' | 'source' | 'importance'>[],
+  annotations: readonly SessionAnnotation[],
   jevPaths: readonly string[] | null,
+  sections: readonly SessionSection[] = [],
 ): T[] {
-  if (files.length === 0) return []
-  const filesByName = new Map(files.map((file) => [file.name, file]))
-  const agentImportance = new Map<string, number>()
-  for (const annotation of annotations) {
-    if (annotation.source !== 'agent') continue
-    const fileId = fileIdForAnnotation(annotation, files)
-    if (!filesByName.has(fileId)) continue
-    const importance = annotation.importance ?? MISSING_AGENT_IMPORTANCE
-    agentImportance.set(fileId, Math.max(agentImportance.get(fileId) ?? -1, importance))
-  }
-
-  const annotated: T[] = []
-  const rest: T[] = []
-  for (const file of files) {
-    if (agentImportance.has(file.name)) annotated.push(file)
-    else rest.push(file)
-  }
-  annotated.sort((left, right) => {
-    const delta = (agentImportance.get(right.name) ?? 0) - (agentImportance.get(left.name) ?? 0)
-    if (delta !== 0) return delta
-    return compareReviewFilePaths(left.name, right.name)
-  })
-
-  const restByName = new Map(rest.map((file) => [file.name, file]))
-  const orderedRest: T[] = []
-  const seen = new Set<string>()
-  if (jevPaths != null) {
-    for (const filePath of jevPaths) {
-      const file = restByName.get(filePath)
-      if (file == null || seen.has(file.name)) continue
-      seen.add(file.name)
-      orderedRest.push(file)
-    }
-  }
-  for (const file of rest) {
-    if (seen.has(file.name)) continue
-    orderedRest.push(file)
-  }
-  return [...annotated, ...orderedRest]
+  return groupReviewFiles(files, annotations, sections, jevPaths).flatMap((group) => group.files)
 }
 
 export function annotationsForFile(
@@ -278,7 +295,8 @@ export function areSavedAnnotationsEqual(
     left.endSide === right.endSide &&
     left.endLine === right.endLine &&
     left.comment === right.comment &&
-    left.importance === right.importance &&
+    left.shortId === right.shortId &&
+    left.sectionPrefix === right.sectionPrefix &&
     left.source === right.source &&
     left.intent === right.intent &&
     left.replyToId === right.replyToId &&

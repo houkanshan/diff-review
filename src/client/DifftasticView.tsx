@@ -7,12 +7,13 @@ import {
   ChevronDown as ChevronIcon,
   Copy as CopyIcon,
 } from 'lucide-react'
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { Fragment, createContext, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import type { ThemedToken } from 'shiki'
 
 import { ClientError, getDifftasticAvailability, getDifftasticFile, getFileContents } from './api'
 import {
   activeAnnotationById,
+  type NarrativeGroup,
   annotationCoversLine,
   annotationsAtDifftasticRow,
   placeDifftasticAnnotations,
@@ -128,6 +129,8 @@ function snapDifftasticScroll(scroller: HTMLElement, node: HTMLElement, offset: 
 type DifftasticViewProps = {
   session: ReviewSession
   files: FileDiffMetadata[]
+  narrativeGroups?: NarrativeGroup<FileDiffMetadata>[]
+  renderOverview?(group: NarrativeGroup<FileDiffMetadata>): ReactNode
   layout: 'unified' | 'split'
   resolvedTheme: 'light' | 'dark'
   hoveredAnnotationId: string | null
@@ -187,6 +190,8 @@ function DifftasticGuide({ checking, hint }: { checking: boolean; hint: string }
 function DifftasticFiles({
   session,
   files,
+  narrativeGroups,
+  renderOverview,
   layout,
   resolvedTheme,
   hoveredAnnotationId,
@@ -235,21 +240,26 @@ function DifftasticFiles({
         if (next != null) onVisibleFileChange?.(next)
       }}
     >
-      {files.map((file) => (
-        <DifftasticFile
-          key={file.name}
-          sessionId={session.id}
-          updatedAt={session.updatedAt}
-          annotations={session.annotations}
-          file={file}
-          layout={layout}
-          resolvedTheme={resolvedTheme}
-          collapsed={collapsedFiles.has(file.name)}
-          viewed={viewedFiles.has(file.name)}
-          onToggleCollapsed={() => onToggleCollapsed(file.name)}
-          onSetViewed={(viewed) => onSetViewed(file.name, viewed)}
-        />
-      ))}
+      {(narrativeGroups ?? [{ section: null, files, references: [] }]).flatMap((group) => [
+        <Fragment key={`section:${group.section?.prefix ?? 'other'}`}>
+          {narrativeGroups?.some((entry) => entry.section != null) && renderOverview?.(group)}
+        </Fragment>,
+        ...group.files.map((file) => (
+          <DifftasticFile
+            key={`file:${file.name}`}
+            sessionId={session.id}
+            updatedAt={session.updatedAt}
+            annotations={session.annotations}
+            file={file}
+            layout={layout}
+            resolvedTheme={resolvedTheme}
+            collapsed={collapsedFiles.has(file.name)}
+            viewed={viewedFiles.has(file.name)}
+            onToggleCollapsed={() => onToggleCollapsed(file.name)}
+            onSetViewed={(viewed) => onSetViewed(file.name, viewed)}
+          />
+        )),
+      ])}
     </div>
     <Tooltip.Portal>
       <Tooltip.Positioner

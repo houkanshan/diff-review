@@ -31,6 +31,7 @@ function fileDiff(name: string, prevName?: string): FileDiffMetadata {
 function annotation(filePath: string, id = 'note-1'): SessionAnnotation {
   return {
     id,
+    shortId: id,
     sessionId: 'session',
     filePath,
     side: 'new',
@@ -302,7 +303,7 @@ describe('annotationCoversLine', () => {
     )).toBe('same.ts')
   })
 
-  test('orders agent-annotated files by importance before remaining files', () => {
+  test('ignores legacy importance and leaves ungrouped files in path order', () => {
     const files = [fileDiff('a.ts'), fileDiff('b.ts'), fileDiff('c.ts'), fileDiff('d.ts')]
     const notes = [
       { ...annotation('c.ts', 'agent-1'), source: 'agent' as const, importance: 0.2 },
@@ -312,19 +313,19 @@ describe('annotationCoversLine', () => {
       { ...annotation('missing.ts', 'agent-4'), source: 'agent' as const, importance: 1 },
     ]
     expect(orderReviewFiles(files, notes, null).map((file) => file.name)).toEqual([
+      'a.ts',
       'b.ts',
       'c.ts',
-      'a.ts',
       'd.ts',
     ])
   })
 
-  test('maps renamed agent annotations onto the current file before unannotated files', () => {
+  test('preserves legacy renamed notes without moving their file', () => {
     const files = [fileDiff('keep.ts'), fileDiff('new.ts', 'old.ts')]
     const notes = [{ ...annotation('old.ts', 'agent-1'), source: 'agent' as const }]
     expect(orderReviewFiles(files, notes, null).map((file) => file.name)).toEqual([
-      'new.ts',
       'keep.ts',
+      'new.ts',
     ])
   })
 
@@ -336,7 +337,7 @@ describe('annotationCoversLine', () => {
     ])
   })
 
-  test('orders remaining files by jev ranking and treats missing importance as 0.5', () => {
+  test('orders ungrouped files by jev ranking regardless of legacy importance', () => {
     const files = [fileDiff('a.ts'), fileDiff('b.ts'), fileDiff('c.ts'), fileDiff('d.ts')]
     const notes = [
       { ...annotation('a.ts', 'agent-1'), source: 'agent' as const, importance: 1 },
@@ -344,10 +345,10 @@ describe('annotationCoversLine', () => {
       { ...annotation('c.ts', 'agent-3'), source: 'agent' as const, importance: 0 },
     ]
     expect(orderReviewFiles(files, notes, ['d.ts', 'c.ts', 'b.ts', 'a.ts']).map((file) => file.name)).toEqual([
-      'a.ts',
-      'b.ts',
-      'c.ts',
       'd.ts',
+      'c.ts',
+      'b.ts',
+      'a.ts',
     ])
   })
 

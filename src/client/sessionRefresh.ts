@@ -8,5 +8,6 @@ export function canAutoRefreshReview(
   return !editing &&
     session.annotations.length === 0 &&
     session.globalComments.length === 0 &&
+    (session.sections?.length ?? 0) === 0 &&
     sessionUsesFullCommitRange(session)
 }

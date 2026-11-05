@@ -2720,6 +2720,11 @@ body.resizing-panels * {
   height: 12px;
 }
 
+.narrative-diff-host {
+  height: 100%;
+  min-height: 0;
+}
+
 .diff-view-host {
   position: relative;
   width: 100%;
@@ -2746,7 +2751,6 @@ body.resizing-panels * {
   --diffs-bg-separator-override: var(--diff-separator);
   --diffs-addition-color-override: var(--green);
   --diffs-deletion-color-override: var(--red);
-  /* Keep the default, unscored diff equivalent to importance 0.5. */
   --diffs-bg-addition-override: color-mix(in lab, var(--diff-bg) 50%, var(--green));
   --diffs-bg-deletion-override: color-mix(in lab, var(--diff-bg) 50%, var(--red));
   --diffs-bg-addition-emphasis-override: rgb(from var(--green) r g b / 0.1);
@@ -2754,6 +2758,25 @@ body.resizing-panels * {
   --diffs-modified-color-override: var(--accent);
   --diffs-bg-selection-override: var(--accent);
   --diffs-gap-block: 6px;
+}
+
+.narrative-overview {
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--diff-bg);
+}
+
+.narrative-overview h2 {
+  font-size: 16px;
+  margin: 0 0 12px;
+}
+
+.narrative-references button {
+  color: var(--blue);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
 }
 
 .difftastic-view {
@@ -4522,12 +4545,6 @@ body.resizing-panels * {
   color: var(--muted);
   font-size: 8px;
   font-weight: 650;
-}
-
-.importance-inline {
-  color: var(--muted);
-  font-size: 8px;
-  font-variant-numeric: tabular-nums;
 }
 
 .note-card footer button {

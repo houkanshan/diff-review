@@ -6,7 +6,7 @@ const session: ReviewSession = {
   id: 'drs_old', repositoryRoot: '/repo', repositoryName: 'repo',
   target: { kind: 'worktree' }, targetLabel: 'Worktree', gitCommand: '', patch: '',
   commits: [], selectedCommitStart: null, selectedCommitEnd: null,
-  annotations: [], globalComments: [], viewedFiles: [], ignoreWhitespace: false,
+  annotations: [], sections: [], globalComments: [], viewedFiles: [], ignoreWhitespace: false,
   revisionBaseOid: null, revisionHeadOid: null, unstagedPaths: null, jevFileOrder: null,
   createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z',
 }
@@ -38,6 +38,14 @@ describe('automatic review refresh eligibility', () => {
       ...session,
       globalComments: [{ id: 'comment', sessionId: session.id, comment: 'Keep',
         source: 'user', archivedAt: null, createdAt: session.createdAt, updatedAt: session.updatedAt }],
+    }, false)).toBe(false)
+  })
+
+  it('keeps sections-only narratives on their revision, including empty overviews', () => {
+    expect(canAutoRefreshReview({
+      ...session,
+      sections: [{ prefix: 'ABC', sessionId: session.id, body: '', order: 0,
+        createdAt: session.createdAt, updatedAt: session.updatedAt }],
     }, false)).toBe(false)
   })
 
