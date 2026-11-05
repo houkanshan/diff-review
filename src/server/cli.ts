@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -12,6 +12,7 @@ import type {
   ReviewTarget,
   SessionAnnotation,
   SessionGlobalComment,
+  SessionSection,
 } from '../shared/types.js'
 import { browserOrigin, configuredToken } from './auth.js'
 import { daemonClientUrl, serveDaemon } from './daemon.js'
@@ -64,6 +65,12 @@ async function main(): Promise<void> {
 
   if (args[0] === 'setup-skill') {
     setupSkill()
+    return
+  }
+
+  if (args[0] === 'section' || args[0] === 'annotation') {
+    if (wantsHelp(args.slice(1))) { printHelp(); return }
+    await runNarrativeCommand(args[0], args.slice(1))
     return
   }
 
@@ -142,12 +149,8 @@ async function addAnnotation(
   const oldLine = stringFlag(parsed, 'old-line')
   const newLine = stringFlag(parsed, 'new-line')
   const comment = stringFlag(parsed, 'comment')
-  const importanceValue = stringFlag(parsed, 'importance')
+  rejectImportanceFlag(parsed)
   const shortIdPrefix = stringFlag(parsed, 'id-prefix')
-  const importance = importanceValue == null ? undefined : Number(importanceValue)
-  if (importance != null && (!Number.isFinite(importance) || importance < 0 || importance > 1)) {
-    throw new AppError('INVALID_ARGUMENTS', '--importance must be a number between 0 and 1')
-  }
 
   const hasFile = filePath != null
   const hasLine = oldLine != null || newLine != null
@@ -155,8 +158,8 @@ async function addAnnotation(
     if (comment == null || comment.trim() === '') {
       throw new AppError('INVALID_ARGUMENTS', 'global annotate requires --comment <text>')
     }
-    if (importance != null || shortIdPrefix != null) {
-      throw new AppError('INVALID_ARGUMENTS', 'global annotate does not accept --importance or --id-prefix')
+    if (shortIdPrefix != null) {
+      throw new AppError('INVALID_ARGUMENTS', 'global annotate does not accept --id-prefix')
     }
     const globalComment = await requestJson<SessionGlobalComment>(
       `/api/sessions/${encodeURIComponent(sessionId)}/global-comments`,
@@ -173,8 +176,8 @@ async function addAnnotation(
     throw new AppError('INVALID_ARGUMENTS', 'Use exactly one of --old-line or --new-line')
   }
   const range = parseLineRange(oldLine ?? newLine ?? '')
-  if (comment == null && importance == null) {
-    throw new AppError('INVALID_ARGUMENTS', 'Use at least one of --comment or --importance')
+  if (comment == null || !comment.trim()) {
+    throw new AppError('INVALID_ARGUMENTS', 'Use --comment <text>')
   }
 
   const annotation = await requestJson<SessionAnnotation>(
@@ -187,13 +190,79 @@ async function addAnnotation(
         startLine: range.start,
         endLine: range.end,
         comment,
-        importance,
         shortIdPrefix,
         source: 'agent',
       }),
     },
   )
   return { kind: 'line', payload: annotation, json: booleanFlag(parsed, 'json') }
+}
+
+function rejectImportanceFlag(args: ParsedArgs): void {
+  if (args.flags.has('importance')) throw new AppError('INVALID_ARGUMENTS', '--importance is no longer writable')
+}
+
+function bodyFromFlags(args: ParsedArgs, required: boolean): string | undefined {
+  const body = stringFlag(args, 'body')
+  const file = stringFlag(args, 'body-file')
+  if (body != null && file != null) throw new AppError('INVALID_ARGUMENTS', 'Use exactly one of --body or --body-file')
+  const result = file == null ? body : readFileSync(file === '-' ? 0 : file, 'utf8')
+  if (required && result == null) throw new AppError('INVALID_ARGUMENTS', 'Use --body or --body-file')
+  if (result != null && !result.trim()) throw new AppError('INVALID_ARGUMENTS', 'body must not be empty')
+  return result
+}
+
+async function runNarrativeCommand(kind: string, args: string[]): Promise<void> {
+  const parsed = parseArgs(args)
+  rejectImportanceFlag(parsed)
+  const [action, sessionId, identifier] = parsed.positionals
+  if (!sessionId) throw new AppError('INVALID_ARGUMENTS', `${kind} requires an action and session ID`)
+  const base = `/api/sessions/${encodeURIComponent(sessionId)}`
+  let route: string
+  let method = 'GET'
+  let input: unknown
+  if (kind === 'section' && action === 'list') {
+    route = `${base}/sections`
+  } else if (kind === 'section' && action === 'set') {
+    if (!identifier) throw new AppError('INVALID_ARGUMENTS', 'section set requires a prefix')
+    const body = bodyFromFlags(parsed, false)
+    const value = stringFlag(parsed, 'order')
+    const order = value == null ? undefined : Number(value)
+    if (order != null && !Number.isFinite(order)) throw new AppError('INVALID_ARGUMENTS', '--order must be a finite number')
+    route = `${base}/sections/${encodeURIComponent(identifier)}`
+    method = 'PUT'
+    input = { body, order }
+  } else if (kind === 'annotation' && action === 'add') {
+    if (!identifier) throw new AppError('INVALID_ARGUMENTS', 'annotation add requires a section prefix')
+    const filePath = stringFlag(parsed, 'file')
+    const oldLine = stringFlag(parsed, 'old-line')
+    const newLine = stringFlag(parsed, 'new-line')
+    if (!filePath || (oldLine == null) === (newLine == null)) {
+      throw new AppError('INVALID_ARGUMENTS', 'Use --file and exactly one of --old-line or --new-line')
+    }
+    const range = parseLineRange(oldLine ?? newLine ?? '')
+    input = {
+      sectionPrefix: identifier, filePath, side: oldLine == null ? 'new' : 'old',
+      startLine: range.start, endLine: range.end, comment: bodyFromFlags(parsed, true), source: 'agent',
+    }
+    route = `${base}/annotations`
+    method = 'POST'
+  } else if (kind === 'annotation' && action === 'update') {
+    if (!identifier) throw new AppError('INVALID_ARGUMENTS', 'annotation update requires a short ID')
+    route = `${base}/annotations/${encodeURIComponent(identifier)}/body`
+    method = 'PATCH'
+    input = { body: bodyFromFlags(parsed, true) }
+  } else {
+    throw new AppError('INVALID_ARGUMENTS', 'Use section set|list or annotation add|update')
+  }
+  await ensureDaemon()
+  const result = await requestJson<SessionSection | SessionSection[] | SessionAnnotation>(
+    route, { method, ...(input == null ? {} : { body: JSON.stringify(input) }) },
+  )
+  if (booleanFlag(parsed, 'json')) console.log(JSON.stringify(result, null, 2))
+  else if (Array.isArray(result)) console.log(result.map((section) => `${section.prefix} (${section.order})\n${section.body}`).join('\n\n'))
+  else if ('shortId' in result) console.log(`Annotation ${result.shortId} (${result.id})`)
+  else console.log(`Section ${result.prefix} (${result.order})`)
 }
 
 async function targetFromArguments(args: ParsedArgs, repositoryPath: string): Promise<ReviewTarget> {
@@ -343,7 +412,11 @@ function printHelp(): void {
   diff-review annotate <session-id> --comment <text> [--json]
   diff-review annotate <session-id> --file <path> \\
     (--old-line <line[-end]> | --new-line <line[-end]>) \\
-    [--comment <text>] [--importance <0..1>] [--id-prefix <PREFIX>] [--json]
+    --comment <text> [--id-prefix <PREFIX>] [--json]
+  diff-review section set <session-id> <PREFIX> [--body <text> | --body-file <path|->] [--order <number>] [--json]
+  diff-review section list <session-id> [--json]
+  diff-review annotation add <session-id> <PREFIX> --file <path> (--old-line <line[-end]> | --new-line <line[-end]>) (--body <text> | --body-file <path|->) [--json]
+  diff-review annotation update <session-id> <shortId> (--body <text> | --body-file <path|->) [--json]
 
 Examples:
   diff-review
@@ -353,7 +426,7 @@ Examples:
   diff-review service status
   diff-review annotate drs_abc123 --comment "Summary of the change"
   diff-review annotate drs_abc123 --file src/retry.ts --new-line 42-48 \\
-    --comment "Generated code; safe to skim" --importance 0
+    --comment "Generated code; safe to skim"
 `)
 }
 

@@ -165,9 +165,24 @@ export function localChangesCommit(): CommitSummary {
   }
 }
 
+export interface SessionSection {
+  prefix: string
+  sessionId: string
+  body: string
+  order: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SetSectionInput {
+  body?: string
+  order?: number
+}
+
 export interface SessionAnnotation {
   id: string
   shortId: string
+  sectionPrefix?: string | null
   sessionId: string
   filePath: string
   side: DiffSide
@@ -234,6 +249,7 @@ export interface ReviewSession {
   commits: CommitSummary[]
   selectedCommitStart: string | null
   selectedCommitEnd: string | null
+  sections: SessionSection[]
   annotations: SessionAnnotation[]
   globalComments: SessionGlobalComment[]
   viewedFiles: string[]
@@ -591,6 +607,7 @@ export interface UpdatePullRequestInput {
 }
 
 export interface AddAnnotationInput {
+  sectionPrefix?: string
   shortIdPrefix?: string
   filePath: string
   side: DiffSide
@@ -598,7 +615,6 @@ export interface AddAnnotationInput {
   endSide?: DiffSide
   endLine: number
   comment?: string
-  importance?: number
   source: 'user' | 'agent'
   intent?: AnnotationIntent
   replyToId?: string

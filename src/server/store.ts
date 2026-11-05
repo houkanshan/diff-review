@@ -16,6 +16,8 @@ import type {
   ReviewTarget,
   SessionAnnotation,
   SessionGlobalComment,
+  SessionSection,
+  SetSectionInput,
 } from '../shared/types.js'
 import type { ResolvedReview } from './git.js'
 import { AppError } from './errors.js'
@@ -46,7 +48,17 @@ interface SessionRow {
   updated_at: string
 }
 
+interface SectionRow {
+  prefix: string
+  session_id: string
+  body: string
+  sort_order: number
+  created_at: string
+  updated_at: string
+}
+
 interface AnnotationRow {
+  section_prefix: string | null
   id: string
   short_id: string
   session_id: string
@@ -150,6 +162,16 @@ export class ReviewStore {
         viewed_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS sections (
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        prefix TEXT NOT NULL,
+        body TEXT NOT NULL,
+        sort_order REAL NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (session_id, prefix)
       );
 
       CREATE TABLE IF NOT EXISTS annotation_counters (
@@ -566,8 +588,79 @@ export class ReviewStore {
     return this.getSession(id)
   }
 
+  listSections(sessionId: string): SessionSection[] {
+    if (this.database.prepare('SELECT id FROM sessions WHERE id = ?').get(sessionId) == null) {
+      throw new AppError('SESSION_NOT_FOUND', `Session not found: ${sessionId}`, 404)
+    }
+    const rows = this.database.prepare(
+      'SELECT * FROM sections WHERE session_id = ? ORDER BY sort_order, created_at, rowid',
+    ).all(sessionId) as unknown as SectionRow[]
+    return rows.map((row) => ({
+      prefix: row.prefix, sessionId: row.session_id, body: row.body,
+      order: row.sort_order, createdAt: row.created_at, updatedAt: row.updated_at,
+    }))
+  }
+
+  setSection(sessionId: string, prefix: string, input: SetSectionInput): SessionSection {
+    if (!/^[A-Z][A-Z0-9]{1,11}$/.test(prefix)) {
+      throw new AppError('INVALID_INPUT', 'prefix must be 2–12 uppercase letters or digits and start with a letter')
+    }
+    if (input.body !== undefined && (typeof input.body !== 'string' || !input.body.trim())) {
+      throw new AppError('INVALID_INPUT', 'body must not be empty')
+    }
+    if (input.order !== undefined && !Number.isFinite(input.order)) {
+      throw new AppError('INVALID_INPUT', 'order must be a finite number')
+    }
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      const sections = this.listSections(sessionId)
+      const existing = sections.find((section) => section.prefix === prefix)
+      if (existing == null && input.body === undefined) {
+        throw new AppError('INVALID_INPUT', 'body is required when creating a section')
+      }
+      const order = input.order ?? existing?.order
+        ?? (sections.length === 0 ? 10 : Math.max(...sections.map((section) => section.order)) + 10)
+      if (!Number.isFinite(order)) throw new AppError('INVALID_INPUT', 'default order must be finite')
+      const now = new Date().toISOString()
+      this.database.prepare(`
+        INSERT INTO sections (session_id, prefix, body, sort_order, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_id, prefix) DO UPDATE SET
+          body = excluded.body, sort_order = excluded.sort_order, updated_at = excluded.updated_at
+      `).run(sessionId, prefix, input.body ?? existing!.body, order, now, now)
+      this.database.exec('COMMIT')
+    } catch (error) {
+      this.database.exec('ROLLBACK')
+      throw error
+    }
+    return this.listSections(sessionId).find((section) => section.prefix === prefix)!
+  }
+
+  updateAgentAnnotationBody(sessionId: string, shortId: string, body: string): SessionAnnotation {
+    if (!body.trim()) throw new AppError('INVALID_INPUT', 'body must not be empty')
+    const existing = this.getSession(sessionId).annotations.find((annotation) => annotation.shortId === shortId)
+    if (existing == null || existing.source !== 'agent' || existing.replyToId != null) {
+      throw new AppError('ANNOTATION_NOT_EDITABLE', `Agent annotation not found: ${shortId}`, 404)
+    }
+    this.database.prepare('UPDATE annotations SET comment = ?, updated_at = ? WHERE id = ?')
+      .run(body, new Date().toISOString(), existing.id)
+    return this.getAnnotation(existing.id)
+  }
+
   addAnnotation(sessionId: string, input: AddAnnotationInput): SessionAnnotation {
+    if (Object.hasOwn(input, 'importance')) throw new AppError('INVALID_INPUT', 'importance is no longer writable')
     this.getSession(sessionId)
+    if (input.sectionPrefix != null) {
+      if (input.source !== 'agent' || input.replyToId != null) {
+        throw new AppError('INVALID_INPUT', 'Only top-level agent annotations can belong to a section')
+      }
+      if (!this.listSections(sessionId).some((section) => section.prefix === input.sectionPrefix)) {
+        throw new AppError('SECTION_NOT_FOUND', `Section not found: ${input.sectionPrefix}`, 404)
+      }
+      if (input.shortIdPrefix != null && input.shortIdPrefix !== input.sectionPrefix) {
+        throw new AppError('INVALID_INPUT', 'shortIdPrefix must match sectionPrefix')
+      }
+    }
     const parent = input.replyToId == null ? null : this.getAnnotation(input.replyToId)
     if (parent != null && parent.sessionId !== sessionId) {
       throw new AppError('ANNOTATION_NOT_FOUND', `Annotation not found: ${input.replyToId}`, 404)
@@ -584,7 +677,7 @@ export class ReviewStore {
     if (parent != null && (input.comment == null || input.comment.trim() === '')) {
       throw new AppError('INVALID_ANNOTATION_REPLY', 'A reply must include a comment')
     }
-    const prefix = input.shortIdPrefix ?? 'ANNO'
+    const prefix = input.sectionPrefix ?? input.shortIdPrefix ?? 'ANNO'
     if (!/^[A-Z][A-Z0-9]{1,11}$/.test(prefix) || (input.source !== 'agent' && input.shortIdPrefix != null)) {
       throw new AppError('INVALID_INPUT', 'shortIdPrefix must be 2–12 uppercase letters or digits, start with a letter, and be set only for agent annotations')
     }
@@ -592,22 +685,31 @@ export class ReviewStore {
     const now = new Date().toISOString()
     this.database.exec('BEGIN IMMEDIATE')
     try {
+      // Include legacy padded IDs in the high-water mark; deleted numbers remain in the counter.
+      const ids = this.database.prepare('SELECT short_id FROM annotations WHERE session_id = ?')
+        .all(sessionId) as Array<{ short_id: string }>
+      const largest = ids.reduce((max, row) => {
+        const match = new RegExp(`^${prefix}-(\\d+)$`).exec(row.short_id)
+        return match == null ? max : Math.max(max, Number(match[1]))
+      }, 0)
       const counter = this.database.prepare(`
-        INSERT INTO annotation_counters (session_id, prefix, number) VALUES (?, ?, 1)
-        ON CONFLICT(session_id, prefix) DO UPDATE SET number = number + 1
+        INSERT INTO annotation_counters (session_id, prefix, number) VALUES (?, ?, ?)
+        ON CONFLICT(session_id, prefix) DO UPDATE SET number = MAX(number, excluded.number - 1) + 1
         RETURNING number
-      `).get(sessionId, prefix) as { number: number }
-      const shortId = `${prefix}-${String(counter.number).padStart(2, '0')}`
+      `).get(sessionId, prefix, largest + 1) as { number: number }
+      const suffix = input.sectionPrefix == null ? String(counter.number).padStart(2, '0') : String(counter.number)
+      const shortId = `${prefix}-${suffix}`
       this.database
         .prepare(`
           INSERT INTO annotations (
-            id, short_id, session_id, file_path, side, start_line, end_side, end_line,
+            id, short_id, section_prefix, session_id, file_path, side, start_line, end_side, end_line,
             comment, importance, source, intent, reply_to_id, archived_at, submitted_at, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
         .run(
           id,
           shortId,
+          input.sectionPrefix ?? null,
           sessionId,
           parent?.filePath ?? input.filePath,
           parent?.side ?? input.side,
@@ -615,7 +717,7 @@ export class ReviewStore {
           parent?.endSide ?? input.endSide ?? null,
           parent?.endLine ?? input.endLine,
           input.comment ?? null,
-          parent == null ? input.importance ?? null : null,
+          null,
           input.source,
           parent == null && input.source === 'user' ? input.intent ?? 'annotation' : 'annotation',
           parent?.id ?? null,
@@ -817,7 +919,7 @@ export class ReviewStore {
 
   private annotationsForSession(sessionId: string): SessionAnnotation[] {
     const rows = this.database
-      .prepare('SELECT * FROM annotations WHERE session_id = ? ORDER BY created_at ASC')
+      .prepare('SELECT * FROM annotations WHERE session_id = ? ORDER BY created_at ASC, rowid ASC')
       .all(sessionId) as unknown as AnnotationRow[]
     return rows.map(annotationFromRow)
   }
@@ -924,6 +1026,9 @@ export class ReviewStore {
     const columns = this.database
       .prepare('PRAGMA table_info(annotations)')
       .all() as unknown as { name: string }[]
+    if (!columns.some((column) => column.name === 'section_prefix')) {
+      this.database.exec('ALTER TABLE annotations ADD COLUMN section_prefix TEXT')
+    }
     if (!columns.some((column) => column.name === 'end_side')) {
       this.database.exec(
         "ALTER TABLE annotations ADD COLUMN end_side TEXT CHECK(end_side IN ('old', 'new'))",
@@ -1037,6 +1142,7 @@ export class ReviewStore {
       commits: JSON.parse(row.available_commits_json) as ReviewSession['commits'],
       selectedCommitStart: row.selected_commit_start,
       selectedCommitEnd: row.selected_commit_end,
+      sections: this.listSections(row.id),
       annotations: this.annotationsForSession(row.id),
       globalComments: this.globalCommentsForSession(row.id),
       viewedFiles: JSON.parse(row.viewed_files_json) as string[],
@@ -1098,6 +1204,7 @@ function annotationFromRow(row: AnnotationRow): SessionAnnotation {
   return {
     id: row.id,
     shortId: row.short_id,
+    sectionPrefix: row.section_prefix,
     sessionId: row.session_id,
     filePath: row.file_path,
     side: row.side,

@@ -661,6 +661,35 @@ export class ApiHandler {
       return
     }
 
+    const sectionsMatch = /^\/api\/sessions\/([^/]+)\/sections$/.exec(url.pathname)
+    const sectionMatch = /^\/api\/sessions\/([^/]+)\/sections\/([^/]+)$/.exec(url.pathname)
+    const agentBodyMatch = /^\/api\/sessions\/([^/]+)\/annotations\/([^/]+)\/body$/.exec(url.pathname)
+    if (method === 'GET' && sectionsMatch != null) {
+      sendJson(response, 200, this.store.listSections(sectionsMatch[1]!))
+      return
+    }
+    if (method === 'PUT' && sectionMatch != null) {
+      const input = expectObject(await readJson(request))
+      rejectImportance(input)
+      const section = this.store.setSection(sectionMatch[1]!, decodeURIComponent(sectionMatch[2]!), {
+        ...(Object.hasOwn(input, 'body') ? { body: expectString(input.body, 'body') } : {}),
+        ...(Object.hasOwn(input, 'order') ? { order: typeof input.order === 'number' ? input.order : NaN } : {}),
+      })
+      this.emitSessionUpdate(section.sessionId)
+      sendJson(response, 200, section)
+      return
+    }
+    if (method === 'PATCH' && agentBodyMatch != null) {
+      const input = expectObject(await readJson(request))
+      rejectImportance(input)
+      const annotation = this.store.updateAgentAnnotationBody(
+        agentBodyMatch[1]!, decodeURIComponent(agentBodyMatch[2]!), expectString(input.body, 'body'),
+      )
+      this.emitSessionUpdate(annotation.sessionId)
+      sendJson(response, 200, annotation)
+      return
+    }
+
     if (method === 'POST' && annotationsMatch != null) {
       const id = annotationsMatch[1] ?? ''
       const input = parseAnnotationInput(await readJson(request))
@@ -1394,8 +1423,13 @@ function parseWhitespaceInput(value: unknown): { ignoreWhitespace: boolean } {
   return { ignoreWhitespace: object.ignoreWhitespace }
 }
 
+function rejectImportance(object: Record<string, unknown>): void {
+  if (Object.hasOwn(object, 'importance')) throw new AppError('INVALID_INPUT', 'importance is no longer writable')
+}
+
 function parseAnnotationInput(value: unknown): AddAnnotationInput {
   const object = expectObject(value)
+  rejectImportance(object)
   const side = expectString(object.side, 'side')
   if (side !== 'old' && side !== 'new') {
     throw new AppError('INVALID_INPUT', 'side must be old or new')
@@ -1422,13 +1456,7 @@ function parseAnnotationInput(value: unknown): AddAnnotationInput {
     )
   }
   const comment = object.comment == null ? undefined : expectString(object.comment, 'comment').trim()
-  const importance = object.importance == null ? undefined : Number(object.importance)
-  if (importance != null && (!Number.isFinite(importance) || importance < 0 || importance > 1)) {
-    throw new AppError('INVALID_INPUT', 'importance must be between 0 and 1')
-  }
-  if (!comment && importance == null) {
-    throw new AppError('INVALID_INPUT', 'At least one of comment or importance is required')
-  }
+  if (!comment) throw new AppError('INVALID_INPUT', 'comment is required')
   const source = object.source === 'agent' ? 'agent' : 'user'
   const intent = object.intent == null ? 'annotation' : expectString(object.intent, 'intent')
   if (intent !== 'annotation' && intent !== 'review-comment') {
@@ -1442,7 +1470,7 @@ function parseAnnotationInput(value: unknown): AddAnnotationInput {
     endSide,
     endLine,
     comment,
-    importance,
+    sectionPrefix: object.sectionPrefix == null ? undefined : expectString(object.sectionPrefix, 'sectionPrefix'),
     source,
     intent,
     replyToId: object.replyToId == null ? undefined : expectString(object.replyToId, 'replyToId'),
@@ -1465,6 +1493,7 @@ function parseCommentInput(value: unknown): { comment: string } {
 }
 
 function parseGlobalCommentInput(value: unknown): { comment: string; source: 'user' | 'agent' } {
+  rejectImportance(expectObject(value))
   const { comment } = parseCommentInput(value)
   const object = expectObject(value)
   const source = object.source === 'agent' ? 'agent' : 'user'
@@ -1473,6 +1502,7 @@ function parseGlobalCommentInput(value: unknown): { comment: string; source: 'us
 
 
 function parseAnnotationUpdateInput(value: unknown): UpdateAnnotationInput {
+  rejectImportance(expectObject(value))
   const { comment } = parseCommentInput(value)
   const object = expectObject(value)
   if (object.intent == null) return { comment }

@@ -1,12 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { startService, spawn } = vi.hoisted(() => ({
+const { startService, spawn, readBodyFile } = vi.hoisted(() => ({
+  readBodyFile: vi.fn(),
   startService: vi.fn().mockResolvedValue({}),
   spawn: vi.fn(() => ({ unref: vi.fn() })),
 }))
 vi.mock('../src/server/service.js', () => ({ startService }))
 vi.mock('../src/server/env.js', () => ({ loadEnvFiles: vi.fn() }))
 vi.mock('node:child_process', () => ({ spawn }))
+vi.mock('node:fs', async (importOriginal) => ({
+  ...await importOriginal<typeof import('node:fs')>(),
+  readFileSync: readBodyFile,
+}))
 
 const originalArgv = process.argv
 const originalExitCode = process.exitCode
@@ -103,5 +108,62 @@ describe('CLI review URLs', () => {
     expect(startService).not.toHaveBeenCalled()
     expect(fetcher).not.toHaveBeenCalled()
     expect(spawn).not.toHaveBeenCalled()
+  })
+})
+
+describe('CLI narrative commands', () => {
+  it.each([
+    [['section', 'set', 'drs_test', 'RETRY', '--body', 'Overview', '--order', '9.5', '--json'], '/sections/RETRY', 'PUT', { body: 'Overview', order: 9.5 }],
+    [['section', 'set', 'drs_test', 'RETRY', '--order', '-2', '--json'], '/sections/RETRY', 'PUT', { order: -2 }],
+    [['section', 'set', 'drs_test', 'RETRY', '--body-file', '/tmp/overview', '--json'], '/sections/RETRY', 'PUT', { body: 'File content' }],
+    [['annotation', 'add', 'drs_test', 'RETRY', '--file', 'a', '--new-line', '2-5', '--body', 'Note', '--json'], '/annotations', 'POST', { sectionPrefix: 'RETRY', filePath: 'a', side: 'new', startLine: 2, endLine: 5, comment: 'Note', source: 'agent' }],
+    [['annotation', 'add', 'drs_test', 'RETRY', '--file', 'a', '--old-line', '3', '--body-file', '-', '--json'], '/annotations', 'POST', { sectionPrefix: 'RETRY', filePath: 'a', side: 'old', startLine: 3, endLine: 3, comment: 'File content', source: 'agent' }],
+    [['annotation', 'update', 'drs_test', 'RETRY-1', '--body-file', '-', '--json'], '/annotations/RETRY-1/body', 'PATCH', { body: 'File content' }],
+  ] as const)('sends explicit-session command %j', async (args, route, method, body) => {
+    readBodyFile.mockReturnValue('File content')
+    await run([...args])
+    expect(errors).not.toHaveBeenCalled()
+    expect(fetcher).toHaveBeenCalledWith('http://127.0.0.1:47658/api/sessions/drs_test' + route,
+      expect.objectContaining({ method, body: JSON.stringify(body) }))
+    if ((args as readonly string[]).includes('-')) expect(readBodyFile).toHaveBeenCalledWith(0, 'utf8')
+    expect(spawn).not.toHaveBeenCalled()
+  })
+
+  it('lists sections as unwrapped JSON', async () => {
+    const sections = [{ prefix: 'RETRY', body: 'Overview', order: 10 }]
+    fetcher.mockResolvedValue(Response.json(sections))
+    await run(['section', 'list', 'drs_test', '--json'])
+    expect(fetcher).toHaveBeenCalledWith('http://127.0.0.1:47658/api/sessions/drs_test/sections', expect.objectContaining({ method: 'GET' }))
+    expect(JSON.parse(output.mock.calls[0]![0])).toEqual(sections)
+  })
+
+  it.each([
+    ['section', 'set', 'drs_test', 'RETRY', '--body', 'Text', '--body-file', '-'],
+    ['section', 'set', 'drs_test', 'RETRY', '--order', 'Infinity'],
+    ['section', 'set', 'drs_test', 'RETRY', '--order', 'NaN'],
+    ['annotation', 'add', 'drs_test', 'RETRY', '--file', 'a', '--new-line', '1'],
+    ['annotation', 'update', 'drs_test', 'RETRY-1', '--body', ''],
+    ['annotation', 'update', 'drs_test', 'RETRY-1', '--body', 'Text', '--importance', '0'],
+  ])('rejects invalid input before requests: %j', async (...args) => {
+    await run(args)
+    expect(errors).toHaveBeenCalled()
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['annotate', 'drs_test', '--importance', '0'],
+    ['annotate', 'drs_test', '--file', 'a', '--new-line', '1', '--comment', 'Text', '--importance', '0.5'],
+    ['annotate', 'drs_test', '--comment', 'Text', '--importance', '1'],
+  ])('rejects importance even on legacy annotate: %j', async (...args) => {
+    await run(args)
+    expect(errors).toHaveBeenCalledWith('diff-review: --importance is no longer writable')
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+
+  it('retains legacy ungrouped annotate without importance', async () => {
+    await run(['annotate', 'drs_test', '--file', 'a', '--new-line', '1', '--comment', 'Legacy', '--json'])
+    expect(errors).not.toHaveBeenCalled()
+    expect(fetcher).toHaveBeenCalledWith('http://127.0.0.1:47658/api/sessions/drs_test/annotations',
+      expect.objectContaining({ body: JSON.stringify({ filePath: 'a', side: 'new', startLine: 1, endLine: 1, comment: 'Legacy', source: 'agent' }) }))
   })
 })

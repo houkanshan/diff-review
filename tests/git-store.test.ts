@@ -530,6 +530,28 @@ describe('GitHub review comments', () => {
       })
       expect(agentCreated.status).toBe(201)
       await expect(agentCreated.json()).resolves.toMatchObject({ shortId: 'CHECK-01' })
+      const sectionUrl = `http://127.0.0.1:${port}/api/sessions/${session.id}/sections/CHECK`
+      expect((await fetch(sectionUrl, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body: 'Check the setup', order: 10 }),
+      })).status).toBe(200)
+      const sectionNote = await fetch(annotationsUrl, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filePath: 'example.ts', side: 'new', startLine: 20, endLine: 20,
+          comment: 'explain(setup): This line matters', source: 'agent', sectionPrefix: 'CHECK',
+        }),
+      })
+      expect(sectionNote.status).toBe(201)
+      await expect(sectionNote.json()).resolves.toMatchObject({ shortId: 'CHECK-2', sectionPrefix: 'CHECK' })
+      const missingSection = await fetch(annotationsUrl, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filePath: 'example.ts', side: 'new', startLine: 20, endLine: 20,
+          comment: 'Missing overview', source: 'agent', sectionPrefix: 'MISSING',
+        }),
+      })
+      expect(missingSection.status).toBe(404)
       const invalidPrefix = await fetch(annotationsUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -926,7 +948,9 @@ describe('local review storage', () => {
       await waitFor(() => runner.getChat(session.id).busy === false)
       const explained = await runner.send(session.id, 'focus on auth', true)
       expect(explained.overlay?.userText).toContain('Help someone review PR #42.')
-      expect(explained.overlay?.userText).toContain(`diff-review annotate ${session.id}`)
+      expect(explained.overlay?.userText).toContain(`diff-review section set ${session.id}`)
+      expect(explained.overlay?.userText).toContain(`diff-review annotation add ${session.id}`)
+      expect(explained.overlay?.userText).toContain(`diff-review annotation update ${session.id}`)
       expect(explained.overlay?.userText).toContain('The user has not read the code')
       expect(explained.overlay?.userText).toContain('start with one short, plain-language sentence')
       expect(explained.overlay?.userText).toContain(
@@ -935,8 +959,8 @@ describe('local review storage', () => {
       expect(explained.overlay?.userText).toContain(
         'Do not repeat this context in later annotations within the same function or block.',
       )
-      expect(explained.overlay?.userText).toContain('--id-prefix RETRY')
-      expect(explained.overlay?.userText).toContain('do not add a global summary comment')
+      expect(explained.overlay?.userText).toContain('RETRY-1')
+      expect(explained.overlay?.userText).toContain('Repeating add creates another note')
       expect(explained.overlay?.userText).not.toContain('--comment "[summary]')
       expect(explained.overlay?.userText).toContain(
         'Additional instructions from the user:\nfocus on auth',
