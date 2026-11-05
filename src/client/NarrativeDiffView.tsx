@@ -81,7 +81,8 @@ export const NarrativeDiffView = forwardRef<NarrativeDiffViewHandle, Props>(func
             if (expandedDiff !== instance.fileDiff) {
               expandedDiff = instance.fileDiff
               waitingForContents = revealNarrativeLine(instance, target.line, target.side) && instance.fileDiff?.isPartial === true
-            } else if (!waitingForContents) {
+            } else if (!waitingForContents || instance.fileDiff?.isPartial !== true) {
+              // Pierre can hydrate the same metadata object between frames.
               const position = instance.getLinePosition(target.line, target.side)
               if (position != null) {
                 scroller.scrollTop = Math.max(0, top + position.top - (target.align === 'center'
