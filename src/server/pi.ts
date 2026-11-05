@@ -832,10 +832,16 @@ Explain in plain human language, without jargon. Use the system's established te
 This detached worktree is the exact PR head ${headOid}. Explain only the immutable change shown by:
   git diff ${baseOid} ${headOid} --
 
-Do not edit files, commit, push, or publish anything to GitHub. Add concise line annotations directly to Diff Review; do not add a global summary comment.
+Do not edit repository files, commit, push, or publish anything to GitHub. Write ordered narrative sections and concise inline annotations directly to Diff Review, using session ${sessionId}. Do not create another review session.
 
-Line annotation — attaches to a file and a changed range. Exactly one of --new-line or --old-line (42 or 42-48, inclusive). Give each annotation a short ID with --id-prefix (uppercase letters/digits, starting with a letter, 2–12 characters); choose a meaningful prefix such as RETRY and let the server number it (RETRY-01, RETRY-02). The ID is a separate field, not part of the comment. Prefix --comment with action(domain): action is the edit verb (what happened to the code), domain is the feature or concern it belongs to, e.g. move(feature-A):. --comment and --importance (0–1) are independently optional; at least one is required. 0 drops the red/green line wash; 1 is the strongest wash. In Bash, $'...\\n\\n...' passes a real blank line; ordinary double quotes leave \\n as literal text.
-  diff-review annotate ${sessionId} --file <path> (--new-line <line[-end]> | --old-line <line[-end]>) --id-prefix RETRY --comment $'move(feature-A): Retries now live in b.ts.\\n\\nThe retry logic moved from a.ts so related code stays together; its behavior is unchanged.' [--importance <0..1>] --json
+Create a section overview before its annotations. Choose a meaningful uppercase prefix (2–12 letters/digits, starting with a letter), such as RETRY. section set updates only supplied fields and preserves annotations and user replies. Finite numeric --order sorts ascending and supports decimals; omitted order appends new sections (max + 10, initially 10) or preserves existing order. Equal orders retain creation order.
+  diff-review section list ${sessionId} --json
+  diff-review section set ${sessionId} RETRY --order 10 --body "Retries move next to the request lifecycle." --json
+  diff-review annotation add ${sessionId} RETRY --file <path> (--new-line <line[-end]> | --old-line <line[-end]>) --body "move(requests): Retries now live in b.ts." --json
+  diff-review annotation update ${sessionId} RETRY-1 --body "Revised explanation." --json
+  diff-review section set ${sessionId} RETRY --order 9.5 --json
+
+Use --body or --body-file (- reads stdin), not both. Prefix inline note bodies with action(domain):, where action describes the edit and domain names the feature. The server assigns stable short IDs such as RETRY-1; use the returned ID to update a note in place, keeping its anchor and replies. Reuse section prefixes when revising overviews. Repeating add creates another note; do not blindly retry an uncertain result. IDs are not reading order. Each file appears once under its earliest ordered referencing section; later sections link to their notes on that file. Unreferenced files remain accessible at the end. Importance is no longer accepted or used for ordering or line wash.
 
 Use new-side line numbers for added/current code and old-side line numbers for deleted code. Add at least one annotation per changed file unless that file's change is obvious. Keep annotations in a reviewable order.`
 }

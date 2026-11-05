@@ -93,24 +93,23 @@ diff-review session create --repo . origin/master...HEAD
 
 The same repository and resolved commit range (`base...head`) reuse the existing local session, so later `session create` calls keep the same ID and annotations. A new session is opened when those commit SHAs change. Pull requests still open a new session when the base or head revision changes.
 
-Alternatively, copy the session ID from the browser. The agent can keep inspecting changes with ordinary `git diff`, then add a global summary or line notes:
+Alternatively, copy the session ID from the browser. Build a narrative with section overviews and inline notes:
 
 ```bash
-diff-review annotate drs_abc123 --comment "Retry now covers every 5xx"
-diff-review annotate drs_abc123 \
-  --file src/retry.ts \
-  --new-line 42-48 \
-  --comment "The retry condition now includes every 5xx response" \
-  --importance 1
+diff-review section set drs_abc123 RETRY --order 10 --body "Retry now covers every 5xx"
+diff-review annotation add drs_abc123 RETRY --file src/retry.ts --new-line 42-48 --body "The retry condition now includes every 5xx response"
+diff-review annotation update drs_abc123 RETRY-1 --body "Updated explanation, preserving replies"
+diff-review section set drs_abc123 RETRY --order 9.5
+diff-review section list drs_abc123 --json
 ```
 
-Omit `--file` and line flags to add a session global comment. You can add more than one. For a line annotation, use exactly one of `--new-line` or `--old-line` (`42` or `42-48`, inclusive). `--comment` and `--importance` are independently optional on line annotations, but at least one is required.
+Section prefixes use 2–12 uppercase letters/digits, starting with a letter. `section set` is a partial upsert: supply a body when creating a section; later calls change only supplied fields. Order is a finite number sorted ascending, including decimals. Omitted order defaults to max + 10 (first: 10) on creation and stays unchanged on update. Ties retain creation order.
 
-Importance controls only the changed-line background:
+Use `--body` or `--body-file <path>` (`-` for stdin), not both. Inline notes require exactly one of `--new-line` or `--old-line` (`42` or `42-48`, inclusive). New section notes receive stable IDs such as RETRY-1; counters are not reused after deletion. `annotation update` changes an existing agent note's body only, preserving its anchor and replies. Repeating `annotation add` creates another note; do not blindly retry uncertain writes.
 
-- `0`: no red/green background; the diff border remains
-- omitted: normal diff intensity, equivalent to `0.5`
-- `1`: strongest readable background
+The UI interleaves section overviews and files. A file appears once, under its earliest ordered referencing section; later sections link to their annotations on that file. Changing section order may relocate shared files. Unreferenced files appear at the end. Old notes remain ungrouped without changing IDs or replies.
+
+Legacy `annotate --comment` remains available for ungrouped line notes and global comments. Importance writes are rejected; historical importance values no longer affect ordering or line wash.
 
 Diff comments default to local annotations stored in `~/.diff-review/reviews.db`; set `DIFF_REVIEW_DATA_DIR` to use another directory. On a pull request, select **Review comment** while adding or editing a comment to queue that user comment for GitHub. **Submit review** publishes the queued user comments with the review; agent annotations always stay local.
 

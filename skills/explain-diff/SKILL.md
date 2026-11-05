@@ -36,14 +36,25 @@ session_id="$(jq -r '.sessionId' <<<"$session_json")"
 # Confirm .repository equals $repo before annotating.
 ```
 
-Line annotation — attaches to a file and a changed range. Exactly one of `--new-line` or `--old-line` (`42` or `42-48`, inclusive). Give each annotation a short ID using `--id-prefix` (uppercase letters/digits, starting with a letter, 2–12 characters); choose a meaningful prefix such as `RETRY` and let the server number it (`RETRY-01`, `RETRY-02`). This is a separate field, not part of the comment. Prefix `--comment` with `action(domain):`: **action** is the edit verb (what happened to the code), **domain** is the feature or concern it belongs to, e.g. `move(feature-A):`. `--comment` and `--importance` (`0`–`1`) are independently optional; at least one is required. `0` drops the red/green line wash; `1` is the strongest wash. In Bash, `$'...\n\n...'` passes a real blank line; ordinary double quotes leave `\n` as literal text.
+Organize the explanation as ordered sections: a short overview, then inline annotations, then the next overview and its annotations. Choose a meaningful uppercase prefix (2–12 letters/digits, starting with a letter), such as RETRY. Create the section before adding notes.
+
+`section set` updates only supplied fields: changing the overview preserves its order, annotations and replies; changing only `--order` preserves its overview. Order is ascending and accepts finite decimals. New sections default to the largest order + 10 (first: 10); existing sections keep their order when omitted. Equal orders retain creation order.
 
 ```bash
-diff-review annotate "$session_id" \
-  --file src/example.ts \
-  --new-line 42-48 \
-  --id-prefix RETRY \
-  --comment $'move(feature-A): Retries now live in b.ts.\n\nThe retry logic moved from a.ts so related code stays together; its behavior is unchanged.' \
-  --importance 0.8 \
+diff-review section list "$session_id" --json
+diff-review section set "$session_id" RETRY --order 10 \
+  --body "Retries move next to the request lifecycle." --json
+diff-review annotation add "$session_id" RETRY \
+  --file src/example.ts --new-line 42-48 \
+  --body $'move(requests): Retries now live in b.ts.\n\nThe retry logic moved from a.ts so related code stays together; its behavior is unchanged.' \
   --json
+# Use the returned short ID for later corrections.
+diff-review annotation update "$session_id" RETRY-1 --body "Revised explanation." --json
+diff-review section set "$session_id" RETRY --order 9.5 --json
 ```
+
+Use exactly one of `--new-line` or `--old-line` (`42` or `42-48`, inclusive). Use new-side numbers for current code and old-side numbers for deleted code. Prefix inline note bodies with `action(domain):`, where action describes the edit and domain names the feature. Pass Markdown with `--body` or `--body-file` (`-` reads stdin), not both.
+
+The server assigns stable IDs such as RETRY-1; they identify notes, not reading order. Update an existing note rather than adding a replacement, so its anchor and user replies stay attached. Repeating `add` creates another note; do not blindly retry an uncertain result. Reuse an existing section prefix when revising its overview rather than creating another section.
+
+Each file appears once, under the earliest ordered section referencing it; later sections link to their notes on that file. Moving a section can move a shared file. Unreferenced files remain accessible at the end. Importance is no longer accepted or used for sorting or line wash.
