@@ -2674,26 +2674,22 @@ body.resizing-panels * {
   min-height: 0;
   flex: 1;
   overflow-y: auto;
-  padding: 4px 3px 8px;
-  font-size: 11px;
 }
 
-.section-file-list ul {
-  margin: 0 0 6px;
-  padding: 0;
-  list-style: none;
+.section-file-group + .section-file-group {
+  border-top: 1px solid var(--border);
 }
 
 .section-file-heading {
   position: sticky;
-  top: -4px;
+  top: 0;
   z-index: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
   margin: 0;
-  padding: 6px 4px 4px;
+  padding: 7px 7px 4px;
   color: var(--muted);
   font-size: 11px;
   font-weight: 650;
@@ -2711,67 +2707,11 @@ body.resizing-panels * {
   background: var(--surface-inset);
 }
 
-.section-file-row {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 4px 3px 10px;
-  color: var(--text-soft);
-  font: inherit;
-  text-align: left;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  cursor: pointer;
+.changed-file-tree.fit-content {
+  flex: none;
+  padding-bottom: 6px;
+  box-sizing: content-box;
 }
-
-.section-file-row:hover { background: var(--hover); }
-.section-file-row[aria-current='true'] { color: var(--text); background: var(--selected); }
-.section-file-row:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
-
-.section-file-name {
-  min-width: 0;
-  flex: 1 1 auto;
-  display: flex;
-  align-items: baseline;
-  gap: 5px;
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.section-file-name > span {
-  min-width: 0;
-  flex: 0 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.section-file-name small {
-  min-width: 0;
-  flex: 0 10000 auto;
-  overflow: hidden;
-  color: var(--faint);
-  font-size: 10px;
-  text-overflow: ellipsis;
-}
-
-.section-file-stats {
-  flex: 0 0 auto;
-  display: inline-flex;
-  gap: 3px;
-}
-
-.section-file-status {
-  flex: 0 0 12px;
-  font-weight: 650;
-  text-align: center;
-}
-
-.section-file-row[data-status='added'] .section-file-status { color: var(--green); }
-.section-file-row[data-status='deleted'] .section-file-status { color: var(--red); }
-.section-file-row[data-status='modified'] .section-file-status,
-.section-file-row[data-status='renamed'] .section-file-status { color: var(--accent); }
-.section-file-row[data-viewed='true'] .section-file-status { color: var(--green); }
 
 .diff-stage {
   position: relative;

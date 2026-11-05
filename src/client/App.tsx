@@ -5006,7 +5006,7 @@ function FileRail({
     totalStats.deletions += fileStats.deletions
     totalStats.modifications += fileStats.modifications
   }
-  const treeKey = filteredFiles
+  const treeKey = (treeFiles: FileDiffMetadata[]) => treeFiles
     .map((file) => {
       const fileStats = stats.get(file.name)!
       return `${file.name}:${file.type}:${fileStats.additions}:${fileStats.deletions}:${fileStats.modifications}:${viewedFiles.has(file.name) ? 'v' : 'u'}`
@@ -5045,15 +5045,17 @@ function FileRail({
           groups={groups
             .map((group) => ({ ...group, files: group.files.filter(matchesQuery) }))
             .filter((group) => group.files.length > 0)}
+          treeKey={treeKey}
           viewedFiles={viewedFiles}
           stats={stats}
+          resolvedTheme={resolvedTheme}
           activeFilePath={activeFilePath}
           onSelect={onSelect}
         />
       )}
       {filteredFiles.length > 0 && groups == null && (
         <ChangedFileTree
-          key={treeKey}
+          key={treeKey(filteredFiles)}
           files={filteredFiles}
           viewedFiles={viewedFiles}
           stats={stats}
@@ -5079,82 +5081,44 @@ function fileGitStatus(file: FileDiffMetadata): GitStatusEntry['status'] {
         : 'modified'
 }
 
-/** Files grouped by narrative section, in the same order the diff renders them. */
+/** One folder tree per narrative section, in the same order the diff renders them. */
 function SectionFileList({
   groups,
+  treeKey,
   viewedFiles,
   stats,
+  resolvedTheme,
   activeFilePath,
   onSelect,
 }: {
   groups: NarrativeGroup<FileDiffMetadata>[]
+  treeKey(files: FileDiffMetadata[]): string
   viewedFiles: Set<string>
   stats: Map<string, FileChangeStats>
+  resolvedTheme: ResolvedTheme
   activeFilePath: string | null
   onSelect(id: string): void
 }) {
-  const listRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (activeFilePath == null) return
-    const row = [...(listRef.current?.querySelectorAll<HTMLElement>('[data-file-path]') ?? [])]
-      .find((element) => element.dataset.filePath === activeFilePath)
-    row?.scrollIntoView({ block: 'nearest' })
-  }, [activeFilePath])
   return (
-    <div ref={listRef} className="section-file-list">
+    <div className="section-file-list">
       {groups.map((group) => {
         const label = group.section?.prefix ?? 'Other changes'
         return (
-          <section key={group.section?.prefix ?? '\0other'} aria-label={label}>
+          <section key={group.section?.prefix ?? '\0other'} className="section-file-group" aria-label={label}>
             <h3 className="section-file-heading">
               <span>{label}</span>
               <em>{group.files.length}</em>
             </h3>
-            <ul>
-              {group.files.map((file) => {
-                const slash = file.name.lastIndexOf('/')
-                const fileStats = stats.get(file.name)
-                const viewed = viewedFiles.has(file.name)
-                const status = fileGitStatus(file)
-                return (
-                  <li key={file.name}>
-                    <button
-                      type="button"
-                      className="section-file-row"
-                      data-file-path={file.name}
-                      data-status={status}
-                      data-viewed={viewed ? 'true' : undefined}
-                      aria-current={file.name === activeFilePath ? 'true' : undefined}
-                      title={file.name}
-                      onClick={() => onSelect(file.name)}
-                    >
-                      <span className="section-file-name">
-                        <span>{slash < 0 ? file.name : file.name.slice(slash + 1)}</span>
-                        {slash >= 0 && <small>{file.name.slice(0, slash)}</small>}
-                      </span>
-                      {fileStats != null && (
-                        <span
-                          className="section-file-stats"
-                          title={`${fileStats.additions} added, ${fileStats.deletions} deleted, ${fileStats.modifications} modified`}
-                        >
-                          {fileStats.additions > 0 && <span className="addition">+{fileStats.additions}</span>}
-                          {fileStats.deletions > 0 && <span className="deletion">-{fileStats.deletions}</span>}
-                          {fileStats.modifications > 0 && (
-                            <span className="modification">~{fileStats.modifications}</span>
-                          )}
-                        </span>
-                      )}
-                      <span
-                        className="section-file-status"
-                        aria-label={viewed ? 'Viewed' : status}
-                      >
-                        {viewed ? '✓' : status[0].toUpperCase()}
-                      </span>
-                    </button>
-                  </li>
-                )
-              })}
-            </ul>
+            <ChangedFileTree
+              key={treeKey(group.files)}
+              files={group.files}
+              viewedFiles={viewedFiles}
+              stats={stats}
+              resolvedTheme={resolvedTheme}
+              activeFilePath={activeFilePath}
+              onSelect={onSelect}
+              fitContent
+            />
           </section>
         )
       })}
@@ -5193,6 +5157,7 @@ function ChangedFileTree({
   resolvedTheme,
   activeFilePath,
   onSelect,
+  fitContent = false,
 }: {
   files: FileDiffMetadata[]
   viewedFiles: Set<string>
@@ -5200,6 +5165,8 @@ function ChangedFileTree({
   resolvedTheme: ResolvedTheme
   activeFilePath: string | null
   onSelect(id: string): void
+  /** Size the tree to its visible rows so an outer container scrolls several trees together. */
+  fitContent?: boolean
 }) {
   const syncingSelectionRef = useRef(false)
   const activeFilePathRef = useRef(activeFilePath)
@@ -5269,29 +5236,49 @@ function ChangedFileTree({
     },
   })
 
+  const [visibleRowCount, setVisibleRowCount] = useState(() => model.getVisibleCount())
   useEffect(() => {
-    if (activeFilePath == null) return
-    const item = model.getItem(activeFilePath)
-    if (item == null) return
+    if (!fitContent) return
+    setVisibleRowCount(model.getVisibleCount())
+    return model.subscribe(() => setVisibleRowCount(model.getVisibleCount()))
+  }, [fitContent, model])
+  const hostRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const item = activeFilePath == null ? null : model.getItem(activeFilePath)
+    // With several trees, only the one owning the active file keeps a selection.
+    if (item == null && !fitContent) return
     syncingSelectionRef.current = true
     try {
       for (const path of model.getSelectedPaths()) {
         if (path !== activeFilePath) model.getItem(path)?.deselect()
       }
+      if (item == null || activeFilePath == null) return
       if (!item.isSelected()) item.select()
-      model.scrollToPath(activeFilePath, { offset: 'nearest' })
+      if (!fitContent) {
+        model.scrollToPath(activeFilePath, { offset: 'nearest' })
+        return
+      }
+      // A fitted tree does not scroll itself; reveal the row in the outer list.
+      const row = [...(hostRef.current?.querySelector('.changed-file-tree')?.shadowRoot?.querySelectorAll<HTMLElement>('[data-item-path]') ?? [])]
+        .find((element) => element.dataset.itemPath === activeFilePath)
+      row?.scrollIntoView({ block: 'nearest' })
     } finally {
       syncingSelectionRef.current = false
     }
-  }, [activeFilePath, model])
+  }, [activeFilePath, fitContent, model])
 
-  return (
+  const tree = (
     <FileTree
       model={model}
-      className="changed-file-tree"
-      style={{ colorScheme: resolvedTheme }}
+      className={fitContent ? 'changed-file-tree fit-content' : 'changed-file-tree'}
+      style={{
+        colorScheme: resolvedTheme,
+        ...(fitContent ? { height: visibleRowCount * model.getItemHeight() } : {}),
+      }}
     />
   )
+  return fitContent ? <div ref={hostRef}>{tree}</div> : tree
 }
 
 function FileCopyButton({ filePath }: { filePath: string }) {
