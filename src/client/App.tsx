@@ -2065,6 +2065,7 @@ function ReviewWorkspace({
   const renderFileRail = () => (
     <FileRail
       files={parsedFiles}
+      groups={narrativeMode ? narrativeGroups : null}
       viewedFiles={viewedFiles}
       resolvedTheme={resolvedTheme}
       onSelect={selectFile}
@@ -4978,11 +4979,14 @@ function CommitPicker({
 
 function FileRail({
   files,
+  groups,
   viewedFiles,
   resolvedTheme,
   onSelect,
 }: {
   files: FileDiffMetadata[]
+  /** Narrative sections; when present, files are listed per section in reading order. */
+  groups: NarrativeGroup<FileDiffMetadata>[] | null
   viewedFiles: Set<string>
   resolvedTheme: ResolvedTheme
   onSelect(id: string): void
@@ -4990,10 +4994,9 @@ function FileRail({
   const activeFilePath = useAtomValue(activeFilePathAtom)
   const [query, setQuery] = useState('')
   const normalizedQuery = query.trim().toLowerCase()
-  const filteredFiles =
-    normalizedQuery === ''
-      ? files
-      : files.filter((file) => file.name.toLowerCase().includes(normalizedQuery))
+  const matchesQuery = (file: FileDiffMetadata) =>
+    normalizedQuery === '' || file.name.toLowerCase().includes(normalizedQuery)
+  const filteredFiles = normalizedQuery === '' ? files : files.filter(matchesQuery)
   const stats = new Map<string, FileChangeStats>()
   const totalStats: FileChangeStats = { additions: 0, deletions: 0, modifications: 0 }
   for (const file of files) {
@@ -5037,7 +5040,18 @@ function FileRail({
           spellCheck={false}
         />
       </div>
-      {filteredFiles.length > 0 && (
+      {filteredFiles.length > 0 && groups != null && (
+        <SectionFileList
+          groups={groups
+            .map((group) => ({ ...group, files: group.files.filter(matchesQuery) }))
+            .filter((group) => group.files.length > 0)}
+          viewedFiles={viewedFiles}
+          stats={stats}
+          activeFilePath={activeFilePath}
+          onSelect={onSelect}
+        />
+      )}
+      {filteredFiles.length > 0 && groups == null && (
         <ChangedFileTree
           key={treeKey}
           files={filteredFiles}
@@ -5052,6 +5066,99 @@ function FileRail({
         <p className="file-filter-empty">No matching files</p>
       )}
     </nav>
+  )
+}
+
+function fileGitStatus(file: FileDiffMetadata): GitStatusEntry['status'] {
+  return file.type === 'new'
+    ? 'added'
+    : file.type === 'deleted'
+      ? 'deleted'
+      : file.type.startsWith('rename')
+        ? 'renamed'
+        : 'modified'
+}
+
+/** Files grouped by narrative section, in the same order the diff renders them. */
+function SectionFileList({
+  groups,
+  viewedFiles,
+  stats,
+  activeFilePath,
+  onSelect,
+}: {
+  groups: NarrativeGroup<FileDiffMetadata>[]
+  viewedFiles: Set<string>
+  stats: Map<string, FileChangeStats>
+  activeFilePath: string | null
+  onSelect(id: string): void
+}) {
+  const listRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (activeFilePath == null) return
+    const row = [...(listRef.current?.querySelectorAll<HTMLElement>('[data-file-path]') ?? [])]
+      .find((element) => element.dataset.filePath === activeFilePath)
+    row?.scrollIntoView({ block: 'nearest' })
+  }, [activeFilePath])
+  return (
+    <div ref={listRef} className="section-file-list">
+      {groups.map((group) => {
+        const label = group.section?.prefix ?? 'Other changes'
+        return (
+          <section key={group.section?.prefix ?? '\0other'} aria-label={label}>
+            <h3 className="section-file-heading">
+              <span>{label}</span>
+              <em>{group.files.length}</em>
+            </h3>
+            <ul>
+              {group.files.map((file) => {
+                const slash = file.name.lastIndexOf('/')
+                const fileStats = stats.get(file.name)
+                const viewed = viewedFiles.has(file.name)
+                const status = fileGitStatus(file)
+                return (
+                  <li key={file.name}>
+                    <button
+                      type="button"
+                      className="section-file-row"
+                      data-file-path={file.name}
+                      data-status={status}
+                      data-viewed={viewed ? 'true' : undefined}
+                      aria-current={file.name === activeFilePath ? 'true' : undefined}
+                      title={file.name}
+                      onClick={() => onSelect(file.name)}
+                    >
+                      <span className="section-file-name">
+                        <span>{slash < 0 ? file.name : file.name.slice(slash + 1)}</span>
+                        {slash >= 0 && <small>{file.name.slice(0, slash)}</small>}
+                      </span>
+                      {fileStats != null && (
+                        <span
+                          className="section-file-stats"
+                          title={`${fileStats.additions} added, ${fileStats.deletions} deleted, ${fileStats.modifications} modified`}
+                        >
+                          {fileStats.additions > 0 && <span className="addition">+{fileStats.additions}</span>}
+                          {fileStats.deletions > 0 && <span className="deletion">-{fileStats.deletions}</span>}
+                          {fileStats.modifications > 0 && (
+                            <span className="modification">~{fileStats.modifications}</span>
+                          )}
+                        </span>
+                      )}
+                      <span
+                        className="section-file-status"
+                        aria-label={viewed ? 'Viewed' : status}
+                      >
+                        {viewed ? '✓' : status[0].toUpperCase()}
+                      </span>
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          </section>
+        )
+      })}
+    </div>
   )
 }
 
@@ -5100,14 +5207,7 @@ function ChangedFileTree({
   const filePaths = new Set(files.map((file) => file.name))
   const gitStatus: GitStatusEntry[] = files.map((file) => ({
     path: file.name,
-    status:
-      file.type === 'new'
-        ? 'added'
-        : file.type === 'deleted'
-          ? 'deleted'
-          : file.type.startsWith('rename')
-            ? 'renamed'
-            : 'modified',
+    status: fileGitStatus(file),
   }))
   const { model } = useFileTree({
     paths: files.map((file) => file.name),
