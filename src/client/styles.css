@@ -3732,7 +3732,7 @@ body.resizing-panels * {
 .markdown-body {
   padding: 5px 0 0;
   overflow-wrap: anywhere;
-  color: #000;
+  color: light-dark(#000, var(--text));
   font-size: 14px;
   line-height: 1.65;
 }
