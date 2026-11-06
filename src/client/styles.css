@@ -2806,7 +2806,7 @@ body.resizing-panels * {
 .narrative-overview {
   padding: 20px 24px;
   border-bottom: 1px solid var(--border);
-  background: var(--diff-bg);
+  background: var(--surface-subtle);
 }
 
 .narrative-overview h2 {
