@@ -2809,9 +2809,17 @@ body.resizing-panels * {
   background: var(--surface-subtle);
 }
 
+.narrative-overview-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 12px;
+}
+
 .narrative-overview h2 {
   font-size: 16px;
-  margin: 0 0 12px;
+  margin: 0;
 }
 
 .narrative-references button {

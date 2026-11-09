@@ -2041,7 +2041,14 @@ function ReviewWorkspace({
 
   const renderNarrativeOverview = (group: NarrativeGroup<FileDiffMetadata>) => (
     <section className="narrative-overview" data-section-prefix={group.section?.prefix ?? 'other'}>
-      <h2>{group.section?.prefix ?? 'Other changes'}</h2>
+      <div className="narrative-overview-header">
+        <h2>{group.section?.prefix ?? 'Other changes'}</h2>
+        <SectionFoldButton
+          paths={group.files.map((file) => file.name)}
+          collapsedFiles={collapsedFiles}
+          onSetCollapsed={setFilesCollapsed}
+        />
+      </div>
       {group.section != null && <MarkdownBody body={group.section.body} issueReferences={[]} />}
       {group.references.length > 0 && (
         <ul className="narrative-references">
@@ -2473,6 +2480,42 @@ function ReviewPanelToggle({
   return (
     <Tooltip.Root>
       <Tooltip.Trigger render={trigger} />
+      <Tooltip.Portal>
+        <Tooltip.Positioner className="tooltip-positioner" sideOffset={6}>
+          <Tooltip.Popup className="tooltip-popup">{label}</Tooltip.Popup>
+        </Tooltip.Positioner>
+      </Tooltip.Portal>
+    </Tooltip.Root>
+  )
+}
+
+/** Toggles every file in one narrative section: collapses if any is expanded, otherwise expands. */
+function SectionFoldButton({
+  paths,
+  collapsedFiles,
+  onSetCollapsed,
+}: {
+  paths: readonly string[]
+  collapsedFiles: ReadonlySet<string>
+  onSetCollapsed(paths: readonly string[], collapsed: boolean): void
+}) {
+  if (paths.length === 0) return null
+  const anyExpanded = paths.some((name) => !collapsedFiles.has(name))
+  const label = anyExpanded ? 'Collapse section files' : 'Expand section files'
+  return (
+    <Tooltip.Root>
+      <Tooltip.Trigger
+        render={
+          <button
+            type="button"
+            className="icon-button"
+            aria-label={label}
+            onClick={() => onSetCollapsed(paths, anyExpanded)}
+          >
+            {anyExpanded ? <CollapseFilesIcon /> : <ExpandFilesIcon />}
+          </button>
+        }
+      />
       <Tooltip.Portal>
         <Tooltip.Positioner className="tooltip-positioner" sideOffset={6}>
           <Tooltip.Popup className="tooltip-popup">{label}</Tooltip.Popup>
