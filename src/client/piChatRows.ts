@@ -37,7 +37,7 @@ export function chatRows(turns: PiChatTurn[], overlay: PiChatOverlay | null): Ch
       && (later[caughtUp]?.assistantText.trim() !== '' || caughtUp < later.length - 1)
     ) caughtUp += 1
   }
-  if (caughtUp >= live.length) return turnRows(turns)
+  if (caughtUp >= live.length) return withQueued(turnRows(turns), overlay)
   const rows = turnRows([...turnsBefore(turns, overlay.afterTurnId), ...later.slice(0, caughtUp)])
   const last = live.length - 1
   live.slice(caughtUp).forEach((turn, offset) => {
@@ -54,11 +54,15 @@ export function chatRows(turns: PiChatTurn[], overlay: PiChatOverlay | null): Ch
       },
     })
   })
-  if (overlay.working) {
-    overlay.queued.forEach((text, index) => {
-      rows.push({ key: `${overlay.overlayId}:queued:${index}`, kind: 'queued', text })
-    })
-  }
+  return withQueued(rows, overlay)
+}
+
+/** Queued steers stay visible while Pi works, even once the transcript has every live turn. */
+function withQueued(rows: ChatRow[], overlay: PiChatOverlay): ChatRow[] {
+  if (!overlay.working) return rows
+  overlay.queued.forEach((text, index) => {
+    rows.push({ key: `${overlay.overlayId}:queued:${index}`, kind: 'queued', text })
+  })
   return rows
 }
 

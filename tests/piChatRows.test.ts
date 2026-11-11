@@ -47,6 +47,15 @@ describe('chatRows', () => {
     ])
   })
 
+  test('keeps queued messages while Pi works after the transcript has every live turn', () => {
+    const turns = [turn('t0', 'old', 'reply'), turn('t1', 'hi', 'first')]
+    expect(kinds(chatRows(turns, overlay({ steered: [] })))).toEqual([
+      'turn:t0',
+      'turn:t1',
+      'queued:later',
+    ])
+  })
+
   test('uses the transcript once Pi settles', () => {
     const turns = [turn('t0', 'old', 'reply'), turn('t1', 'hi', 'first'), turn('t2', 'steer', 'second')]
     expect(kinds(chatRows(turns, overlay({ working: false })))).toEqual(['turn:t0', 'turn:t1', 'turn:t2'])
