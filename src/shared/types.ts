@@ -509,6 +509,15 @@ export interface PiChatOverlay {
   workDetail: string
   startedAt: string
   seq: number
+  /** User messages steered into the running turn, in delivery order. */
+  steered: PiChatSteeredTurn[]
+  /** Steering messages accepted by Pi but not delivered yet. */
+  queued: string[]
+}
+
+export interface PiChatSteeredTurn {
+  userText: string
+  assistantText: string
 }
 
 export type PiChatThinkingLevel =

@@ -41,6 +41,7 @@ import type {
   PiReviewStatus,
 } from '../shared/types'
 import { ClientError, getPiChat, sendPiChat, setPiChatModel } from './api'
+import { chatRows, type LiveTurn } from './piChatRows'
 import { PanelResizeHandle, storePanelWidth, storedPanelWidth } from './PanelResizeHandle'
 import { subscribeServerEvents } from './sessionEvents'
 import { writeClipboardText } from './clipboard'
@@ -216,18 +217,7 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
     }
   }, [loadTail, overlay?.working, sending])
 
-  const visibleTurns = useMemo(
-    () => turnsForOverlay(turns, overlay),
-    [overlay, turns],
-  )
-  const showOverlay = overlay != null && !overlayCaughtUp(turns, overlay)
-  const items = useMemo(() => {
-    const rows: ChatRow[] = visibleTurns.map((turn) => ({ key: turn.id, kind: 'turn', turn }))
-    if (showOverlay && overlay != null) {
-      rows.push({ key: overlay.overlayId, kind: 'live', overlay })
-    }
-    return rows
-  }, [overlay, showOverlay, visibleTurns])
+  const items = useMemo(() => chatRows(turns, overlay), [overlay, turns])
 
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -265,13 +255,16 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
 
   const send = async () => {
     const draftText = draft.trim()
-    if ((!draftText && !explain) || sending || modelSaving || overlay?.working) return
+    if (steering ? !draftText : !draftText && !explain) return
+    if (sending || modelSaving) return
     setDraft('')
     setError(null)
     setPinned(true)
     setSending(true)
     try {
-      const page = await sendPiChat(sessionId, draftText, explain, model)
+      const page = steering
+        ? await sendPiChat(sessionId, draftText)
+        : await sendPiChat(sessionId, draftText, explain, model)
       revisionRef.current = page.transcriptRevision
       setTurns((current) => mergeTurns(current, page.turns))
       setOverlay((current) => reconcilePiOverlay(current, page.overlay))
@@ -290,8 +283,9 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
     }
   }
 
-  const caughtUp = overlay != null && overlayCaughtUp(turns, overlay)
-  const working = sending || modelSaving || (overlay?.working === true && !caughtUp)
+  // While Pi works, Send steers the run: the message is delivered after the current tool calls.
+  const steering = overlay?.working === true
+  const working = sending || modelSaving || steering
 
   return (
     <>
@@ -328,8 +322,10 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
                   >
                     {item.kind === 'turn' ? (
                       <TurnView turn={item.turn} />
+                    ) : item.kind === 'live' ? (
+                      <LiveTurnView live={item.live} now={now} />
                     ) : (
-                      <LiveTurnView overlay={item.overlay} now={now} />
+                      <QueuedTurnView text={item.text} />
                     )}
                   </div>
                 )
@@ -361,12 +357,12 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
         {error != null && <div className="menu-error">{error}</div>}
         <textarea
           value={draft}
-          disabled={working || !piInstalled}
+          disabled={sending || modelSaving || !piInstalled}
           placeholder={
             !piInstalled
               ? 'Install Pi to chat'
-              : working
-                ? 'Pi is working…'
+              : steering
+                ? 'Steer Pi while it works'
                 : explain
                   ? 'Additional instructions (optional)'
                   : 'Message Pi'
@@ -415,9 +411,13 @@ function PiChatConversation({ sessionId }: { sessionId: string }) {
             </button>
             <button
               type="submit"
-              disabled={working || !piInstalled || (!explain && draft.trim() === '')}
+              disabled={
+                sending || modelSaving || !piInstalled
+                || ((steering || !explain) && draft.trim() === '')
+              }
+              title={steering ? 'Delivered after Pi finishes its current tool calls' : undefined}
             >
-              Send
+              {steering ? 'Steer' : 'Send'}
             </button>
           </div>
         </div>
@@ -539,10 +539,6 @@ function PiChatChoiceMenu({
   )
 }
 
-type ChatRow =
-  | { key: string; kind: 'turn'; turn: PiChatTurn }
-  | { key: string; kind: 'live'; overlay: PiChatOverlay }
-
 function PiChatRunInfo({ run }: { run: PiReviewRun }) {
   const cleaned = run.state === 'cleaned' || run.state === 'cleaning'
   const resume = tuiResumeCommand(run)
@@ -639,20 +635,30 @@ function TurnView({ turn }: { turn: PiChatTurn }) {
   )
 }
 
-function LiveTurnView({ overlay, now }: { overlay: PiChatOverlay; now: number }) {
+function LiveTurnView({ live, now }: { live: LiveTurn; now: number }) {
+  const { overlay } = live
   const durationMs = Math.max(0, now - Date.parse(overlay.startedAt))
   return (
     <article className="pi-chat-turn">
-      <p className="pi-chat-user">{overlay.userText}</p>
-      {(overlay.working || overlay.hasWork) && (
+      <p className="pi-chat-user">{live.userText}</p>
+      {live.showWork && (overlay.working || overlay.hasWork) && (
         <WorkFold
           label={workLabel(overlay.working, overlay.hasWork ? durationMs : null, durationMs)}
           detail={overlay.workDetail}
         />
       )}
-      {overlay.assistantText ? (
-        <AssistantMarkdown text={overlay.assistantText} streaming={overlay.working} />
+      {live.assistantText ? (
+        <AssistantMarkdown text={live.assistantText} streaming={live.streaming} />
       ) : null}
+    </article>
+  )
+}
+
+function QueuedTurnView({ text }: { text: string }) {
+  return (
+    <article className="pi-chat-turn">
+      <p className="pi-chat-user pi-chat-user-queued">{text}</p>
+      <p className="pi-chat-queued-label">Queued, sent after the current tool calls</p>
     </article>
   )
 }
@@ -689,28 +695,6 @@ function workLabel(working: boolean, durationMs: number | null, fallbackMs?: num
   if (working) return 'Working…'
   const formatted = formatWorkDuration(durationMs ?? fallbackMs ?? null)
   return formatted ? `Worked for ${formatted}` : 'Worked'
-}
-
-function overlayCaughtUp(turns: PiChatTurn[], overlay: PiChatOverlay): boolean {
-  const later = turnsAfter(turns, overlay.afterTurnId)
-  if (later.some((turn) => turn.assistantText.trim() !== '')) return true
-  if (overlay.working) return false
-  return later.length > 0
-}
-
-function turnsAfter(turns: PiChatTurn[], afterTurnId: string | null): PiChatTurn[] {
-  if (afterTurnId == null) return turns
-  const index = turns.findIndex((turn) => turn.id === afterTurnId)
-  if (index < 0) return turns
-  return turns.slice(index + 1)
-}
-
-function turnsForOverlay(turns: PiChatTurn[], overlay: PiChatOverlay | null): PiChatTurn[] {
-  if (overlay == null || overlayCaughtUp(turns, overlay)) return turns
-  if (overlay.afterTurnId == null) return []
-  const index = turns.findIndex((turn) => turn.id === overlay.afterTurnId)
-  if (index < 0) return turns
-  return turns.slice(0, index + 1)
 }
 
 function mergeTurns(left: PiChatTurn[], right: PiChatTurn[]): PiChatTurn[] {

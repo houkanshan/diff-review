@@ -1,4 +1,4 @@
-import type { PiChatOverlay } from './types.js'
+import type { PiChatOverlay, PiChatSteeredTurn } from './types.js'
 import { assistantTextFromContent } from './piChat.js'
 
 export interface LivePiOverlay {
@@ -16,6 +16,14 @@ export interface LivePiOverlay {
   completedParts: string[]
   streaming: string
   thinking: string
+  /** Whether Pi has started the original prompt's user message. */
+  promptStarted: boolean
+  /** Steering texts sent to Pi whose user message has not started yet. */
+  pendingSteers: string[]
+  /** User messages Pi delivered mid-run (steering), each with its reply so far. */
+  steered: PiChatSteeredTurn[]
+  /** Steering messages Pi accepted but has not delivered yet. */
+  queued: string[]
 }
 
 export function createLiveOverlay(input: {
@@ -36,6 +44,10 @@ export function createLiveOverlay(input: {
     completedParts: [],
     streaming: '',
     thinking: '',
+    promptStarted: false,
+    pendingSteers: [],
+    steered: [],
+    queued: [],
   }
 }
 
@@ -52,7 +64,28 @@ export function publicPiOverlay(overlay: LivePiOverlay): PiChatOverlay {
     workDetail: overlay.workDetail,
     startedAt: overlay.startedAt,
     seq: overlay.seq,
+    steered: overlay.steered.map((turn) => ({ ...turn })),
+    queued: [...overlay.queued],
   }
+}
+
+/** Records a steering message Pi accepted while this overlay's run is working. */
+export function queueSteer(overlay: LivePiOverlay, text: string): void {
+  overlay.pendingSteers.push(text)
+  overlay.queued.push(text)
+  overlay.seq += 1
+}
+
+/** Forgets a steering message Pi rejected. */
+export function unqueueSteer(overlay: LivePiOverlay, text: string): void {
+  removeFirst(overlay.pendingSteers, text)
+  removeFirst(overlay.queued, text)
+  overlay.seq += 1
+}
+
+function removeFirst(items: string[], text: string): void {
+  const index = items.indexOf(text)
+  if (index >= 0) items.splice(index, 1)
 }
 
 export function joinAssistantText(parts: readonly string[], streaming = ''): string {
@@ -73,7 +106,15 @@ export function applyPiOverlayEvent(
   }
   if (type === 'agent_settled') {
     overlay.working = false
-    overlay.assistantText = joinAssistantText(overlay.completedParts, overlay.streaming)
+    setAssistantText(overlay, joinAssistantText(overlay.completedParts, overlay.streaming))
+    overlay.seq += 1
+    return true
+  }
+  if (type === 'queue_update') {
+    const steering = Array.isArray(event.steering)
+      ? event.steering.filter((item): item is string => typeof item === 'string')
+      : []
+    overlay.queued = steering
     overlay.seq += 1
     return true
   }
@@ -86,6 +127,18 @@ export function applyPiOverlayEvent(
   if (type === 'message_start') {
     const message = event.message as Record<string, unknown> | undefined
     if (message?.role === 'assistant') overlay.streaming = ''
+    if (message?.role === 'user') {
+      // The first user message is the prompt itself, even if a steer was sent before it started.
+      // Pi delivers steering in FIFO order; skill expansion can change the text.
+      if (!overlay.promptStarted) {
+        overlay.promptStarted = true
+      } else if (overlay.pendingSteers.length > 0) {
+        const text = assistantTextFromContent(message.content)
+        const index = overlay.pendingSteers.indexOf(text)
+        overlay.pendingSteers.splice(index >= 0 ? index : 0, 1)
+        startSteeredTurn(overlay, text)
+      }
+    }
     overlay.seq += 1
     return true
   }
@@ -121,13 +174,13 @@ export function applyPiOverlayEvent(
     }
     if (update.type === 'text_delta' && typeof update.delta === 'string') {
       overlay.streaming += update.delta
-      overlay.assistantText = joinAssistantText(overlay.completedParts, overlay.streaming)
+      setAssistantText(overlay, joinAssistantText(overlay.completedParts, overlay.streaming))
       overlay.seq += 1
       return true
     }
     if (update.type === 'text_end' && typeof update.content === 'string') {
       overlay.streaming = update.content
-      overlay.assistantText = joinAssistantText(overlay.completedParts, overlay.streaming)
+      setAssistantText(overlay, joinAssistantText(overlay.completedParts, overlay.streaming))
       overlay.seq += 1
       return true
     }
@@ -139,11 +192,29 @@ export function applyPiOverlayEvent(
     const text = assistantTextFromContent(message.content) || overlay.streaming
     if (text) overlay.completedParts.push(text)
     overlay.streaming = ''
-    overlay.assistantText = joinAssistantText(overlay.completedParts)
+    setAssistantText(overlay, joinAssistantText(overlay.completedParts))
     overlay.seq += 1
     return true
   }
   return false
+}
+
+/**
+ * A steering message splits the run into a new transcript turn, so the reply
+ * that follows belongs to it rather than to the original prompt.
+ */
+function startSteeredTurn(overlay: LivePiOverlay, userText: string): void {
+  setAssistantText(overlay, joinAssistantText(overlay.completedParts, overlay.streaming))
+  overlay.completedParts = []
+  overlay.streaming = ''
+  overlay.steered.push({ userText, assistantText: '' })
+  removeFirst(overlay.queued, userText)
+}
+
+function setAssistantText(overlay: LivePiOverlay, text: string): void {
+  const current = overlay.steered.at(-1)
+  if (current == null) overlay.assistantText = text
+  else current.assistantText = text
 }
 
 export function reconcilePiOverlay(

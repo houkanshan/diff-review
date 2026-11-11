@@ -60,6 +60,8 @@ function append(entry) {
 }
 
 let buffer = ''
+const steering = []
+let running = false
 process.stdin.on('data', (chunk) => {
   buffer += chunk.toString('utf8')
   for (;;) {
@@ -86,7 +88,27 @@ process.stdin.on('data', (chunk) => {
       continue
     }
     if (command.type !== 'prompt') continue
+    if (process.env.PI_TEST_OUTPUT && command.streamingBehavior) {
+      fs.appendFileSync(process.env.PI_TEST_OUTPUT, `\nRPC prompt streamingBehavior=${command.streamingBehavior}`)
+    }
+    if (process.env.PI_TEST_HOLD === '1' && command.streamingBehavior === 'steer') {
+      steering.push(command.message)
+      process.stdout.write(`${JSON.stringify({ type: 'response', id: command.id, command: 'prompt', success: true })}\n`)
+      process.stdout.write(`${JSON.stringify({ type: 'queue_update', steering, followUp: [] })}\n`)
+      continue
+    }
+    if (process.env.PI_TEST_HOLD === '1' && running) {
+      process.stdout.write(`${JSON.stringify({
+        type: 'response',
+        id: command.id,
+        command: 'prompt',
+        success: false,
+        error: "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
+      })}\n`)
+      continue
+    }
     if (process.env.PI_TEST_HOLD === '1') {
+      running = true
       process.stdout.write(`${JSON.stringify({ type: 'response', id: command.id, command: 'prompt', success: true })}\n`)
       process.stdout.write(`${JSON.stringify({ type: 'agent_start' })}\n`)
       continue

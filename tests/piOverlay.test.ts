@@ -5,7 +5,9 @@ import {
   createLiveOverlay,
   joinAssistantText,
   publicPiOverlay,
+  queueSteer,
   reconcilePiOverlay,
+  unqueueSteer,
 } from '../src/shared/piOverlay'
 
 function overlay() {
@@ -63,6 +65,63 @@ describe('applyPiOverlayEvent', () => {
     })
     expect(live.hasWork).toBe(true)
     expect(live.workDetail).toBe('Look at git diff\ntool bash')
+  })
+})
+
+describe('steering', () => {
+  const user = (text: string) => ({
+    type: 'message_start',
+    message: { role: 'user', content: [{ type: 'text', text }] },
+  })
+  const reply = (text: string) => ({
+    type: 'message_end',
+    message: { role: 'assistant', content: [{ type: 'text', text }] },
+  })
+
+  test('starts a new live turn when Pi delivers a steered message', () => {
+    const live = overlay()
+    applyPiOverlayEvent(live, user('hi'))
+    applyPiOverlayEvent(live, reply('first'))
+    queueSteer(live, 'focus on tests')
+    expect(publicPiOverlay(live).queued).toEqual(['focus on tests'])
+    applyPiOverlayEvent(live, user('focus on tests'))
+    applyPiOverlayEvent(live, { type: 'queue_update', steering: [], followUp: [] })
+    applyPiOverlayEvent(live, reply('looking at tests'))
+    applyPiOverlayEvent(live, { type: 'agent_settled' })
+    const snapshot = publicPiOverlay(live)
+    expect(snapshot.assistantText).toBe('first')
+    expect(snapshot.steered).toEqual([
+      { userText: 'focus on tests', assistantText: 'looking at tests' },
+    ])
+    expect(snapshot.queued).toEqual([])
+  })
+
+  test('keeps the original prompt as the first turn when a steer is sent before it starts', () => {
+    const live = overlay()
+    queueSteer(live, 'also check docs')
+    applyPiOverlayEvent(live, user('hi'))
+    applyPiOverlayEvent(live, reply('answer'))
+    expect(live.assistantText).toBe('answer')
+    expect(live.steered).toEqual([])
+    applyPiOverlayEvent(live, user('also check docs'))
+    expect(live.steered).toEqual([{ userText: 'also check docs', assistantText: '' }])
+  })
+
+  test('does not split the turn for user messages that were not steered', () => {
+    const live = overlay()
+    applyPiOverlayEvent(live, user('hi'))
+    applyPiOverlayEvent(live, user('retry'))
+    applyPiOverlayEvent(live, reply('done'))
+    expect(live.steered).toEqual([])
+    expect(live.assistantText).toBe('done')
+  })
+
+  test('forgets a rejected steer', () => {
+    const live = overlay()
+    queueSteer(live, 'nope')
+    unqueueSteer(live, 'nope')
+    expect(live.queued).toEqual([])
+    expect(live.pendingSteers).toEqual([])
   })
 })
 

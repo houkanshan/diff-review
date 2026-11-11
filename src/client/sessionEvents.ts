@@ -46,7 +46,17 @@ function isPiChatOverlay(value: unknown): value is PiChatOverlay | null {
     && typeof overlay.workDetail === 'string'
     && typeof overlay.startedAt === 'string'
     && typeof overlay.seq === 'number'
+    && Array.isArray(overlay.steered)
+    && overlay.steered.every(isSteeredTurn)
+    && Array.isArray(overlay.queued)
+    && overlay.queued.every((item) => typeof item === 'string')
   )
+}
+
+function isSteeredTurn(value: unknown): boolean {
+  if (typeof value !== 'object' || value == null) return false
+  const turn = value as Record<string, unknown>
+  return typeof turn.userText === 'string' && typeof turn.assistantText === 'string'
 }
 
 function disableSharing(run: Transport): void {

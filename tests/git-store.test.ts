@@ -1185,7 +1185,10 @@ describe('local review storage', () => {
     try {
       const sent = await runner.send(first.id, 'Still working')
       expect(sent.overlay?.working).toBe(true)
-      await expect(runner.send(first.id, 'Same PR')).rejects.toMatchObject({
+      const steered = await runner.send(first.id, 'Same PR')
+      expect(steered.overlay?.working).toBe(true)
+      expect(steered.overlay?.queued).toEqual(['Same PR'])
+      await expect(runner.send(first.id, '', true)).rejects.toMatchObject({
         code: 'PI_CHAT_BUSY',
       })
       const otherSent = await runner.send(other.id, 'Other PR')

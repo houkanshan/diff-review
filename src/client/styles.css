@@ -476,6 +476,17 @@ svg {
   white-space: pre-wrap;
 }
 
+.pi-chat-user-queued {
+  opacity: 0.6;
+}
+
+.pi-chat-queued-label {
+  align-self: flex-end;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .pi-chat-assistant.markdown-body {
   font-size: 13px;
 }

@@ -16,6 +16,8 @@ import {
   applyPiOverlayEvent,
   createLiveOverlay,
   publicPiOverlay,
+  queueSteer,
+  unqueueSteer,
   type LivePiOverlay,
 } from '../shared/piOverlay.js'
 import {
@@ -191,8 +193,14 @@ export class PiReviewRunner {
     if (!isPiInstalled()) {
       throw new AppError('COMMAND_NOT_FOUND', PI_INSTALL_HINT, 503)
     }
-    if (this.isBusy(sessionId)) {
-      throw new AppError('PI_CHAT_BUSY', 'Pi is already working', 409)
+    if (this.startingChats.has(this.chatKey(sessionId))) {
+      throw new AppError('PI_CHAT_BUSY', 'Pi is still starting', 409)
+    }
+    const running = this.rpcFor(sessionId)
+    if (running?.overlay?.working === true) {
+      if (explain) throw new AppError('PI_CHAT_BUSY', 'Explain is unavailable while Pi is working', 409)
+      await this.steer(running, additional)
+      return this.getChat(sessionId)
     }
 
     const session = this.store.getSession(sessionId)
@@ -272,6 +280,24 @@ export class PiReviewRunner {
       this.emitChat(sessionId, true)
     }
     return this.getChat(sessionId)
+  }
+
+  /** Delivers a message to the running agent after its current tool calls finish. */
+  private async steer(handle: RpcHandle, message: string): Promise<void> {
+    const overlay = handle.overlay
+    if (overlay == null) throw new AppError('PI_CHAT_UNAVAILABLE', 'Pi is not running')
+    // Record before sending: Pi can report the queued or delivered message before it responds.
+    queueSteer(overlay, message)
+    this.emitChat(handle.sessionId, true)
+    const response = await this.sendCommand(handle, {
+      type: 'prompt',
+      message,
+      streamingBehavior: 'steer',
+    }).catch((error: unknown) => ({ success: false, error: error instanceof Error ? error.message : String(error) }))
+    if (response.success) return
+    unqueueSteer(overlay, message)
+    this.emitChat(handle.sessionId, true)
+    throw new AppError('PI_CHAT_REJECTED', response.error ?? 'Pi rejected the message')
   }
 
   async reconcileAndCleanup(): Promise<void> {
