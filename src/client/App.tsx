@@ -6727,10 +6727,16 @@ function EmptyDiff({
 
 
 function routeFromLocation(): AppRoute {
-  const sessionMatch = /^\/s\/([^/]+)$/.exec(window.location.pathname)
+  // `/sessions/<id>` is accepted as an alias of the canonical `/s/<id>` path.
+  const sessionMatch = /^\/(s|sessions)\/([^/]+)\/?$/.exec(window.location.pathname)
   if (sessionMatch != null) {
     try {
-      return { kind: 'session', sessionId: decodeURIComponent(sessionMatch[1] ?? '') }
+      const sessionId = decodeURIComponent(sessionMatch[2] ?? '')
+      if (sessionMatch[1] !== 's' || window.location.pathname.endsWith('/')) {
+        const canonical = `/s/${encodeURIComponent(sessionId)}${window.location.search}${window.location.hash}`
+        window.history.replaceState(window.history.state, '', canonical)
+      }
+      return { kind: 'session', sessionId }
     } catch {
       return { kind: 'root' }
     }
