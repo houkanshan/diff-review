@@ -2042,7 +2042,10 @@ function ReviewWorkspace({
   const renderNarrativeOverview = (group: NarrativeGroup<FileDiffMetadata>) => (
     <section className="narrative-overview" data-section-prefix={group.section?.prefix ?? 'other'}>
       <div className="narrative-overview-header">
-        <h2>{group.section?.prefix ?? 'Other changes'}</h2>
+        <div className="narrative-overview-title">
+          <h2>{group.section?.prefix ?? 'Other changes'}</h2>
+          <SectionStatsLabel files={group.files} />
+        </div>
         <SectionFoldButton
           paths={group.files.map((file) => file.name)}
           collapsedFiles={collapsedFiles}
@@ -2486,6 +2489,34 @@ function ReviewPanelToggle({
         </Tooltip.Positioner>
       </Tooltip.Portal>
     </Tooltip.Root>
+  )
+}
+
+/** Git-style `+N −N` line totals for the files in one narrative section. */
+function SectionStatsLabel({
+  files,
+  stats,
+}: {
+  files: readonly FileDiffMetadata[]
+  stats?: ReadonlyMap<string, FileChangeStats>
+}) {
+  if (files.length === 0) return null
+  let additions = 0
+  let deletions = 0
+  for (const file of files) {
+    const fileStats = stats?.get(file.name) ?? fileChangeStats(file)
+    // fileChangeStats splits paired lines into `modifications`; count them on both sides like `git diff --stat`.
+    additions += fileStats.additions + fileStats.modifications
+    deletions += fileStats.deletions + fileStats.modifications
+  }
+  return (
+    <span
+      className="commit-stats section-stats"
+      title={`${additions} ${additions === 1 ? 'line' : 'lines'} added, ${deletions} ${deletions === 1 ? 'line' : 'lines'} deleted`}
+    >
+      <span className="addition">+{additions}</span>{' '}
+      <span className="deletion">−{deletions}</span>
+    </span>
   )
 }
 
@@ -5149,7 +5180,8 @@ function SectionFileList({
         return (
           <section key={group.section?.prefix ?? '\0other'} className="section-file-group" aria-label={label}>
             <h3 className="section-file-heading">
-              <span>{label}</span>
+              <span className="section-file-label">{label}</span>
+              <SectionStatsLabel files={group.files} stats={stats} />
               <em>{group.files.length}</em>
             </h3>
             <ChangedFileTree

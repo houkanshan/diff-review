@@ -2707,6 +2707,19 @@ body.resizing-panels * {
   background: var(--rail-bg);
 }
 
+.section-file-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.section-file-heading .section-stats {
+  flex: none;
+  font-weight: 500;
+}
+
 .section-file-heading em {
   min-width: 18px;
   padding: 1px 5px;
@@ -2826,6 +2839,18 @@ body.resizing-panels * {
   justify-content: space-between;
   gap: 12px;
   margin: 0 0 12px;
+}
+
+.narrative-overview-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  min-width: 0;
+}
+
+.narrative-overview-title .section-stats {
+  font-size: 13px;
 }
 
 .narrative-overview h2 {
