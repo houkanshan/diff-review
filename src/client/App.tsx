@@ -6731,12 +6731,7 @@ function routeFromLocation(): AppRoute {
   const sessionMatch = /^\/(s|sessions)\/([^/]+)\/?$/.exec(window.location.pathname)
   if (sessionMatch != null) {
     try {
-      const sessionId = decodeURIComponent(sessionMatch[2] ?? '')
-      if (sessionMatch[1] !== 's' || window.location.pathname.endsWith('/')) {
-        const canonical = `/s/${encodeURIComponent(sessionId)}${window.location.search}${window.location.hash}`
-        window.history.replaceState(window.history.state, '', canonical)
-      }
-      return { kind: 'session', sessionId }
+      return { kind: 'session', sessionId: decodeURIComponent(sessionMatch[2] ?? '') }
     } catch {
       return { kind: 'root' }
     }
