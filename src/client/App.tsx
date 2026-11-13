@@ -1725,6 +1725,13 @@ function ReviewWorkspace({
     }
   }, [])
 
+  // CodeView binds find only while focus is inside it; open it from anywhere on the page.
+  // Narrative and difftastic views are not CodeView, so they keep the browser's find.
+  const codeViewActive = renderer !== 'difftastic' && !narrativeMode && items.length > 0
+  useHotkey('Mod+F', () => {
+    viewerRef.current?.openSearch({ scope: 'all' })
+  }, { enabled: codeViewActive })
+
   useHotkey('V', () => {
     const pointer = lastPointerRef.current
     // Hit-test now, like files. Hover state goes stale on scroll, collapse, and blur.
