@@ -10,6 +10,7 @@ import {
   type CodeViewLineSelection,
   type DiffLineAnnotation,
   type FileDiffMetadata,
+  type LineAnnotation,
 } from '@pierre/diffs'
 import { parseReviewCommentDiff } from '../shared/reviewCommentDiff'
 import { compareReviewFilePaths, compareReviewPathEntries } from './reviewFileOrder'
@@ -1683,7 +1684,7 @@ function ReviewWorkspace({
     />
   ), [editAnnotation, parsedFiles, session.annotations, session.id, setArchived])
 
-  const renderAnnotation = useCallback((annotation: DiffLineAnnotation<ReviewLineAnnotation>) => {
+  const renderAnnotation = useCallback((annotation: DiffLineAnnotation<ReviewLineAnnotation> | LineAnnotation<ReviewLineAnnotation>) => {
     const metadata = annotation.metadata
     if (metadata == null) return null
     return metadata.kind === 'composer' ? (
@@ -2414,7 +2415,7 @@ function ReviewWorkspace({
                   }}
                   renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
                   renderHeaderMetadata={renderHeaderMetadata}
-                  renderAnnotation={renderAnnotation}
+                  renderAnnotation={(...args) => renderAnnotation(args[0])}
                 />}
                 <AnnotationStickyOverlay
                   scroller={diffScroller}

@@ -22,7 +22,7 @@ export function parseReviewCommentDiff(filePath: string, diffHunk: string): File
     '',
   ].join('\n')
   try {
-    const fileDiff = parsePatchFiles(patch, `review-comment:${filePath}`, true).at(0)?.files.at(0)
+    const fileDiff = parsePatchFiles(patch, { cacheKeyPrefix: `review-comment:${filePath}`, throwOnError: true }).at(0)?.files.at(0)
     return fileDiff == null ? null : stripCollapsedReviewContext(fileDiff)
   } catch (caught) {
     console.error(`Could not parse review comment diff for ${filePath}`, caught)

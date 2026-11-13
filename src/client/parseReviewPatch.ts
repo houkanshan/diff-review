@@ -3,7 +3,7 @@ import { parseDiffFromFile, parsePatchFiles, type FileDiffMetadata } from '@pier
 // Review navigation, annotations, and CodeView share one entry per file path.
 export function parseReviewPatch(patch: string, cacheKeyPrefix: string): FileDiffMetadata[] {
   const filesByPath = new Map<string, FileDiffMetadata>()
-  for (const file of parsePatchFiles(patch, cacheKeyPrefix, true).flatMap((part) => part.files)) {
+  for (const file of parsePatchFiles(patch, { cacheKeyPrefix, throwOnError: true }).flatMap((part) => part.files)) {
     const previous = filesByPath.get(file.name)
     if (previous == null) {
       filesByPath.set(file.name, file)
