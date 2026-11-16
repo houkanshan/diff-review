@@ -114,7 +114,7 @@ import {
 
 import { AuthenticatedImage, AuthenticatedVideo } from './AuthenticatedMedia'
 import { readStoredValue, writeStoredValue } from './browserStorage'
-import { NarrativeDiffView, type NarrativeDiffViewHandle } from './NarrativeDiffView'
+import { NarrativeDiffView, revealNarrativeLine, type NarrativeDiffViewHandle } from './NarrativeDiffView'
 import { issueReferenceKey, parseIssueReferenceUrl, remarkIssueReferences } from '../shared/markdown'
 import {
   isLocalChangesOid,
@@ -168,7 +168,6 @@ import {
   archiveAllAnnotations,
   createSession,
   getFileContents,
-  getFilePair,
   getPiReviewStatus,
   getPullRequest,
   getPullRequestRevisions,
@@ -232,6 +231,8 @@ import {
 } from './annotationComposer'
 import { PIERRE_COLLAPSED_CONTEXT_THRESHOLD } from './annotationPlacement'
 import { AnnotationStickyOverlay } from './AnnotationStickyOverlay'
+import { ScopeStickyOverlay } from './ScopeStickyOverlay'
+import { loadReviewFilePair } from './fileContents'
 import { PullRequestCommits } from './PullRequestCommits'
 import { CommitStatsLabel } from './CommitStatsLabel'
 import { PullRequestLabels } from './PullRequestLabels'
@@ -1270,7 +1271,8 @@ function ReviewWorkspace({
   onReloadRef.current = onReload
   annotationsRef.current = session.annotations
   hoveredAnnotationRef.current = activeAnnotationById(session.annotations, hoveredAnnotationId)
-  sessionContentsRef.current = { id: session.id, contentKey: patchContentKey(session.patch) }
+  const sessionContentKey = useMemo(() => patchContentKey(session.patch), [session.patch])
+  sessionContentsRef.current = { id: session.id, contentKey: sessionContentKey }
 
   useDocumentChrome(
     formatDocumentTitle(
@@ -1478,7 +1480,7 @@ function ReviewWorkspace({
         const oldPath = fileDiff.prevName ?? fileDiff.name
         const newPath = fileDiff.name
         if (fileDiff.type === 'rename-pure') {
-          const pair = await getFilePair(id, null, newPath)
+          const pair = await loadReviewFilePair(id, contentKey, null, newPath)
           if (pair.new == null) throw new Error(`Could not load ${newPath}`)
           return {
             oldFile: null,
@@ -1489,7 +1491,7 @@ function ReviewWorkspace({
             },
           }
         }
-        const pair = await getFilePair(id, oldPath, newPath)
+        const pair = await loadReviewFilePair(id, contentKey, oldPath, newPath)
         if (pair.old == null || pair.new == null) {
           throw new Error(`Could not load both versions of ${newPath}`)
         }
@@ -2016,6 +2018,39 @@ function ReviewWorkspace({
     })
   }, [narrativeMode, pullRequest, renderer, setFileCollapsed, switchPullRequestView])
 
+  const scopeNavigationFrame = useRef<number | null>(null)
+  useEffect(() => () => {
+    if (scopeNavigationFrame.current != null) window.cancelAnimationFrame(scopeNavigationFrame.current)
+  }, [])
+  const navigateToScopeLine = useCallback((fileId: string, side: 'old' | 'new', lineNumber: number, depth: number) => {
+    const selectionSide = side === 'old' ? 'deletions' : 'additions'
+    if (narrativeMode) {
+      narrativeViewerRef.current?.scrollToAnnotation(fileId, lineNumber, selectionSide, 'start')
+      return
+    }
+    if (scopeNavigationFrame.current != null) window.cancelAnimationFrame(scopeNavigationFrame.current)
+    // The pinned rows above this one stay pinned after the jump.
+    const offset = depth * 16
+    let attempts = 0
+    let revealed = false
+    const tick = () => {
+      scopeNavigationFrame.current = null
+      const viewer = viewerRef.current
+      const rendered = viewer?.getInstance()?.getRenderedItems().find((item) => item.id === fileId)
+      if (viewer == null) return
+      if (rendered?.type === 'diff' && rendered.instance.getLinePosition(lineNumber, selectionSide) == null) {
+        // The declaration is folded into a collapsed gap: expand it first.
+        if (!revealed) revealed = revealNarrativeLine(rendered.instance, lineNumber, selectionSide)
+        if (revealed && ++attempts < 60) {
+          scopeNavigationFrame.current = window.requestAnimationFrame(tick)
+          return
+        }
+      }
+      viewer.scrollTo({ type: 'line', id: fileId, lineNumber, side: selectionSide, align: 'start', offset })
+    }
+    tick()
+  }, [narrativeMode])
+
   const navigateToAnnotation = useCallback((annotation: SessionAnnotation) => {
     const fileId = fileIdForAnnotation(annotation, parsedFiles)
     setActiveFilePath(fileId)
@@ -2424,6 +2459,13 @@ function ReviewWorkspace({
                   renderHeaderMetadata={renderHeaderMetadata}
                   renderAnnotation={(...args) => renderAnnotation(args[0])}
                 />}
+                <ScopeStickyOverlay
+                  scroller={diffScroller}
+                  files={parsedFiles}
+                  sessionId={session.id}
+                  contentKey={sessionContentKey}
+                  onNavigate={navigateToScopeLine}
+                />
                 <AnnotationStickyOverlay
                   scroller={diffScroller}
                   annotations={session.annotations}

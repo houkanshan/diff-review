@@ -4703,6 +4703,77 @@ body.resizing-panels * {
   transform: scale(0.96);
 }
 
+.scope-sticky-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.scope-sticky-stack {
+  position: absolute;
+  left: 0;
+  right: 0;
+  overflow: hidden;
+  pointer-events: none;
+  box-shadow: 0 3px 4px -3px var(--shadow);
+}
+
+.scope-sticky-column {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  overflow: hidden;
+}
+
+.scope-sticky-row {
+  all: unset;
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 16px;
+  overflow: hidden;
+  cursor: pointer;
+  pointer-events: auto;
+  color: var(--text);
+  background: var(--diff-bg);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 16px;
+  white-space: pre;
+}
+
+.scope-sticky-row:hover {
+  background: color-mix(in lab, var(--diff-bg) 92%, var(--accent));
+}
+
+.scope-sticky-gutter {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 1;
+  box-sizing: border-box;
+  padding-right: calc(1ch + 2px);
+  border-right: 2px solid var(--diff-bg);
+  color: var(--faint);
+  background: var(--diff-gutter);
+  text-align: right;
+}
+
+.scope-sticky-code {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  padding-inline: 1ch;
+  color: light-dark(var(--diffs-light, #242520), var(--diffs-dark, #d9d8d1));
+}
+
+.scope-sticky-code span {
+  color: light-dark(var(--diffs-token-light, inherit), var(--diffs-token-dark, inherit));
+}
+
 .annotation-sticky-layer {
   position: absolute;
   inset: 0;
