@@ -77,25 +77,33 @@ export function ScopeStickyOverlay({
 }) {
   const [layout, setLayout] = useState<PinnedLayout | null>(null)
   const [, setTokenVersion] = useState(0)
-  const scopes = useRef(new Map<string, FileScopes>())
   const scheduleSync = useRef<() => void>(() => {})
   const layerRef = useRef<HTMLDivElement>(null)
 
   useLayoutEffect(() => {
-    if (scroller == null) return
+    if (scroller == null) {
+      setLayout(null)
+      return
+    }
     const byName = new Map(files.map((file) => [file.name, file]))
     const listenedRoots = new Set<ShadowRoot>()
+    // Scopes resolved for this patch only; a new patch, file list or session
+    // starts over, which also retries failed loads.
+    const scopes = new Map<string, FileScopes | 'pending'>()
     let frame = 0
-    let signature = ''
+    // null forces the first measurement to replace any previous layout.
+    let signature: string | null = null
 
     const requestScopes = (file: FileDiffMetadata) => {
       const key = scopeKey(sessionId, contentKey, file)
-      if (scopes.current.has(key)) return scopes.current.get(key)
+      const known = scopes.get(key)
+      if (known != null) return known === 'pending' ? undefined : known
+      scopes.set(key, 'pending')
       void loadFileScopes(key, sessionId, contentKey, file).then((loaded) => {
-        scopes.current.set(key, loaded)
+        scopes.set(key, loaded)
         schedule()
       }, () => {
-        scopes.current.set(key, { old: null, new: null })
+        scopes.set(key, { old: null, new: null })
       })
       return undefined
     }
@@ -115,12 +123,18 @@ export function ScopeStickyOverlay({
         sync()
       })
     }
+    // Pierre renders asynchronously (highlighting, hydration, expansion).
+    // Rows live in each file's shadow root, which a light-DOM observer does
+    // not see, so the pinning file's root is observed too.
+    const mutations = typeof MutationObserver === 'undefined' ? null : new MutationObserver(schedule)
+    mutations?.observe(scroller, { childList: true, subtree: true })
     // Horizontal scrolling happens inside each file's shadow root and does
     // not reach the outer scroller.
     const listenRoot = (root: ShadowRoot) => {
       if (listenedRoots.has(root)) return
       listenedRoots.add(root)
       root.addEventListener('scroll', schedule, { capture: true, passive: true })
+      mutations?.observe(root, { childList: true, subtree: true })
     }
     scheduleSync.current = schedule
     sync()
@@ -128,9 +142,6 @@ export function ScopeStickyOverlay({
     window.addEventListener('resize', schedule)
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule)
     observer?.observe(scroller)
-    // Pierre renders asynchronously (highlighting, hydration, expansion).
-    const mutations = typeof MutationObserver === 'undefined' ? null : new MutationObserver(schedule)
-    mutations?.observe(scroller, { childList: true, subtree: true })
     return () => {
       if (frame !== 0) window.cancelAnimationFrame(frame)
       scroller.removeEventListener('scroll', schedule)
@@ -229,9 +240,9 @@ function measure(
     const fileId = fileIdOf(node)
     const file = fileId == null ? undefined : files.get(fileId)
     if (fileId == null || file == null) return null
+    listenRoot(root)
     const scopes = requestScopes(file)
     if (scopes == null) return null
-    listenRoot(root)
     const columns: PinnedColumn[] = []
     const areaTop = Math.max(scrollerRect.top, Math.min(headerBottom, rect.bottom))
     const areaBottom = Math.min(rect.bottom, scrollerRect.bottom)
