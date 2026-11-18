@@ -579,6 +579,9 @@ function PullRequestsPage({
   const detailError = queryErrorMessage(detailsQuery.error)
     ?? queryErrorMessage(workspaceQuery.error)
   const revisionLoading = number != null && workspaceQuery.isPending
+  const listedPullRequest = number == null
+    ? undefined
+    : pullRequests.find((item) => item.number === number)
 
   const updateWorkspace = useCallback(
     (update: (current: PullRequestWorkspace) => PullRequestWorkspace) => {
@@ -901,7 +904,21 @@ function PullRequestsPage({
           />
           <div className="topbar-spacer" />
         </header>
-        {details == null ? (
+        {details == null && detailError == null && detailLoading && listedPullRequest?.body != null ? (
+          <>
+            <header className="pr-workspace-header" aria-hidden="true">
+              <div className="pr-header-leading">
+                <div className="pr-workspace-tabs">
+                  <button type="button" className="active" disabled tabIndex={-1}>Overview</button>
+                  <button type="button" disabled tabIndex={-1}>Diff</button>
+                </div>
+              </div>
+            </header>
+            <section className="pr-overview-stage" aria-label="Pull request overview">
+              <PullRequestSummaryPreview summary={listedPullRequest} body={listedPullRequest.body} />
+            </section>
+          </>
+        ) : details == null ? (
           <section className="pr-selection-empty">
             {detailError != null ? (
               <><span>Pull request unavailable</span><p>{detailError}</p></>
@@ -3661,6 +3678,40 @@ function PullRequestConversation({
         </div>
       </div>
     </section>
+  )
+}
+
+/** Read-only overview from the PR list while the full details request is pending. */
+function PullRequestSummaryPreview({ summary, body }: {
+  summary: PullRequestSummary
+  body: string
+}) {
+  return (
+    <div className="pr-conversation pr-summary-preview" aria-busy="true">
+      <div className="pr-overview-grid">
+        <header className="pr-conversation-header">
+          <h1>{summary.title}</h1>
+          <div className="pr-conversation-meta">
+            <span className="pr-author">
+              <UserAvatar user={summary.author} />
+              <strong>{summary.author.name ?? summary.author.login}</strong>
+            </span>
+            <span>#{summary.number}</span>
+            <code className="pr-branch-range">{summary.baseRefName} ← {summary.headRefName}</code>
+            <a href={summary.url} target="_blank" rel="noreferrer">Open on GitHub ↗</a>
+          </div>
+        </header>
+        <aside className="pr-overview-sidebar" aria-hidden="true" />
+        <div className="pr-overview-main">
+          <section className="pr-description" aria-label="Pull request description">
+            <MarkdownBody body={body || 'No description provided.'} issueReferences={[]} />
+          </section>
+          <p className="pr-summary-preview-loading">
+            <span className="loading-ring" />Loading activity…
+          </p>
+        </div>
+      </div>
+    </div>
   )
 }
 

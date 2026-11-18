@@ -104,6 +104,7 @@ function parsePullRequestSummary(value: unknown): PullRequestSummary | undefined
     typeof value.createdAt !== 'string' ||
     typeof value.updatedAt !== 'string' ||
     typeof value.commentCount !== 'number' ||
+    (value.body !== undefined && typeof value.body !== 'string') ||
     typeof value.checkStatus !== 'string' ||
     !CHECK_STATUSES.has(value.checkStatus as PullRequestCheckStatus)
   ) {
@@ -150,6 +151,7 @@ function parsePullRequestSummary(value: unknown): PullRequestSummary | undefined
     labels,
     checkStatus: value.checkStatus as PullRequestCheckStatus,
     commentCount: value.commentCount,
+    ...(typeof value.body === 'string' ? { body: value.body } : {}),
   }
 }
 

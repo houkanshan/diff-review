@@ -1017,7 +1017,7 @@ describe('GitHub pull request list', () => {
       '}',
       "if (args[0] === 'api' && args[1] === 'graphql') {",
       "  const query = args.find((arg) => arg.startsWith('query=')) ?? ''",
-      "  if (!query.includes('viewerDidAuthor') || !query.includes('pullRequests(first: 20,') || !query.includes('pageInfo { hasNextPage endCursor }') || !query.includes('orderBy: {field: UPDATED_AT, direction: DESC}') || !query.includes('latestReviews(first: 100) { nodes { state author') || !query.includes('comments(last: 20) { nodes { author { __typename login } } }') || !query.includes('reviews(last: 20)') || !query.includes('statusCheckRollup { state }')) {",
+      "  if (!query.includes('viewerDidAuthor') || !query.includes(' body ') || !query.includes('pullRequests(first: 20,') || !query.includes('pageInfo { hasNextPage endCursor }') || !query.includes('orderBy: {field: UPDATED_AT, direction: DESC}') || !query.includes('latestReviews(first: 100) { nodes { state author') || !query.includes('comments(last: 20) { nodes { author { __typename login } } }') || !query.includes('reviews(last: 20)') || !query.includes('statusCheckRollup { state }')) {",
       "    process.stderr.write('expected combined list query')",
       '    process.exit(1)',
       '  }',
@@ -1040,6 +1040,7 @@ describe('GitHub pull request list', () => {
               {
                 number: 12,
                 title: 'Fast list',
+                body: 'List description',
                 url: 'https://github.com/acme/repo/pull/12',
                 state: 'OPEN',
                 isDraft: false,
@@ -1102,6 +1103,7 @@ describe('GitHub pull request list', () => {
         {
           number: 12,
           title: 'Fast list',
+          body: 'List description',
           viewerDidAuthor: true,
           checkStatus: 'fail',
           reviewers: [
@@ -1113,6 +1115,7 @@ describe('GitHub pull request list', () => {
         {
           number: 13,
           title: 'No checks',
+          body: '',
           viewerDidAuthor: false,
           checkStatus: 'none',
           reviewers: [{ login: 'reviewer-two', kind: 'user', reviewStatus: 'approved' }],
@@ -1399,6 +1402,77 @@ describe('GitHub pull request details cache', () => {
         checks: [{ name: 'CI', status: 'fail' }],
       })
       expect(readFileSync(countFile, 'utf8')).toBe('2')
+    } finally {
+      process.env.PATH = originalPath
+      if (originalView == null) delete process.env.GH_TEST_PR_VIEW_JSON
+      else process.env.GH_TEST_PR_VIEW_JSON = originalView
+      invalidatePullRequestDetailsCache()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+  test('loads details with one parallel batch of gh calls', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'diff-review-github-details-calls-'))
+    const bin = path.join(directory, 'bin')
+    const logFile = path.join(directory, 'calls.log')
+    mkdirSync(bin)
+    writeFileSync(logFile, '')
+    writeFileSync(path.join(bin, 'gh'), [
+      '#!/usr/bin/env node',
+      'const fs = require("node:fs")',
+      'const args = process.argv.slice(2)',
+      `const logFile = ${JSON.stringify(logFile)}`,
+      "const kind = args[0] === 'pr' ? 'view' : args[1] === 'graphql' ? 'graphql:' + args.filter((arg) => arg.startsWith('owner=') || arg.startsWith('name=')).join(',') : 'rest'",
+      "fs.appendFileSync(logFile, 'start ' + kind + '\\n')",
+      "if (args[0] === 'pr' && args[1] === 'view') {",
+      // Hold the PR view open long enough for a sequential call to show up after it.
+      '  setTimeout(() => {',
+      "    fs.appendFileSync(logFile, 'end view\\n')",
+      '    process.stdout.write(process.env.GH_TEST_PR_VIEW_JSON)',
+      '  }, 300)',
+      '} else {',
+      "  process.stdout.write(args[1] === 'graphql' ? '[{\"data\":{\"repository\":{\"pullRequest\":{\"comments\":{\"nodes\":[]},\"reviews\":{\"nodes\":[]},\"reviewThreads\":{\"nodes\":[]}}}}}]' : '[]')",
+      '}',
+    ].join('\n'))
+    chmodSync(path.join(bin, 'gh'), 0o755)
+    const originalPath = process.env.PATH
+    const originalView = process.env.GH_TEST_PR_VIEW_JSON
+    process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`
+    process.env.GH_TEST_PR_VIEW_JSON = JSON.stringify({
+      number: 12,
+      title: 'Parallel details',
+      url: 'https://github.com/acme/calls-repo/pull/12',
+      state: 'OPEN',
+      isDraft: false,
+      baseRefName: 'main',
+      headRefName: 'feature',
+      additions: 1,
+      deletions: 0,
+      createdAt: '2026-03-01T10:00:00Z',
+      updatedAt: '2026-03-01T11:00:00Z',
+      author: { login: 'octocat' },
+      assignees: [],
+      reviewRequests: [],
+      latestReviews: [],
+      labels: [],
+      comments: [],
+      reviews: [],
+      body: 'No references here.',
+      mergedBy: null,
+      mergeCommit: null,
+      mergeable: 'MERGEABLE',
+      baseRefOid: 'aaa111',
+      headRefOid: 'bbb222',
+      statusCheckRollup: [],
+    })
+    try {
+      await expect(getPullRequestDetails(directory, 12)).resolves.toMatchObject({
+        title: 'Parallel details',
+        body: 'No references here.',
+      })
+      const lines = readFileSync(logFile, 'utf8').trim().split('\n')
+      expect(lines.filter((line) => line.startsWith('start '))).toHaveLength(5)
+      expect(lines).toContain('start graphql:owner={owner},name={repo}')
+      expect(lines.indexOf('start graphql:owner={owner},name={repo}')).toBeLessThan(lines.indexOf('end view'))
     } finally {
       process.env.PATH = originalPath
       if (originalView == null) delete process.env.GH_TEST_PR_VIEW_JSON

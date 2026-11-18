@@ -61,6 +61,15 @@ describe('parseStoredPullRequestList', () => {
     expect(parseStoredPullRequestList(encode({ version: 6, list: snapshot }))).toEqual(snapshot)
   })
 
+  it('keeps the description preview and accepts entries cached before it existed', () => {
+    const withBody = { ...list, items: [{ ...summary, body: 'Preview text' }] }
+    expect(parseStoredPullRequestList(encode({ version: 6, list: withBody }))).toEqual(withBody)
+    expect(parseStoredPullRequestList(encode({ version: 6, list }))?.items[0]).not.toHaveProperty('body')
+    expect(parseStoredPullRequestList(encode({
+      version: 6, list: { ...list, items: [{ ...summary, body: 42 }] },
+    }))).toBeUndefined()
+  })
+
   it('reads a versioned list snapshot', () => {
     expect(parseStoredPullRequestList(encode({ version: 6, list }))).toEqual(list)
     expect(parseStoredPullRequestList(encode({ version: 6, list: { ...list, stale: true } }))).toEqual({

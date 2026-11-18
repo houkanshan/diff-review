@@ -316,7 +316,7 @@ function pullRequestListQuery(
     pullRequests(first: 20, states: ${states}${labels}${afterArg}, orderBy: {field: UPDATED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        number title url state isDraft viewerDidAuthor baseRefName headRefName additions deletions createdAt updatedAt
+        number title body url state isDraft viewerDidAuthor baseRefName headRefName additions deletions createdAt updatedAt
         author { login avatarUrl ... on User { name } }
         assignees(first: 100) { nodes { login name avatarUrl } }
         reviewRequests(first: 100) {
@@ -346,6 +346,8 @@ function parseGraphQLPullRequestListNode(value: unknown): PullRequestSummary {
       labels: expectArray(optionalObject(raw.labels)?.nodes),
     }, parseCheckRollupState(checkRollupState(raw))),
     viewerDidAuthor: expectBoolean(raw.viewerDidAuthor, 'viewerDidAuthor'),
+    // Lets the client show the description before the full details request returns.
+    body: optionalString(raw.body) ?? '',
   }
 }
 
@@ -390,7 +392,11 @@ async function loadPullRequestDetails(
   root: string,
   number: number,
 ): Promise<PullRequestDetails> {
-  const [detailsOutput, reviewsOutput, reviewCommentsOutput, timelineOutput] = await Promise.all([
+  // The minimized-comment query only needs the repository and number, so it runs
+  // alongside the other reads instead of adding a sequential round trip.
+  const minimizedCommentsRequest = listMinimizedComments(root, number)
+    .catch(() => new Map<string, MinimizedCommentReason>())
+  const [detailsOutput, reviewsOutput, reviewCommentsOutput, timelineOutput, minimizedComments] = await Promise.all([
     runGitHub(['pr', 'view', String(number), '--json', DETAILS_FIELDS], root),
     runGitHub(
       [
@@ -425,6 +431,7 @@ async function loadPullRequestDetails(
       undefined,
       'page',
     ),
+    minimizedCommentsRequest,
   ])
   const raw = expectObject(parseJson(detailsOutput, `GitHub PR #${number}`))
   const summary = parsePullRequestSummary(raw)
@@ -445,7 +452,6 @@ async function loadPullRequestDetails(
       parseJson(timelineOutput, `GitHub PR #${number} timeline`),
     ),
   ].sort((left, right) => left.createdAt.localeCompare(right.createdAt))
-  const minimizedComments = await listMinimizedComments(root, summary.url, number).catch(() => new Map())
   applyMinimizedComments(activity, minimizedComments)
   const issueReferences = await resolveIssueReferences(
     root,
@@ -1322,10 +1328,10 @@ export function parseMinimizedReason(value: unknown): MinimizedCommentReason | n
 
 async function listMinimizedComments(
   root: string,
-  repositoryUrl: string,
   number: number,
 ): Promise<Map<string, MinimizedCommentReason>> {
-  const repository = parseGitHubRepositoryUrl(repositoryUrl)
+  // `gh` fills `{owner}` / `{repo}` from the repository at `root`, the same
+  // repository `gh pr view` and the `repos/{owner}/{repo}` reads resolve.
   const output = await runGitHub(
     [
       'api',
@@ -1333,9 +1339,9 @@ async function listMinimizedComments(
       '--paginate',
       '--slurp',
       '-F',
-      `owner=${repository.owner}`,
+      'owner={owner}',
       '-F',
-      `name=${repository.name}`,
+      'name={repo}',
       '-F',
       `number=${number}`,
       '-f',

@@ -338,6 +338,8 @@ export interface PullRequestSummary {
   author: GitHubUser
   /** Present on list summaries from the authenticated GitHub query. */
   viewerDidAuthor?: boolean
+  /** Present on list summaries so the description can render before details load. */
+  body?: string
   assignees: GitHubUser[]
   reviewers: GitHubReviewer[]
   labels: GitHubLabel[]

@@ -3099,6 +3099,14 @@ body.resizing-panels * {
   row-gap: 0;
 }
 .pr-conversation-header { grid-area: header; min-width: 0; padding-bottom: 0; }
+.pr-summary-preview-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 24px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
 .pr-overview-main { grid-area: main; min-width: 0; }
 
 .pr-editable-text { display: flex; align-items: start; gap: 12px; min-width: 0; }
