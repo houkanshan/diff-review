@@ -697,13 +697,12 @@ function PullRequestsPage({
         ...current, details: { ...current.details, ...changes },
       },
     )
-    const title = changes.title
     queryClient.setQueriesData<PullRequestListResponse>(
       { queryKey: ['pull-requests', route.repositoryPath] },
-      (current) => current == null || title == null ? current : {
+      (current) => current == null ? current : {
         ...current,
         items: current.items.map((item) => item.number === pullRequestNumber
-          ? { ...item, title }
+          ? { ...item, ...changes }
           : item),
       },
     )
